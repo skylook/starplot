@@ -72,3 +72,40 @@ def test_map_objects_list_planets():
 def test_marker_no_label():
     p = MapPlot(projection=Projection.MERCATOR)
     p.marker(ra=150, dec=0, style__marker__color="blue")
+
+
+def test_map_with_different_backends():
+    # Test with default backend (holoviews with matplotlib)
+    p1 = MapPlot(
+        projection=Projection.MERCATOR,
+        ra_min=8.3 * 15,
+        ra_max=8.8 * 15,
+        dec_min=19.4,
+        dec_max=19.8,
+    )
+    assert p1.backend_name == 'holoviews'
+    assert p1.backend.backend == 'matplotlib'
+    
+    # Test with holoviews bokeh backend
+    p2 = MapPlot(
+        projection=Projection.MERCATOR,
+        ra_min=8.3 * 15,
+        ra_max=8.8 * 15,
+        dec_min=19.4,
+        dec_max=19.8,
+        backend='holoviews',
+        backend_kwargs={'backend': 'bokeh'}
+    )
+    assert p2.backend_name == 'holoviews'
+    assert p2.backend.backend == 'bokeh'
+    
+    # Test with invalid backend
+    with pytest.raises(ValueError):
+        MapPlot(
+            projection=Projection.MERCATOR,
+            ra_min=8.3 * 15,
+            ra_max=8.8 * 15,
+            dec_min=19.4,
+            dec_max=19.8,
+            backend='invalid_backend'
+        )

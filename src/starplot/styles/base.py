@@ -6,7 +6,7 @@ from typing import Optional, Union, List
 
 import yaml
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic.color import Color
 from pydantic.functional_serializers import PlainSerializer
 from matplotlib import patheffects
@@ -46,6 +46,39 @@ class BaseStyle(BaseModel):
         extra = "forbid"
         use_enum_values = True
         validate_assignment = True
+
+    def matplot_kwargs(self, scale: float = 1.0) -> dict:
+        """Convert style to matplotlib kwargs"""
+        raise NotImplementedError
+
+    def holoviews_kwargs(self, scale: float = 1.0) -> dict:
+        """Convert style to HoloViews kwargs"""
+        # By default, we'll convert matplotlib kwargs to HoloViews kwargs
+        # This provides backward compatibility
+        matplot_kw = self.matplot_kwargs(scale)
+        converted = {}
+        
+        # Convert common matplotlib properties to HoloViews properties
+        if 'color' in matplot_kw:
+            converted['color'] = matplot_kw['color']
+        if 'alpha' in matplot_kw:
+            converted['alpha'] = matplot_kw['alpha']
+        if 'linewidth' in matplot_kw:
+            converted['line_width'] = matplot_kw['linewidth']
+        if 'linestyle' in matplot_kw:
+            converted['line_dash'] = matplot_kw['linestyle']
+        if 'marker' in matplot_kw:
+            converted['marker'] = matplot_kw['marker']
+        if 'markersize' in matplot_kw:
+            converted['size'] = matplot_kw['markersize']
+        if 'fontsize' in matplot_kw:
+            converted['text_font_size'] = f"{matplot_kw['fontsize']}pt"
+        if 'fontfamily' in matplot_kw:
+            converted['text_font'] = matplot_kw['fontfamily']
+        if 'zorder' in matplot_kw:
+            converted['z_index'] = matplot_kw['zorder']
+            
+        return converted
 
 
 class FillStyleEnum(str, Enum):
@@ -149,29 +182,43 @@ class MarkerSymbolEnum(str, Enum):
     ELLIPSE = "ellipse"
     """\u2B2D"""
 
-    def as_matplot(self) -> str:
-        """Returns the matplotlib value of this marker"""
-        return {
-            MarkerSymbolEnum.POINT: ".",
-            MarkerSymbolEnum.CIRCLE: "o",
-            MarkerSymbolEnum.SQUARE: "s",
-            MarkerSymbolEnum.PLUS: "P",
-            MarkerSymbolEnum.SQUARE_STRIPES_DIAGONAL: "$\u25A8$",
-            MarkerSymbolEnum.STAR: "*",
-            MarkerSymbolEnum.SUN: "$\u263C$",
-            MarkerSymbolEnum.DIAMOND: "D",
-            MarkerSymbolEnum.TRIANGLE: "^",
-            MarkerSymbolEnum.CIRCLE_PLUS: "$\u2295$",
-            MarkerSymbolEnum.CIRCLE_CROSS: circle_cross(),
-            MarkerSymbolEnum.CIRCLE_CROSSHAIR: circle_crosshair(),
-            MarkerSymbolEnum.CIRCLE_DOT: circle_dot(),
-            MarkerSymbolEnum.CIRCLE_DOTTED_EDGE: "$\u25CC$",
-            MarkerSymbolEnum.CIRCLE_DOTTED_RINGS: circle_dotted_rings(),
-            MarkerSymbolEnum.CIRCLE_LINE: circle_line(),
-            MarkerSymbolEnum.COMET: "$\u2604$",
-            MarkerSymbolEnum.STAR_8: "$\u2734$",
-            MarkerSymbolEnum.ELLIPSE: ellipse(),
-        }[self.value]
+    CROSS = "cross"
+    """x"""
+
+    HEXAGON = "hexagon"
+    """h"""
+
+    PENTAGON = "pentagon"
+    """p"""
+
+    def as_holoviews(self) -> str:
+        """Convert marker symbol to HoloViews format"""
+        symbol_map = {
+            self.POINT: ".",
+            self.CIRCLE: "o",
+            self.SQUARE: "s",
+            self.TRIANGLE: "^",
+            self.STAR: "*",
+            self.CROSS: "x",
+            self.PLUS: "+",
+            self.DIAMOND: "d",
+            self.HEXAGON: "h",
+            self.PENTAGON: "p",
+            self.CIRCLE_PLUS: "P",
+            self.CIRCLE_CROSS: "X",
+            self.CIRCLE_DOT: "o",
+            self.CIRCLE_DOTTED_EDGE: "o",
+            self.CIRCLE_DOTTED_RINGS: "o",
+            self.CIRCLE_LINE: "o",
+            self.CIRCLE_CROSSHAIR: "o",
+            self.COMET: "*",
+            self.STAR_4: "*",
+            self.STAR_8: "*",
+            self.ELLIPSE: "o",
+            self.SQUARE_STRIPES_DIAGONAL: "s",
+            self.SUN: "o",
+        }
+        return symbol_map[self]  # 直接返回映射结果,不需要再次检查
 
 
 class LineStyleEnum(str, Enum):
@@ -179,6 +226,16 @@ class LineStyleEnum(str, Enum):
     DASHED = "dashed"
     DASHED_DOTS = "dashdot"
     DOTTED = "dotted"
+
+    def as_holoviews(self) -> str:
+        """Convert line style to HoloViews format"""
+        style_map = {
+            self.SOLID: "solid",
+            self.DASHED: "dashed",
+            self.DASHED_DOTS: "dashdot",
+            self.DOTTED: "dotted",
+        }
+        return style_map[self]
 
 
 class DashCapStyleEnum(str, Enum):
@@ -308,13 +365,39 @@ class MarkerStyle(BaseStyle):
 
     @property
     def symbol_matplot(self) -> str:
-        return MarkerSymbolEnum(self.symbol).as_matplot()
+        """Convert marker symbol to matplotlib format"""
+        symbol_map = {
+            'point': ".",
+            'circle': "o",
+            'square': "s",
+            'triangle': "^",
+            'star': "*",
+            'cross': "x",
+            'plus': "+",
+            'diamond': "d",
+            'hexagon': "h",
+            'pentagon': "p",
+            'circle_plus': "P",
+            'circle_cross': "X",
+            'circle_dot': "o",
+            'circle_dotted_edge': "o",
+            'circle_dotted_rings': "o",
+            'circle_line': "o",
+            'circle_crosshair': "o",
+            'comet': "*",
+            'star_4': "*",
+            'star_8': "*",
+            'ellipse': "o",
+            'square_stripes_diagonal': "s",
+            'sun': "o",
+        }
+        return symbol_map.get(self.symbol, "o")  # Default to circle if symbol not found
 
     def matplot_kwargs(self, scale: float = 1.0) -> dict:
         return dict(
             color=self.color.as_hex() if self.color else "none",
             markeredgecolor=self.edge_color.as_hex() if self.edge_color else "none",
-            marker=MarkerSymbolEnum(self.symbol).as_matplot(),
+            marker=self.symbol_matplot,
             markersize=self.size * scale,
             fillstyle=self.fill,
             alpha=self.alpha,
@@ -347,6 +430,53 @@ class MarkerStyle(BaseStyle):
             zorder=self.zorder,
             line_style=self.line_style,
         )
+
+    def holoviews_kwargs(self, scale: float = 1.0) -> dict:
+        """Convert marker style to HoloViews kwargs"""
+        marker = "o"
+        if isinstance(self.symbol, MarkerSymbolEnum):
+            marker = self.symbol.as_holoviews()
+        elif isinstance(self.symbol, str):
+            marker_map = {
+                'o': 'o',
+                'circle': 'o',
+                's': 's',
+                'square': 's',
+                '^': '^',
+                'triangle': '^',
+                'D': 'd',
+                'diamond': 'd',
+                '*': '*',
+                'star': '*',
+                '+': '+',
+                'plus': '+',
+                'x': 'x',
+                'cross': 'x'
+            }
+            marker = marker_map.get(self.symbol, 'o')
+        
+        style = {
+            'marker': marker,
+            'size': self.size * scale,
+            'color': self.color.as_hex() if self.color else None,
+            'edge_color': self.edge_color.as_hex() if self.edge_color else None,
+            'edge_line_width': self.edge_width * scale if self.edge_width else 0,
+            'alpha': self.alpha,
+        }
+        
+        # Ensure full color format
+        if style['color'] and len(style['color']) == 4:  # #rgb format
+            r = style['color'][1]
+            g = style['color'][2]
+            b = style['color'][3]
+            style['color'] = f"#{r}{r}{g}{g}{b}{b}"
+        if style['edge_color'] and len(style['edge_color']) == 4:  # #rgb format
+            r = style['edge_color'][1]
+            g = style['edge_color'][2]
+            b = style['edge_color'][3]
+            style['edge_color'] = f"#{r}{r}{g}{g}{b}{b}"
+        
+        return style
 
 
 class LineStyle(BaseStyle):
@@ -406,6 +536,32 @@ class LineStyle(BaseStyle):
         plot_kwargs["colors"] = plot_kwargs.pop("color")
         return plot_kwargs
 
+    def holoviews_kwargs(self, scale: float = 1.0) -> dict:
+        """Convert line style to HoloViews kwargs"""
+        style_map = {
+            'solid': '-',
+            'dashed': '--',
+            'dashdot': '-.',
+            'dotted': ':',
+        }
+        line_dash = style_map.get(self.style, '-') if isinstance(self.style, str) else self.style
+        
+        style = {
+            'color': self.color.as_hex(),
+            'line_width': self.width * scale,
+            'line_dash': line_dash,
+            'alpha': self.alpha,
+        }
+        
+        # Ensure full color format
+        if style['color'] and len(style['color']) == 4:  # #rgb format
+            r = style['color'][1]
+            g = style['color'][2]
+            b = style['color'][3]
+            style['color'] = f"#{r}{r}{g}{g}{b}{b}"
+        
+        return style
+
 
 class PolygonStyle(BaseStyle):
     """
@@ -463,6 +619,23 @@ class PolygonStyle(BaseStyle):
             zorder=self.zorder,
             line_style=self.line_style,
         )
+
+    def holoviews_kwargs(self, scale: float = 1.0) -> dict:
+        """Convert polygon style to HoloViews kwargs"""
+        line_style = self.line_style
+        if isinstance(line_style, tuple):
+            line_dash = line_style
+        else:
+            line_dash = line_style.as_holoviews()
+            
+        return {
+            'fill_color': self.fill_color.as_hex() if self.fill_color else None,
+            'edge_color': self.edge_color.as_hex() if self.edge_color else None,
+            'edge_line_width': self.edge_width * scale,
+            'edge_line_dash': line_dash,
+            'alpha': self.alpha,
+            'z_index': self.zorder,
+        }
 
 
 class LabelStyle(BaseStyle):
@@ -579,6 +752,19 @@ class LabelStyle(BaseStyle):
         new_style.offset_y = offset * float(y_direction)
 
         return new_style
+
+    def holoviews_kwargs(self, scale: float = 1.0) -> dict:
+        """Convert label style to HoloViews kwargs"""
+        return {
+            'text_font_size': f"{self.font_size * scale}pt",
+            'text_font': self.font_family,
+            'color': self.font_color.as_hex(),
+            'alpha': self.font_alpha,
+            'z_index': self.zorder,
+            'text_baseline': 'middle',
+            'text_align': 'center',
+            'line_spacing': self.line_spacing,
+        }
 
 
 class ObjectStyle(BaseStyle):

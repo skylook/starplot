@@ -37,6 +37,8 @@ from starplot.geometry import (
     random_point_in_polygon_at_distance,
 )
 from starplot.profile import profile
+from starplot.backends import get_backend
+from starplot.projections import Projection
 
 LOGGER = logging.getLogger("starplot")
 LOG_HANDLER = logging.StreamHandler()
@@ -70,36 +72,49 @@ class BasePlot(ABC):
 
     def __init__(
         self,
-        dt: datetime = None,
-        ephemeris: str = "de421_2001.bsp",
-        style: PlotStyle = DEFAULT_STYLE,
-        resolution: int = 4096,
-        hide_colliding_labels: bool = True,
+        projection: Union[Projection, str] = Projection.MERCATOR,
+        ra_min: float = 0,
+        ra_max: float = 360,
+        dec_min: float = -90,
+        dec_max: float = 90,
+        dt: Optional[datetime] = None,
+        backend: str = "holoviews",
+        backend_kwargs: Optional[dict] = None,
         scale: float = 1.0,
         autoscale: bool = False,
         suppress_warnings: bool = True,
-        *args,
-        **kwargs,
     ):
+        """Initialize the map plot"""
+        self.projection = Projection(projection)
+        self.ra_min = ra_min
+        self.ra_max = ra_max
+        self.dec_min = dec_min
+        self.dec_max = dec_max
+        self.dt = dt or datetime.now(timezone("UTC"))
+
+        # Initialize backend
+        self.backend_name = backend
+        backend_kwargs = backend_kwargs or {}
+        self.backend = get_backend(backend)()
+        self.backend.initialize(**backend_kwargs)
+
         px = 1 / DPI  # plt.rcParams["figure.dpi"]  # pixel in inches
         self.pixels_per_point = DPI / 72
 
-        self.style = style
-        self.figure_size = resolution * px
-        self.resolution = resolution
-        self.hide_colliding_labels = hide_colliding_labels
+        self.style = DEFAULT_STYLE
+        self.figure_size = DEFAULT_RESOLUTION * px
+        self.resolution = DEFAULT_RESOLUTION
+        self.hide_colliding_labels = True
 
         self.scale = scale
         self.autoscale = autoscale
         if self.autoscale:
             self.scale = self.resolution / DEFAULT_RESOLUTION
 
-        if suppress_warnings:
-            warnings.suppress()
+        warnings.suppress()
 
-        self.dt = dt or timezone("UTC").localize(datetime.now())
-        self._ephemeris_name = ephemeris
-        self.ephemeris = load(ephemeris)
+        self._ephemeris_name = "de421_2001.bsp"
+        self.ephemeris = load(self._ephemeris_name)
         self.earth = self.ephemeris["earth"]
 
         self.labels = []
@@ -113,7 +128,7 @@ class BasePlot(ABC):
         self._legend = None
         self._legend_handles = {}
 
-        self.log_level = logging.DEBUG if kwargs.get("debug") else logging.ERROR
+        self.log_level = logging.DEBUG if backend_kwargs.get("debug") else logging.ERROR
         self.logger = LOGGER
         self.logger.setLevel(self.log_level)
 
@@ -227,21 +242,48 @@ class BasePlot(ABC):
         padding=0,
     ) -> bool:
         """Returns true if the label is removed, else false"""
-        extent = label.get_window_extent(renderer=self.fig.canvas.get_renderer())
-        bbox = (
-            extent.x0 - padding,
-            extent.y0 - padding,
-            extent.x1 + padding,
-            extent.y1 + padding,
-        )
-        points = [(extent.x0, extent.y0), (extent.x1, extent.y1)]
+        if hasattr(label, 'get_window_extent'):
+            extent = label.get_window_extent(renderer=self.fig.canvas.get_renderer())
+            bbox = (
+                extent.x0 - padding,
+                extent.y0 - padding,
+                extent.x1 + padding,
+                extent.y1 + padding,
+            )
+            points = [(extent.x0, extent.y0), (extent.x1, extent.y1)]
+        else:
+            # For HoloViews Text objects
+            x = float(label.data[0])
+            y = float(label.data[1])
+            # Estimate text extent based on text length and font size
+            font_size = 12  # Default font size
+            try:
+                # Try to get font size from style options
+                if hasattr(label, 'opts') and hasattr(label.opts, 'get_param_values'):
+                    for param, value in label.opts.get_param_values():
+                        if param == 'fontsize':
+                            font_size = float(value)
+                            break
+            except (ValueError, TypeError, AttributeError):
+                pass
+            text_width = len(str(label.data[2])) * font_size * 0.6
+            text_height = font_size * 1.2
+            bbox = (
+                x - text_width/2 - padding,
+                y - text_height/2 - padding,
+                x + text_width/2 + padding,
+                y + text_height/2 + padding,
+            )
+            points = [(x - text_width/2, y - text_height/2), (x + text_width/2, y + text_height/2)]
 
-        if any([np.isnan(c) for c in (extent.x0, extent.y0, extent.x1, extent.y1)]):
-            label.remove()
+        if any([np.isnan(c) for c in bbox]):
+            if hasattr(label, 'remove'):
+                label.remove()
             return True
 
         if remove_on_clipped and self._is_clipped(points):
-            label.remove()
+            if hasattr(label, 'remove'):
+                label.remove()
             return True
 
         if remove_on_collision and (
@@ -249,11 +291,13 @@ class BasePlot(ABC):
             or self._is_star_collision(bbox)
             or self._is_marker_collision(bbox)
         ):
-            label.remove()
+            if hasattr(label, 'remove'):
+                label.remove()
             return True
 
         if remove_on_constellation_collision and self._is_constellation_collision(bbox):
-            label.remove()
+            if hasattr(label, 'remove'):
+                label.remove()
             return True
 
         return False
@@ -334,15 +378,22 @@ class BasePlot(ABC):
         return sum([x_labels, x_constellations, x_stars]) / 3
 
     def _text(self, x, y, text, **kwargs):
-        label = self.ax.annotate(
+        style_kwargs = kwargs.copy()
+        style_kwargs.pop('clip_on', None)
+        style_kwargs.pop('clip_path', None)
+        
+        label = self.backend.text(
+            x,
+            y,
             text,
-            (x, y),
-            **kwargs,
+            **style_kwargs,
             **self._plot_kwargs(),
         )
-        if kwargs.get("clip_on"):
-            label.set_clip_on(True)
-            label.set_clip_path(self._background_clip_path)
+        
+        if kwargs.get('clip_on'):
+            # TODO: Implement clipping for HoloViews text
+            pass
+            
         return label
 
     def _text_point(
@@ -626,16 +677,15 @@ class BasePlot(ABC):
             filename: Filename of exported file
             format: Format of file (options are "png", "jpeg", or "svg")
             padding: Padding (in inches) around the image
-            **kwargs: Any keyword arguments to pass through to matplotlib's `savefig` method
+            **kwargs: Any keyword arguments to pass through to the backend's export method
 
         """
         self.logger.debug("Exporting...")
-        self.fig.savefig(
+        self.backend.export(
             filename,
             format=format,
-            bbox_inches="tight",
-            pad_inches=padding,
-            dpi=144,  # (self.resolution / self.figure_size * 1.28),
+            padding=padding,
+            dpi=self.resolution / self.figure_size * 1.28,
             **kwargs,
         )
 
@@ -659,30 +709,29 @@ class BasePlot(ABC):
             style: Styling for the marker
             legend_label: How to label the marker in the legend. If `None`, then the marker will not be added to the legend
             skip_bounds_check: If True, then don't check the marker coordinates to ensure they're within the bounds of the plot. If you're plotting many markers, setting this to True can speed up plotting time.
-
         """
-
         if not skip_bounds_check and not self.in_bounds(ra, dec):
             return
 
         # Plot marker
         x, y = self._prepare_coords(ra, dec)
-        style_kwargs = style.marker.matplot_scatter_kwargs(self.scale)
-        self.ax.scatter(
+        style_kwargs = style.marker.holoviews_kwargs(self.scale)
+        
+        marker = self.backend.marker(
             x,
             y,
-            **style_kwargs,
-            **self._plot_kwargs(),
             clip_on=True,
             clip_path=self._background_clip_path,
             gid=kwargs.get("gid_marker") or "marker",
+            **style_kwargs,
+            **self._plot_kwargs(),
         )
 
         # Add to spatial index
         data_xy = self._proj.transform_point(x, y, self._crs)
         display_x, display_y = self.ax.transData.transform(data_xy)
         if display_x > 0 and display_y > 0:
-            radius = style_kwargs.get("s", 1) ** 0.5 / 5
+            radius = style_kwargs.get('size', 1) ** 0.5 / 5
             bbox = np.array(
                 (
                     display_x - radius,
@@ -863,15 +912,16 @@ class BasePlot(ABC):
 
     def _polygon(self, points: list, style: PolygonStyle, **kwargs):
         points = [self._prepare_coords(*p) for p in points]
-        patch = patches.Polygon(
+        style_kwargs = style.holoviews_kwargs(self.scale)
+        
+        self.backend.polygon(
             points,
-            # closed=False, # needs to be false for circles at poles?
-            **style.matplot_kwargs(self.scale),
-            **kwargs,
             clip_on=True,
             clip_path=self._background_clip_path,
+            gid=kwargs.get("gid") or "polygon",
+            **style_kwargs,
+            **kwargs,
         )
-        self.ax.add_patch(patch)
 
     @use_style(PolygonStyle)
     def polygon(
@@ -1032,14 +1082,15 @@ class BasePlot(ABC):
             style: Style of the line
         """
         x, y = zip(*[self._prepare_coords(*p) for p in coordinates])
-
-        self.ax.plot(
+        style_kwargs = style.holoviews_kwargs(self.scale)
+        
+        self.backend.plot(
             x,
             y,
             clip_on=True,
             clip_path=self._background_clip_path,
             gid=kwargs.get("gid") or "line",
-            **style.matplot_kwargs(self.scale),
+            **style_kwargs,
             **self._plot_kwargs(),
         )
 

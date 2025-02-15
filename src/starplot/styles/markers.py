@@ -1,4 +1,5 @@
 from functools import cache
+from enum import Enum
 
 from matplotlib import transforms
 from matplotlib.path import Path
@@ -306,3 +307,74 @@ def circle_line_deprecated():
     )
 
     return Path(verts, codes)
+
+
+class MarkerSymbolEnum(str, Enum):
+    CIRCLE = "circle"
+    SQUARE = "square"
+    TRIANGLE = "triangle"
+    DIAMOND = "diamond"
+    PENTAGON = "pentagon"
+    HEXAGON = "hexagon"
+    STAR = "star"
+    PLUS = "plus"
+    CROSS = "cross"
+    ELLIPSE = "ellipse"
+
+    def as_matplot(self) -> str:
+        """Convert to matplotlib marker symbol"""
+        matplot_map = {
+            "circle": "o",
+            "square": "s",
+            "triangle": "^",
+            "diamond": "D",
+            "pentagon": "p",
+            "hexagon": "h",
+            "star": "*",
+            "plus": "+",
+            "cross": "x",
+            "ellipse": "o",  # matplotlib doesn't have ellipse marker
+        }
+        return matplot_map[self.value]
+
+    def as_holoviews(self) -> str:
+        """Convert to HoloViews marker symbol"""
+        holoviews_map = {
+            "circle": "o",
+            "square": "s",
+            "triangle": "^",
+            "diamond": "d",
+            "pentagon": "p",
+            "hexagon": "h",
+            "star": "*",
+            "plus": "+",
+            "cross": "x",
+            "ellipse": "o",  # HoloViews doesn't have ellipse marker
+        }
+        return holoviews_map[self.value]
+
+class LineStyleEnum(str, Enum):
+    SOLID = "solid"
+    DASHED = "dashed"
+    DOTTED = "dotted"
+    DASH_DOT = "dashdot"
+
+    def as_matplot(self) -> str:
+        """Convert to matplotlib line style"""
+        matplot_map = {
+            "solid": "-",
+            "dashed": "--",
+            "dotted": ":",
+            "dashdot": "-.",
+        }
+        return matplot_map[self.value]
+
+    def as_holoviews(self) -> str:
+        """Convert to HoloViews line style"""
+        holoviews_map = {
+            "solid": "solid",
+            "dashed": "dashed",
+            "dotted": "dotted",
+            "dashdot": "dashdot",
+        }
+        return holoviews_map[self.value]

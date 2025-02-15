@@ -1,6 +1,6 @@
 import datetime
 import math
-from typing import Callable
+from typing import Callable, Optional
 from functools import cache
 
 from cartopy import crs as ccrs
@@ -65,6 +65,8 @@ class MapPlot(
         scale: Scaling factor that will be applied to all sizes in styles (e.g. font size, marker size, line widths, etc). For example, if you want to make everything 2x bigger, then set the scale to 2. At `scale=1` and `resolution=4096` (the default), all sizes are optimized visually for a map that covers 1-3 constellations. So, if you're creating a plot of a _larger_ extent, then it'd probably be good to decrease the scale (i.e. make everything smaller) -- and _increase_ the scale if you're plotting a very small area.
         autoscale: If True, then the scale will be set automatically based on resolution.
         suppress_warnings: If True (the default), then all warnings will be suppressed
+        backend: Backend to use for plotting
+        backend_kwargs: Additional keyword arguments for the backend
 
     Returns:
         MapPlot: A new instance of a MapPlot
@@ -91,20 +93,23 @@ class MapPlot(
         scale: float = 1.0,
         autoscale: bool = False,
         suppress_warnings: bool = True,
+        backend: str = "holoviews",
+        backend_kwargs: Optional[dict] = None,
         *args,
         **kwargs,
     ) -> "MapPlot":
         super().__init__(
-            dt,
-            ephemeris,
-            style,
-            resolution,
-            hide_colliding_labels,
+            projection=projection,
+            ra_min=ra_min,
+            ra_max=ra_max,
+            dec_min=dec_min,
+            dec_max=dec_max,
+            dt=dt,
+            backend=backend,
+            backend_kwargs=backend_kwargs,
             scale=scale,
             autoscale=autoscale,
             suppress_warnings=suppress_warnings,
-            *args,
-            **kwargs,
         )
         self.logger.debug("Creating MapPlot...")
 
@@ -115,11 +120,6 @@ class MapPlot(
         if dec_min < -90 or dec_max > 90:
             raise ValueError("Declination out of range (must be -90...90)")
 
-        self.projection = projection
-        self.ra_min = ra_min
-        self.ra_max = ra_max
-        self.dec_min = dec_min
-        self.dec_max = dec_max
         self.lat = lat
         self.lon = lon
         self.clip_path = clip_path
