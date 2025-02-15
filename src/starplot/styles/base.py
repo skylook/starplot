@@ -230,10 +230,10 @@ class LineStyleEnum(str, Enum):
     def as_holoviews(self) -> str:
         """Convert line style to HoloViews format"""
         style_map = {
-            self.SOLID: "solid",
-            self.DASHED: "dashed",
-            self.DASHED_DOTS: "dashdot",
-            self.DOTTED: "dotted",
+            self.SOLID: "-",
+            self.DASHED: "--",
+            self.DASHED_DOTS: "-.",
+            self.DOTTED: ":",
         }
         return style_map[self]
 
@@ -433,16 +433,17 @@ class MarkerStyle(BaseStyle):
 
     def holoviews_kwargs(self, scale: float = 1.0) -> dict:
         """Convert marker style to HoloViews kwargs"""
-        marker = "o"
+        # Get marker symbol
+        marker = "o"  # Default to circle
         if isinstance(self.symbol, MarkerSymbolEnum):
             marker = self.symbol.as_holoviews()
         elif isinstance(self.symbol, str):
             marker_map = {
                 'o': 'o',
-                'circle': 'o',
+                'circle': 'o', 
                 's': 's',
                 'square': 's',
-                '^': '^',
+                '^': '^', 
                 'triangle': '^',
                 'D': 'd',
                 'diamond': 'd',
@@ -454,28 +455,36 @@ class MarkerStyle(BaseStyle):
                 'cross': 'x'
             }
             marker = marker_map.get(self.symbol, 'o')
-        
+            
         style = {
             'marker': marker,
-            'size': self.size * scale,
+            's': ((self.size / scale) ** 2) * (scale**2),  # Convert to area
             'color': self.color.as_hex() if self.color else None,
-            'edge_color': self.edge_color.as_hex() if self.edge_color else None,
-            'edge_line_width': self.edge_width * scale if self.edge_width else 0,
+            'edgecolor': self.edge_color.as_hex() if self.edge_color else None,
+            'linewidth': self.edge_width * scale if self.edge_width else 0,
             'alpha': self.alpha,
+            'fill_alpha': self.alpha if self.fill == FillStyleEnum.FULL else 0,
         }
         
+        # Handle line style
+        if isinstance(self.line_style, LineStyleEnum):
+            style['linestyle'] = self.line_style.as_holoviews()
+        else:
+            style['linestyle'] = self.line_style
+            
         # Ensure full color format
         if style['color'] and len(style['color']) == 4:  # #rgb format
             r = style['color'][1]
             g = style['color'][2]
             b = style['color'][3]
             style['color'] = f"#{r}{r}{g}{g}{b}{b}"
-        if style['edge_color'] and len(style['edge_color']) == 4:  # #rgb format
-            r = style['edge_color'][1]
-            g = style['edge_color'][2]
-            b = style['edge_color'][3]
-            style['edge_color'] = f"#{r}{r}{g}{g}{b}{b}"
-        
+            
+        if style['edgecolor'] and len(style['edgecolor']) == 4:  # #rgb format
+            r = style['edgecolor'][1]
+            g = style['edgecolor'][2]
+            b = style['edgecolor'][3]
+            style['edgecolor'] = f"#{r}{r}{g}{g}{b}{b}"
+            
         return style
 
 
@@ -538,28 +547,36 @@ class LineStyle(BaseStyle):
 
     def holoviews_kwargs(self, scale: float = 1.0) -> dict:
         """Convert line style to HoloViews kwargs"""
+        style = {
+            'color': self.color.as_hex() if self.color else None,
+            'linewidth': self.width * scale,
+            'alpha': self.alpha,
+        }
+        
+        # Handle line style
         style_map = {
             'solid': '-',
             'dashed': '--',
             'dashdot': '-.',
             'dotted': ':',
         }
-        line_dash = style_map.get(self.style, '-') if isinstance(self.style, str) else self.style
-        
-        style = {
-            'color': self.color.as_hex(),
-            'line_width': self.width * scale,
-            'line_dash': line_dash,
-            'alpha': self.alpha,
-        }
-        
+        if isinstance(self.style, str):
+            style['linestyle'] = style_map.get(self.style, self.style)
+        else:
+            style['linestyle'] = self.style
+            
+        # Add edge effects if specified
+        if self.edge_width and self.edge_color:
+            style['edgecolor'] = self.edge_color.as_hex()
+            style['edge_linewidth'] = self.edge_width * scale
+            
         # Ensure full color format
         if style['color'] and len(style['color']) == 4:  # #rgb format
             r = style['color'][1]
             g = style['color'][2]
             b = style['color'][3]
             style['color'] = f"#{r}{r}{g}{g}{b}{b}"
-        
+            
         return style
 
 
@@ -622,20 +639,40 @@ class PolygonStyle(BaseStyle):
 
     def holoviews_kwargs(self, scale: float = 1.0) -> dict:
         """Convert polygon style to HoloViews kwargs"""
-        line_style = self.line_style
-        if isinstance(line_style, tuple):
-            line_dash = line_style
-        else:
-            line_dash = line_style.as_holoviews()
-            
-        return {
-            'fill_color': self.fill_color.as_hex() if self.fill_color else None,
-            'edge_color': self.edge_color.as_hex() if self.edge_color else None,
-            'edge_line_width': self.edge_width * scale,
-            'edge_line_dash': line_dash,
+        style = {
+            'facecolor': self.fill_color.as_hex() if self.fill_color else None,
+            'edgecolor': self.edge_color.as_hex() if self.edge_color else None,
+            'linewidth': self.edge_width * scale,
             'alpha': self.alpha,
-            'z_index': self.zorder,
+            'zorder': self.zorder,
         }
+        
+        # Use color as both fill and edge color if specified
+        if self.color:
+            style['facecolor'] = self.color.as_hex()
+            style['edgecolor'] = self.color.as_hex()
+            
+        # Handle line style
+        if isinstance(self.line_style, LineStyleEnum):
+            style['linestyle'] = self.line_style.as_holoviews()
+        else:
+            style['linestyle'] = self.line_style
+            
+        # Ensure full color format for fill color
+        if style['facecolor'] and len(style['facecolor']) == 4:  # #rgb format
+            r = style['facecolor'][1]
+            g = style['facecolor'][2]
+            b = style['facecolor'][3]
+            style['facecolor'] = f"#{r}{r}{g}{g}{b}{b}"
+            
+        # Ensure full color format for edge color
+        if style['edgecolor'] and len(style['edgecolor']) == 4:  # #rgb format
+            r = style['edgecolor'][1]
+            g = style['edgecolor'][2]
+            b = style['edgecolor'][3]
+            style['edgecolor'] = f"#{r}{r}{g}{g}{b}{b}"
+            
+        return style
 
 
 class LabelStyle(BaseStyle):
@@ -755,16 +792,56 @@ class LabelStyle(BaseStyle):
 
     def holoviews_kwargs(self, scale: float = 1.0) -> dict:
         """Convert label style to HoloViews kwargs"""
-        return {
+        style = {
             'text_font_size': f"{self.font_size * scale}pt",
-            'text_font': self.font_family,
-            'color': self.font_color.as_hex(),
+            'text_font': self.font_name,
+            'text_font_family': self.font_family,
+            'text_font_style': self.font_style,
+            'text_font_weight': self.font_weight,
+            'color': self.font_color.as_hex() if self.font_color else None,
             'alpha': self.font_alpha,
             'z_index': self.zorder,
-            'text_baseline': 'middle',
-            'text_align': 'center',
-            'line_spacing': self.line_spacing,
         }
+        
+        # Handle text alignment based on anchor point
+        anchor_map = {
+            AnchorPointEnum.CENTER: ('middle', 'center'),
+            AnchorPointEnum.LEFT_CENTER: ('middle', 'left'),
+            AnchorPointEnum.RIGHT_CENTER: ('middle', 'right'),
+            AnchorPointEnum.TOP_LEFT: ('top', 'left'),
+            AnchorPointEnum.TOP_RIGHT: ('top', 'right'),
+            AnchorPointEnum.TOP_CENTER: ('top', 'center'),
+            AnchorPointEnum.BOTTOM_LEFT: ('bottom', 'left'),
+            AnchorPointEnum.BOTTOM_RIGHT: ('bottom', 'right'),
+            AnchorPointEnum.BOTTOM_CENTER: ('bottom', 'center'),
+        }
+        baseline, align = anchor_map.get(self.anchor_point, ('middle', 'center'))
+        style['text_baseline'] = baseline
+        style['text_align'] = align
+        
+        # Handle line spacing
+        if self.line_spacing:
+            style['line_spacing'] = self.line_spacing
+            
+        # Handle text border/halo effect
+        if self.border_width and self.border_color:
+            style['text_border_width'] = self.border_width * scale
+            style['text_border_color'] = self.border_color.as_hex()
+            
+        # Handle offsets
+        if isinstance(self.offset_x, (int, float)):
+            style['x_offset'] = self.offset_x * scale
+        if isinstance(self.offset_y, (int, float)):
+            style['y_offset'] = self.offset_y * scale
+            
+        # Ensure full color format
+        if style['color'] and len(style['color']) == 4:  # #rgb format
+            r = style['color'][1]
+            g = style['color'][2]
+            b = style['color'][3]
+            style['color'] = f"#{r}{r}{g}{g}{b}{b}"
+            
+        return style
 
 
 class ObjectStyle(BaseStyle):

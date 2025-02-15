@@ -44,10 +44,10 @@ def test_holoviews_style_conversion():
     )
     hv_style = marker_style.holoviews_kwargs(scale=1.0)
     assert hv_style['marker'] == 'o'
-    assert hv_style['size'] == 20
+    assert hv_style['s'] == 400  # size is converted to area
     assert hv_style['color'] == '#ff0000'
-    assert hv_style['edge_color'] == '#000000'
-    assert hv_style['edge_line_width'] == 2
+    assert hv_style['edgecolor'] == '#000000'
+    assert hv_style['linewidth'] == 2
     assert hv_style['alpha'] == 0.5
     
     # Test line style conversion
@@ -59,8 +59,8 @@ def test_holoviews_style_conversion():
     )
     hv_style = line_style.holoviews_kwargs(scale=1.0)
     assert hv_style['color'] == '#0000ff'
-    assert hv_style['line_width'] == 2
-    assert hv_style['line_dash'] == '--'
+    assert hv_style['linewidth'] == 2
+    assert hv_style['linestyle'] == '--'
     assert hv_style['alpha'] == 0.8
 
 def test_holoviews_plotting():
@@ -68,19 +68,19 @@ def test_holoviews_plotting():
     backend.initialize()
     
     # Test marker plotting
-    marker = backend.marker(0, 0, marker='o', size=10, color='red')
+    marker = backend.marker(0, 0, marker='o', s=100, color='red')
     assert isinstance(marker, hv.Scatter)
     
     # Test line plotting
-    line = backend.plot([0, 1], [0, 1], color='blue', line_width=2)
+    line = backend.plot([0, 1], [0, 1], color='blue', linewidth=2)
     assert isinstance(line, hv.Curve)
     
     # Test text plotting
-    text = backend.text(0, 0, "Test", color='black', text_font_size='12pt')
+    text = backend.text(0, 0, "Test", color='black', fontsize=12)
     assert isinstance(text, hv.Text)
     
     # Test polygon plotting
-    polygon = backend.polygon([(0,0), (1,0), (1,1), (0,1)], fill_color='green')
+    polygon = backend.polygon([(0,0), (1,0), (1,1), (0,1)], facecolor='green')
     assert isinstance(polygon, hv.Polygons)
 
 def test_holoviews_export(tmp_path):
@@ -88,7 +88,7 @@ def test_holoviews_export(tmp_path):
     backend.initialize()
     
     # Create a simple plot
-    backend.marker(0, 0, marker='o', size=10, color='red')
+    backend.marker(0, 0, marker='o', s=100, color='red')
     
     # Test PNG export
     png_file = tmp_path / "test.png"
