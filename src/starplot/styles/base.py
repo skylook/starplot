@@ -917,6 +917,23 @@ class LegendStyle(BaseStyle):
             facecolor=self.background_color.as_hex(),
         )
 
+    def holoviews_kwargs(self, scale: float = 1.0) -> dict:
+        """Convert legend style to HoloViews kwargs"""
+        style = {
+            'location': self.location,
+            'legend_cols': self.num_columns,
+            'legend_alpha': self.background_alpha,
+            'legend_font_size': self.font_size * scale,
+            'legend_text_color': self.font_color.as_hex(),
+            'legend_padding': self.border_padding,
+            'legend_spacing': self.label_padding,
+            'legend_handle_padding': self.symbol_padding,
+            'legend_mode': 'expand' if self.expand else None,
+            'legend_bgcolor': self.background_color.as_hex(),
+        }
+        
+        return style
+
 
 class PlotStyle(BaseStyle):
     """

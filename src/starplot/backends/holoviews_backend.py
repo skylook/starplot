@@ -36,7 +36,13 @@ class HoloViewsBackend(PlotBackend):
         x = [x] if isinstance(x, (int, float)) else x
         y = [y] if isinstance(y, (int, float)) else y
         
-        scatter = hv.Scatter([(x_, y_) for x_, y_ in zip(x, y)]).opts(**style)
+        # Handle label separately
+        label = style_kwargs.get('label')
+        if label:
+            scatter = hv.Scatter([(x_, y_) for x_, y_ in zip(x, y)], label=label).opts(**style)
+        else:
+            scatter = hv.Scatter([(x_, y_) for x_, y_ in zip(x, y)]).opts(**style)
+        
         self._add_element(scatter)
         return scatter
 
@@ -74,6 +80,10 @@ class HoloViewsBackend(PlotBackend):
         """Get the current figure object"""
         return self.overlay
 
+    def close(self):
+        """Close the current figure"""
+        self.overlay = hv.Overlay([])
+
     def _convert_style(self, style_kwargs: dict, obj_type: str = None) -> dict:
         """Convert style kwargs to HoloViews style options"""
         style = style_kwargs.copy()
@@ -84,7 +94,7 @@ class HoloViewsBackend(PlotBackend):
             'edge_line_dash', 'edge_line_width', 'closed', 'fontstyle',
             'fontname', 'fontfamily', 'fontweight', 'va', 'ha', 'xytext',
             'textcoords', 'path_effects', 'xycoords', 'z_index', 'fill_alpha',
-            'zorder'
+            'zorder', 'label'
         ]
         for opt in unsupported:
             style.pop(opt, None)
@@ -128,6 +138,36 @@ class HoloViewsBackend(PlotBackend):
             style['facecolor'] = style.pop('fill_color')
             
         return style
+
+    def legend(self, handles: list, **style_kwargs) -> Any:
+        """Create a legend"""
+        # Convert location to HoloViews format
+        if 'location' in style_kwargs:
+            location = style_kwargs.pop('location')
+            if location == 'outside_bottom':
+                style_kwargs['legend_position'] = 'bottom'
+            elif location == 'outside_top':
+                style_kwargs['legend_position'] = 'top'
+            elif location == 'inside_top':
+                style_kwargs['legend_position'] = 'top_center'
+            elif location == 'inside_top_left':
+                style_kwargs['legend_position'] = 'top_left'
+            elif location == 'inside_top_right':
+                style_kwargs['legend_position'] = 'top_right'
+            elif location == 'inside_bottom':
+                style_kwargs['legend_position'] = 'bottom_center'
+            elif location == 'inside_bottom_left':
+                style_kwargs['legend_position'] = 'bottom_left'
+            elif location == 'inside_bottom_right':
+                style_kwargs['legend_position'] = 'bottom_right'
+                
+        # Add legend to overlay
+        self.overlay = self.overlay.opts(
+            show_legend=True,
+            **style_kwargs
+        )
+        
+        return self.overlay
 
 # Register the HoloViews backend
 register_backend('holoviews', HoloViewsBackend) 

@@ -6,11 +6,9 @@ import logging
 
 import numpy as np
 import rtree
-from matplotlib import patches
-from matplotlib import pyplot as plt, patheffects
-from matplotlib.lines import Line2D
 from pytz import timezone
 from shapely import Polygon, Point
+from matplotlib import patheffects
 
 from starplot.coordinates import CoordinateSystem
 from starplot import geod, models, warnings
@@ -303,16 +301,12 @@ class BasePlot(ABC):
         return False
 
     def _add_legend_handle_marker(self, label: str, style: MarkerStyle):
+        """Add a marker to the legend"""
         if label is not None and label not in self._legend_handles:
-            s = style.matplot_kwargs()
-            s["markersize"] = self.style.legend.symbol_size * self.scale
-            self._legend_handles[label] = Line2D(
-                [],
-                [],
-                **s,
-                **self._plot_kwargs(),
-                linestyle="None",
-                label=label,
+            style_kwargs = style.holoviews_kwargs(self.scale)
+            style_kwargs['size'] = self.style.legend.symbol_size * self.scale
+            self._legend_handles[label] = self.backend.marker(
+                [], [], label=label, **style_kwargs
             )
 
     def _collision_score(self, label) -> int:
@@ -635,39 +629,16 @@ class BasePlot(ABC):
         if not self._legend_handles:
             return
 
-        bbox_kwargs = {}
-
-        if style.location == LegendLocationEnum.OUTSIDE_BOTTOM:
-            style.location = "lower center"
-            offset_y = -0.08
-            if getattr(self, "_axis_labels", False):
-                offset_y -= 0.05
-            bbox_kwargs = dict(
-                bbox_to_anchor=(0.5, offset_y),
-            )
-
-        elif style.location == LegendLocationEnum.OUTSIDE_TOP:
-            style.location = "upper center"
-            offset_y = 1.08
-            if getattr(self, "_axis_labels", False):
-                offset_y += 0.05
-            bbox_kwargs = dict(
-                bbox_to_anchor=(0.5, offset_y),
-            )
-
-        self._legend = self.ax.legend(
-            handles=self._legend_handles.values(),
-            **style.matplot_kwargs(self.scale),
-            **bbox_kwargs,
-        ).set_zorder(
-            # zorder is not a valid kwarg to legend(), so we have to set it afterwards
-            style.zorder
+        style_kwargs = style.holoviews_kwargs(self.scale)
+        self._legend = self.backend.legend(
+            handles=list(self._legend_handles.values()),
+            **style_kwargs
         )
 
     def close_fig(self) -> None:
-        """Closes the underlying matplotlib figure."""
-        if self.fig:
-            plt.close(self.fig)
+        """Closes the current figure."""
+        if self.backend:
+            self.backend.close()
 
     @profile
     def export(self, filename: str, format: str = "png", padding: float = 0, **kwargs):
