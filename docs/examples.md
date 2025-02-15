@@ -74,13 +74,13 @@
         </a>
     </li>
 
-    <li>
+    <!-- <li>
         <a href="/examples/map-comet-neowise/">
             <img src="/images/examples/map_comet_neowise-sm.png" alt="Map of Comet NEOWISE in 2020" class="off-glb" loading="lazy"/>
 
             <p class="example-card-title">Comet NEOWISE</p>
         </a>
-    </li>
+    </li> -->
 
     <li>
         <a href="/examples/map-sagittarius/">
@@ -119,6 +119,14 @@
             <img src="/images/examples/map_canis_major-sm.png" alt="Map of the Constellation Canis Major" class="off-glb" loading="lazy"/>
 
             <p class="example-card-title">Map of Canis Major</p>
+        </a>
+    </li>
+
+    <li>
+        <a href="/examples/horizon-double-cluster/">
+            <img src="/images/examples/horizon_double_cluster-sm.png" alt="Finding the Double Cluster in Perseus" class="off-glb" loading="lazy"/>
+
+            <p class="example-card-title">Finding the Double Cluster</p>
         </a>
     </li>
 
