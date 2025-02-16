@@ -1,11 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Mapping
 
 import pandas as pd
 
 from cartopy import crs as ccrs
 from matplotlib import pyplot as plt, patches, path
-from skyfield.api import wgs84, Star as SkyfieldStar
+from skyfield.api import wgs84, Star as SkyfieldStar, load
+from pytz import UTC
 
 from starplot.coordinates import CoordinateSystem
 from starplot import callables
@@ -77,18 +78,33 @@ class OpticPlot(BasePlot, ExtentMaskMixin, StarPlotterMixin, DsoPlotterMixin):
         *args,
         **kwargs,
     ) -> "OpticPlot":
+        # Check FOV before initializing base class
+        if optic.true_fov > self.FIELD_OF_VIEW_MAX:
+            raise ValueError(f"Field of View too big (max is {self.FIELD_OF_VIEW_MAX}°)")
+
+        # Check if target is below horizon
+        if raise_on_below_horizon:
+            ts = load.timescale()
+            t = ts.from_datetime(dt or datetime.now(UTC))
+            geographic = wgs84.latlon(latitude_degrees=lat, longitude_degrees=lon)
+            target = Star(ra_hours=ra/15, dec_degrees=dec)
+            topos = geographic.at(t)
+            astrometric = topos.observe(target)
+            alt, az, _ = astrometric.apparent().altaz()
+            if alt.degrees < 0:
+                raise ValueError("Target is below horizon at specified time/location.")
+
+        # Initialize base class
         super().__init__(
-            dt,
-            ephemeris,
-            style,
-            resolution,
-            hide_colliding_labels,
+            projection=None,  # Will be set in _init_plot
+            dt=dt,
+            backend="holoviews",
+            backend_kwargs=kwargs.get("backend_kwargs", {}),
             scale=scale,
             autoscale=autoscale,
             suppress_warnings=suppress_warnings,
-            *args,
-            **kwargs,
         )
+
         self.logger.debug("Creating OpticPlot...")
         self.ra = ra
         self.dec = dec
@@ -100,14 +116,12 @@ class OpticPlot(BasePlot, ExtentMaskMixin, StarPlotterMixin, DsoPlotterMixin):
         self._crs = ccrs.CRS(
             proj4_params=[
                 ("proj", "latlong"),
+                ("axis", "wnu"),  # invert
                 ("a", "6378137"),
             ],
             globe=ccrs.Globe(ellipse="sphere", flattening=0),
         )
-        if self.optic.true_fov > self.FIELD_OF_VIEW_MAX:
-            raise ValueError(
-                f"Field of View too big: {self.optic.true_fov} (max = {self.FIELD_OF_VIEW_MAX})"
-            )
+
         self._calc_position()
         self._adjust_radec_minmax()
         self._init_plot()

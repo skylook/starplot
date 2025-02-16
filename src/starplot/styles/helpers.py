@@ -3,21 +3,23 @@ import json
 from functools import wraps
 
 
-def merge_dict(dict_1: dict, dict_2: dict) -> None:
-    """
+def merge_dict(dict_1: dict, dict_2: dict) -> dict:
+    """Merge two dictionaries recursively.
 
     Args:
-        dict_1: Base dictionary to merge into
-        dict_2: Dictionary to merge into the base (dict_1)
+        dict_1: First dictionary
+        dict_2: Second dictionary to merge into the first
 
     Returns:
-        None (dict_1 is modified directly)
+        A new dictionary containing the merged contents of both dictionaries
     """
+    result = dict_1.copy()
     for k in dict_2.keys():
-        if k in dict_1 and isinstance(dict_1[k], dict) and isinstance(dict_2[k], dict):
-            merge_dict(dict_1[k], dict_2[k])
+        if k in result and isinstance(result[k], dict) and isinstance(dict_2[k], dict):
+            result[k] = merge_dict(result[k], dict_2[k])
         else:
-            dict_1[k] = dict_2[k]
+            result[k] = dict_2[k]
+    return result
 
 
 def use_style(style_class, style_attr: str = None):
