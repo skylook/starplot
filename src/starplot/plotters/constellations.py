@@ -94,10 +94,36 @@ class ConstellationPlotterMixin:
         else:
             transform = self._geodetic
 
-        style_kwargs = style.matplot_kwargs(self.scale)
-        constellation_points_to_index = []
-        lines = []
         constars = self._prepare_constellation_stars()
+
+        for constellation in constellations_df.itertuples():
+            con = constellation_from_tuple(constellation)
+            if not con.lines:
+                continue
+
+            for line in con.lines:
+                points = []
+                for hip in line:
+                    if hip not in constars:
+                        continue
+                    x, y = constars[hip]
+                    points.append((x, y))
+
+                if len(points) < 2:
+                    continue
+
+                # Create line plot using backend
+                x_coords = [p[0] for p in points]
+                y_coords = [p[1] for p in points]
+                
+                style_kwargs = {
+                    'color': style.color.as_hex() if style.color else 'black',
+                    'linewidth': style.width * self.scale if style.width else 1.0,
+                    'alpha': style.alpha if style.alpha else 1.0,
+                    'linestyle': style.style.as_holoviews() if hasattr(style.style, 'as_holoviews') else '-'
+                }
+
+                self._plot(x_coords, y_coords, **style_kwargs)
 
         for c in constellations_df.itertuples():
             hiplines = conlines.hips[c.iau_id]

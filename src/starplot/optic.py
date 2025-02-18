@@ -16,6 +16,7 @@ from starplot.mixins import ExtentMaskMixin
 from starplot.models import Star
 from starplot.optics import Optic
 from starplot.plotters import StarPlotterMixin, DsoPlotterMixin
+from starplot.projections import Projection
 from starplot.styles import (
     PlotStyle,
     ObjectStyle,
@@ -82,28 +83,28 @@ class OpticPlot(BasePlot, ExtentMaskMixin, StarPlotterMixin, DsoPlotterMixin):
         if optic.true_fov > self.FIELD_OF_VIEW_MAX:
             raise ValueError(f"Field of View too big (max is {self.FIELD_OF_VIEW_MAX}°)")
 
-        # Check if target is below horizon
-        if raise_on_below_horizon:
-            ts = load.timescale()
-            t = ts.from_datetime(dt or datetime.now(UTC))
-            geographic = wgs84.latlon(latitude_degrees=lat, longitude_degrees=lon)
-            target = Star(ra_hours=ra/15, dec_degrees=dec)
-            topos = geographic.at(t)
-            astrometric = topos.observe(target)
-            alt, az, _ = astrometric.apparent().altaz()
-            if alt.degrees < 0:
-                raise ValueError("Target is below horizon at specified time/location.")
-
-        # Initialize base class
+        # Initialize base class first to set up self.earth
         super().__init__(
-            projection=None,  # Will be set in _init_plot
+            projection=Projection.MERCATOR,  # 设置默认投影为 MERCATOR
             dt=dt,
             backend="holoviews",
             backend_kwargs=kwargs.get("backend_kwargs", {}),
             scale=scale,
             autoscale=autoscale,
-            suppress_warnings=suppress_warnings,
+            suppress_warnings=suppress_warnings
         )
+
+        # Check if target is below horizon
+        if raise_on_below_horizon:
+            ts = load.timescale()
+            t = ts.from_datetime(dt or datetime.now(UTC))
+            geographic = wgs84.latlon(latitude_degrees=lat, longitude_degrees=lon)
+            target = SkyfieldStar(ra_hours=ra/15, dec_degrees=dec)
+            topos = self.earth + geographic
+            astrometric = topos.at(t).observe(target)
+            alt, az, _ = astrometric.apparent().altaz()
+            if alt.degrees < 0:
+                raise ValueError("Target is below horizon at specified time/location.")
 
         self.logger.debug("Creating OpticPlot...")
         self.ra = ra
@@ -391,16 +392,18 @@ class OpticPlot(BasePlot, ExtentMaskMixin, StarPlotterMixin, DsoPlotterMixin):
             central_latitude=self.pos_alt.degrees,
         )
         self._proj.threshold = 1000
-        self.fig = plt.figure(
+        self.backend.initialize(
             figsize=(self.figure_size, self.figure_size),
             facecolor=self.style.figure_background_color.as_hex(),
             layout="constrained",
             dpi=DPI,
+            projection=self._proj
         )
-        self.ax = plt.axes(projection=self._proj)
+        self.fig = self.backend.get_figure()
+        self.ax = self.backend.ax
         self.ax.xaxis.set_visible(False)
         self.ax.yaxis.set_visible(False)
-        self.ax.axis("off")
+        self.backend.set_axis_off()
 
         self._fit_to_ax()
         self.ax.set_xlim(-1.06 * self.optic.xlim, 1.06 * self.optic.xlim)

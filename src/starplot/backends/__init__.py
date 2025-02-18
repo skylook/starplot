@@ -8,6 +8,41 @@ class PlotBackend(ABC):
         pass
 
     @abstractmethod
+    def set_xlim(self, xmin: float, xmax: float):
+        """Set x-axis limits"""
+        pass
+
+    @abstractmethod
+    def set_ylim(self, ymin: float, ymax: float):
+        """Set y-axis limits"""
+        pass
+
+    @abstractmethod
+    def set_xlabel(self, xlabel: str):
+        """Set x-axis label"""
+        pass
+
+    @abstractmethod
+    def set_ylabel(self, ylabel: str):
+        """Set y-axis label"""
+        pass
+
+    @abstractmethod
+    def set_title(self, title: str):
+        """Set plot title"""
+        pass
+
+    @abstractmethod
+    def set_facecolor(self, color: str):
+        """Set plot background color"""
+        pass
+
+    @abstractmethod
+    def set_aspect(self, aspect: Union[str, float]):
+        """Set plot aspect ratio"""
+        pass
+
+    @abstractmethod
     def plot(self, x, y, **style_kwargs) -> Any:
         """Create a line plot"""
         pass
@@ -47,4 +82,4 @@ def get_backend(name: str) -> Type[PlotBackend]:
     """Get a registered backend by name"""
     if name not in _registered_backends:
         raise ValueError(f"Backend {name} not found. Available backends: {list(_registered_backends.keys())}")
-    return _registered_backends[name] 
+    return _registered_backends[name]

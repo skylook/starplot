@@ -16,6 +16,13 @@ class StarPlotterMixin:
     def _load_stars(self, catalog, filters=None):
         extent = self._extent_mask()
 
+        # Add magnitude filter if provided in kwargs
+        if 'mag' in self.__dict__:
+            mag = self.__dict__['mag']
+            if filters is None:
+                filters = []
+            filters.append(lambda df: df['magnitude'] <= mag)
+
         return stars.load(
             extent=extent,
             catalog=catalog,
@@ -32,23 +39,39 @@ class StarPlotterMixin:
             else:
                 edge_colors = "none"
 
-        plotted = self.ax.scatter(
-            ras,
-            decs,
-            s=sizes,
-            c=colors,
-            marker=kwargs.pop("symbol", None) or style.marker.symbol_matplot,
-            zorder=kwargs.pop("zorder", None) or style.marker.zorder,
-            edgecolors=edge_colors,
-            alpha=alphas,
-            gid="stars",
-            **self._plot_kwargs(),
-            **kwargs,
-        )
+        style_kwargs = {
+            's': sizes,
+            'color': colors,
+            'marker': kwargs.pop("symbol", None) or style.marker.symbol_matplot,
+            'zorder': kwargs.pop("zorder", None) or style.marker.zorder,
+            'edgecolor': edge_colors,
+            'alpha': alphas,
+            'label': "stars"
+        }
 
-        if self._background_clip_path is not None:
-            plotted.set_clip_on(True)
-            plotted.set_clip_path(self._background_clip_path)
+        # Add any remaining kwargs
+        style_kwargs.update(kwargs)
+        style_kwargs.update(self._plot_kwargs())
+
+        # Create scatter plot using backend
+        if isinstance(ras, (list, tuple, np.ndarray)):
+            plotted = None
+            for i in range(len(ras)):
+                plotted = self.marker(
+                    ra=ras[i],
+                    dec=decs[i],
+                    style=style,
+                    skip_bounds_check=True,  # We've already checked bounds
+                    **{k: (v[i] if isinstance(v, (list, tuple, np.ndarray)) else v) for k, v in style_kwargs.items()}
+                )
+        else:
+            plotted = self.marker(
+                ra=ras,
+                dec=decs,
+                style=style,
+                skip_bounds_check=True,  # We've already checked bounds
+                **style_kwargs
+            )
 
         return plotted
 
@@ -168,29 +191,9 @@ class StarPlotterMixin:
         *args,
         **kwargs,
     ):
-        """
-        Plots stars
-
-        Labels for stars are determined in this order:
-
-        1. Return value from `label_fn`
-        2. Value for star's HIP id in `labels`
-        3. IAU-designated name, as listed in the [data reference](/data/star-designations/)
-
-        Args:
-            where: A list of expressions that determine which stars to plot. See [Selecting Objects](/reference-selecting-objects/) for details.
-            where_labels: A list of expressions that determine which stars are labeled on the plot (this includes all labels: name, Bayer, and Flamsteed). If you want to hide **all** labels, then set this arg to `[False]`. See [Selecting Objects](/reference-selecting-objects/) for details.
-            catalog: The catalog of stars to use: "big-sky-mag11", or "big-sky" -- see [star catalogs](/data/star-catalogs/) for details
-            style: If `None`, then the plot's style for stars will be used
-            size_fn: Callable for calculating the marker size of each star. If `None`, then the marker style's size will be used.
-            alpha_fn: Callable for calculating the alpha value (aka "opacity") of each star. If `None`, then the marker style's alpha will be used.
-            color_fn: Callable for calculating the color of each star. If `None`, then the marker style's color will be used.
-            label_fn: Callable for determining the label of each star. If `None`, then the names in the `labels` kwarg will be used.
-            labels: A dictionary that maps a star's HIP id to the label that'll be plotted for that star. If `None`, then the star's IAU-designated name will be used.
-            legend_label: Label for stars in the legend. If `None`, then they will not be in the legend.
-            bayer_labels: If True, then Bayer labels for stars will be plotted.
-            flamsteed_labels: If True, then Flamsteed number labels for stars will be plotted.
-        """
+        # Store mag parameter in instance for _load_stars to use
+        if 'mag' in kwargs:
+            self.__dict__['mag'] = kwargs['mag']
 
         # fallback to style if callables are None
         color_hex = (
@@ -241,8 +244,14 @@ class StarPlotterMixin:
         rtree_id = 1
 
         for star in stars_df.itertuples():
-            data_xy = self._proj.transform_point(star.x, star.y, self._crs)
-            display_x, display_y = self.ax.transData.transform(data_xy)
+            if hasattr(self.ax, 'transData'):
+                # For Matplotlib backend
+                data_xy = self._proj.transform_point(star.x, star.y, self._crs)
+                display_x, display_y = self.ax.transData.transform(data_xy)
+            else:
+                # For HoloViews backend
+                # We don't need to transform coordinates as HoloViews handles this internally
+                display_x, display_y = star.x, star.y
 
             if (
                 display_x < 0

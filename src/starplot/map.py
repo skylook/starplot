@@ -21,6 +21,7 @@ from starplot.plotters import (
     DsoPlotterMixin,
     MilkyWayPlotterMixin,
 )
+from starplot.plotters.base import BasePlotter
 from starplot.projections import Projection
 from starplot.styles import (
     ObjectStyle,
@@ -37,6 +38,7 @@ DEFAULT_MAP_STYLE = PlotStyle()  # .extend(extensions.MAP)
 
 class MapPlot(
     BasePlot,
+    BasePlotter,
     ExtentMaskMixin,
     StarPlotterMixin,
     DsoPlotterMixin,
@@ -98,6 +100,9 @@ class MapPlot(
         *args,
         **kwargs,
     ) -> "MapPlot":
+        # Initialize backend first to ensure proper setup
+        self._initialize_backend(backend_name=backend, **backend_kwargs if backend_kwargs else {})
+        
         super().__init__(
             projection=projection,
             ra_min=ra_min,
@@ -105,8 +110,6 @@ class MapPlot(
             dec_min=dec_min,
             dec_max=dec_max,
             dt=dt,
-            backend=backend,
-            backend_kwargs=backend_kwargs,
             scale=scale,
             autoscale=autoscale,
             suppress_warnings=suppress_warnings,
@@ -164,11 +167,16 @@ class MapPlot(
         Returns:
             True if the coordinate is in bounds, otherwise False
         """
-        # TODO : try using pyproj transformer directly
-        x, y = self._proj.transform_point(ra, dec, self._crs)
-        data_to_axes = self.ax.transData + self.ax.transAxes.inverted()
-        x_axes, y_axes = data_to_axes.transform((x, y))
-        return 0 <= x_axes <= 1 and 0 <= y_axes <= 1
+        if hasattr(self.ax, 'transData'):
+            # For Matplotlib backend
+            x, y = self._proj.transform_point(ra, dec, self._crs)
+            data_to_axes = self.ax.transData + self.ax.transAxes.inverted()
+            x_axes, y_axes = data_to_axes.transform((x, y))
+            return 0 <= x_axes <= 1 and 0 <= y_axes <= 1
+        else:
+            # For HoloViews backend
+            # Simply check if the point is within the specified RA/DEC bounds
+            return self.ra_min <= ra <= self.ra_max and self.dec_min <= dec <= self.dec_max
 
     def _in_bounds_xy(self, x: float, y: float) -> bool:
         return self.in_bounds(x, y)
@@ -186,6 +194,11 @@ class MapPlot(
         ]
 
     def _adjust_radec_minmax(self):
+        # For HoloViews backend, we don't need to adjust the extent
+        # as it's already handled by the backend's opts method
+        if not hasattr(self.ax, 'get_extent'):
+            return
+            
         # adjust declination to match extent
         extent = self.ax.get_extent(crs=self._plate_carree)
         self.dec_min = extent[2]
@@ -476,19 +489,18 @@ class MapPlot(
         )
 
     def _fit_to_ax(self) -> None:
-        bbox = self.ax.get_window_extent().transformed(
-            self.fig.dpi_scale_trans.inverted()
-        )
-        width, height = bbox.width, bbox.height
-        self.fig.set_size_inches(width, height)
+        if hasattr(self.ax, 'get_window_extent'):
+            bbox = self.ax.get_window_extent().transformed(
+                self.fig.dpi_scale_trans.inverted()
+            )
+            width, height = bbox.width, bbox.height
+            self.fig.set_size_inches(width, height)
+        else:
+            # For HoloViews backend, we don't need to adjust the figure size
+            # as it's handled by the backend's layout system
+            pass
 
     def _init_plot(self):
-        self.fig = plt.figure(
-            figsize=(self.figure_size, self.figure_size),
-            facecolor=self.style.figure_background_color.as_hex(),
-            layout="constrained",
-            dpi=DPI,
-        )
         bounds = self._latlon_bounds()
         center_lat = (bounds[2] + bounds[3]) / 2
         center_lon = (bounds[0] + bounds[1]) / 2
@@ -510,7 +522,16 @@ class MapPlot(
         else:
             self._proj = Projection.crs(self.projection, center_lon)
         self._proj.threshold = 1000
-        self.ax = plt.axes(projection=self._proj)
+        
+        self.backend.initialize(
+            figsize=(self.figure_size, self.figure_size),
+            facecolor=self.style.figure_background_color.as_hex(),
+            layout="constrained",
+            dpi=DPI,
+            projection=self._proj
+        )
+        self.fig = self.backend.get_figure()
+        self.ax = self.backend.ax
 
         if self._is_global_extent():
             if self.projection == Projection.ZENITH:
@@ -523,11 +544,31 @@ class MapPlot(
                 self.ax.set_boundary(circle, transform=self.ax.transAxes)
             else:
                 # this cartopy function works better for setting global extents
-                self.ax.set_global()
+                if hasattr(self.ax, 'set_global'):
+                    self.ax.set_global()
+                else:
+                    # For HoloViews backend
+                    self.ax.opts(
+                        xlim=(-180, 180),
+                        ylim=(-90, 90)
+                    )
         else:
-            self.ax.set_extent(bounds, crs=self._plate_carree)
+            if hasattr(self.ax, 'set_extent'):
+                self.ax.set_extent(bounds, crs=self._plate_carree)
+            else:
+                # For HoloViews backend
+                self.ax.opts(
+                    xlim=(bounds[0], bounds[1]),
+                    ylim=(bounds[2], bounds[3])
+                )
 
-        self.ax.set_facecolor(self.style.background_color.as_hex())
+        if hasattr(self.ax, 'set_facecolor'):
+            self.ax.set_facecolor(self.style.background_color.as_hex())
+        else:
+            # For HoloViews backend
+            self.ax.opts(
+                bgcolor=self.style.background_color.as_hex()
+            )
         self._adjust_radec_minmax()
 
         self.logger.debug(f"Projection = {self.projection.value.upper()}")
@@ -565,49 +606,52 @@ class MapPlot(
         return (x_ra + 360), y_ra
 
     def _plot_background_clip_path(self):
-        def to_axes(points):
-            ax_points = []
+        if hasattr(self.ax, 'transAxes'):
+            # For Matplotlib backend
+            def to_axes(points):
+                ax_points = []
+                for ra, dec in points:
+                    x, y = self._proj.transform_point(ra, dec, self._crs)
+                    data_to_axes = self.ax.transData + self.ax.transAxes.inverted()
+                    x_axes, y_axes = data_to_axes.transform((x, y))
+                    ax_points.append([x_axes, y_axes])
+                return ax_points
 
-            for ra, dec in points:
-                x, y = self._proj.transform_point(ra, dec, self._crs)
-                data_to_axes = self.ax.transData + self.ax.transAxes.inverted()
-                x_axes, y_axes = data_to_axes.transform((x, y))
-                ax_points.append([x_axes, y_axes])
-            return ax_points
-
-        if self.clip_path is not None:
-            points = list(zip(*self.clip_path.exterior.coords.xy))
-            self._background_clip_path = patches.Polygon(
-                to_axes(points),
-                facecolor=self.style.background_color.as_hex(),
-                fill=True,
-                zorder=-2_000,
-                transform=self.ax.transAxes,
-            )
-        elif self.projection == Projection.ZENITH:
-            self._background_clip_path = patches.Circle(
-                (0.50, 0.50),
-                radius=0.45,
-                fill=True,
-                facecolor=self.style.background_color.as_hex(),
-                # edgecolor=self.style.border_line_color.as_hex(),
-                linewidth=0,
-                zorder=-2_000,
-                transform=self.ax.transAxes,
-            )
+            if self.clip_path is not None:
+                points = list(zip(*self.clip_path.exterior.coords.xy))
+                self._background_clip_path = patches.Polygon(
+                    to_axes(points),
+                    facecolor=self.style.background_color.as_hex(),
+                    fill=True,
+                    zorder=-2_000,
+                    transform=self.ax.transAxes,
+                )
+            elif self.projection == Projection.ZENITH:
+                self._background_clip_path = patches.Circle(
+                    (0.50, 0.50),
+                    radius=0.45,
+                    fill=True,
+                    facecolor=self.style.background_color.as_hex(),
+                    linewidth=0,
+                    zorder=-2_000,
+                    transform=self.ax.transAxes,
+                )
+            else:
+                self._background_clip_path = patches.Rectangle(
+                    (0, 0),
+                    width=1,
+                    height=1,
+                    facecolor=self.style.background_color.as_hex(),
+                    linewidth=0,
+                    fill=True,
+                    zorder=-2_000,
+                    transform=self.ax.transAxes,
+                )
+            self.ax.add_patch(self._background_clip_path)
+            self._update_clip_path_polygon()
         else:
-            # draw patch in axes coords, which are easier to work with
-            # in cases like this cause they go from 0...1 in all plots
-            self._background_clip_path = patches.Rectangle(
-                (0, 0),
-                width=1,
-                height=1,
-                facecolor=self.style.background_color.as_hex(),
-                linewidth=0,
-                fill=True,
-                zorder=-2_000,
-                transform=self.ax.transAxes,
+            # For HoloViews backend
+            self._background_clip_path = None
+            self.ax.opts(
+                bgcolor=self.style.background_color.as_hex()
             )
-
-        self.ax.add_patch(self._background_clip_path)
-        self._update_clip_path_polygon()

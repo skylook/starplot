@@ -445,16 +445,18 @@ class HorizonPlot(
             central_latitude=0,
         )
         self._proj.threshold = 100
-        self.fig = plt.figure(
+        self.backend.initialize(
             figsize=(self.figure_size, self.figure_size),
             facecolor=self.style.figure_background_color.as_hex(),
             layout="constrained",
             dpi=DPI,
+            projection=self._proj
         )
-        self.ax = plt.axes(projection=self._proj)
+        self.fig = self.backend.get_figure()
+        self.ax = self.backend.ax
         self.ax.xaxis.set_visible(False)
         self.ax.yaxis.set_visible(False)
-        self.ax.axis("off")
+        self.backend.set_axis_off()
 
         bounds = [
             self.az[0],

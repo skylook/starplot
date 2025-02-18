@@ -33,7 +33,16 @@ class MilkyWayPlotterMixin:
             polygons = [mw_union]
 
         for p in polygons:
-            self.polygon(
-                geometry=p,
-                style=style,
-            )
+            # Convert polygon to list of points
+            coords = list(zip(*p.exterior.coords.xy))
+            
+            # Create polygon using backend
+            style_kwargs = {
+                'facecolor': style.fill_color.as_hex() if style.fill_color else None,
+                'edgecolor': style.edge_color.as_hex() if style.edge_color else None,
+                'linewidth': style.edge_width * self.scale if style.edge_width else 1.0,
+                'alpha': style.alpha if style.alpha else 1.0,
+                'linestyle': style.line_style.as_holoviews() if hasattr(style.line_style, 'as_holoviews') else '-'
+            }
+            
+            self._polygon(coords, **style_kwargs)

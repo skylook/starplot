@@ -92,9 +92,15 @@ class BasePlot(ABC):
 
         # Initialize backend
         self.backend_name = backend
-        backend_kwargs = backend_kwargs or {}
-        self.backend = get_backend(backend)()
-        self.backend.initialize(**backend_kwargs)
+        if not hasattr(self, 'backend'):
+            backend_kwargs = backend_kwargs or {}
+            backend_class = get_backend(backend)
+            self.backend = backend_class()
+            # Ensure backend parameter is passed correctly
+            if 'backend' in backend_kwargs:
+                self.backend.initialize(backend=backend_kwargs['backend'], **{k: v for k, v in backend_kwargs.items() if k != 'backend'})
+            else:
+                self.backend.initialize(**backend_kwargs)
 
         px = 1 / DPI  # plt.rcParams["figure.dpi"]  # pixel in inches
         self.pixels_per_point = DPI / 72
@@ -126,7 +132,7 @@ class BasePlot(ABC):
         self._legend = None
         self._legend_handles = {}
 
-        self.log_level = logging.DEBUG if backend_kwargs.get("debug") else logging.ERROR
+        self.log_level = logging.DEBUG if backend_kwargs and backend_kwargs.get("debug") else logging.ERROR
         self.logger = LOGGER
         self.logger.setLevel(self.log_level)
 
@@ -167,13 +173,19 @@ class BasePlot(ABC):
         return len(ix) > 0
 
     def _is_clipped(self, points) -> bool:
-        p = self._clip_path_polygon
-
-        for x, y in points:
-            if not p.contains(Point(x, y)):
-                return True
-
-        return False
+        if self._clip_path_polygon is None:
+            # For HoloViews backend
+            # Simply check if the point is within the specified bounds
+            for x, y in points:
+                if not (self.ra_min <= x <= self.ra_max and self.dec_min <= y <= self.dec_max):
+                    return True
+            return False
+        else:
+            # For Matplotlib backend
+            for x, y in points:
+                if not self._clip_path_polygon.contains(Point(x, y)):
+                    return True
+            return False
 
     def _add_label_to_rtree(self, label, extent=None):
         extent = extent or label.get_window_extent(
@@ -375,6 +387,12 @@ class BasePlot(ABC):
         style_kwargs = kwargs.copy()
         style_kwargs.pop('clip_on', None)
         style_kwargs.pop('clip_path', None)
+        
+        # Handle label style
+        if 'style' in kwargs:
+            label_style = kwargs['style'].label if hasattr(kwargs['style'], 'label') else None
+            if label_style:
+                style_kwargs.update(label_style.holoviews_kwargs(self.scale))
         
         label = self.backend.text(
             x,
@@ -665,8 +683,8 @@ class BasePlot(ABC):
         self,
         ra: float,
         dec: float,
-        style: Union[dict, ObjectStyle],
-        label: Optional[str] = None,
+        style: ObjectStyle = None,
+        label: str = None,
         legend_label: str = None,
         skip_bounds_check: bool = False,
         **kwargs,
@@ -684,10 +702,13 @@ class BasePlot(ABC):
         if not skip_bounds_check and not self.in_bounds(ra, dec):
             return
 
+        # Use default style if none provided
+        style = style or self.style.star
+
         # Plot marker
         x, y = self._prepare_coords(ra, dec)
         style_kwargs = style.marker.holoviews_kwargs(self.scale)
-        
+
         marker = self.backend.marker(
             x,
             y,
@@ -699,31 +720,30 @@ class BasePlot(ABC):
         )
 
         # Add to spatial index
-        data_xy = self._proj.transform_point(x, y, self._crs)
-        display_x, display_y = self.ax.transData.transform(data_xy)
-        if display_x > 0 and display_y > 0:
-            radius = style_kwargs.get('size', 1) ** 0.5 / 5
-            bbox = np.array(
-                (
-                    display_x - radius,
-                    display_y - radius,
-                    display_x + radius,
-                    display_y + radius,
-                )
+        # Use estimated display coordinates for spatial index
+        # This is an approximation since we don't have access to exact display coordinates
+        radius = style_kwargs.get('size', 1) ** 0.5 / 5
+        bbox = np.array(
+            (
+                x - radius,
+                y - radius,
+                x + radius,
+                y + radius,
             )
-            self._markers_rtree.insert(0, bbox, None)
+        )
+        self._markers_rtree.insert(0, bbox, None)
 
         # Plot label
         if label:
-            label_style = style.label
+            label_style = style.label if style else self.style.label
             if label_style.offset_x == "auto" or label_style.offset_y == "auto":
                 marker_size = ((style.marker.size / self.scale) ** 2) * (
                     self.scale**2
                 )
 
                 label_style = label_style.offset_from_marker(
-                    marker_symbol=style.marker.symbol,
-                    marker_size=marker_size,
+                    marker_symbol=style.marker.symbol if style else self.style.star.marker.symbol,
+                    marker_size=style.marker.size if style else self.style.star.marker.size,
                     scale=self.scale,
                 )
             self.text(
@@ -732,7 +752,7 @@ class BasePlot(ABC):
                 dec,
                 label_style,
                 hide_on_collision=self.hide_colliding_labels,
-                gid=kwargs.get("gid_label") or "marker-label",
+                gid=kwargs.get("gid_label") or "label",
             )
 
         if legend_label is not None:
@@ -793,63 +813,37 @@ class BasePlot(ABC):
                 )
 
     @use_style(ObjectStyle, "sun")
-    def sun(
-        self,
-        style: ObjectStyle = None,
-        true_size: bool = False,
-        label: str = "Sun",
-        legend_label: str = "Sun",
-    ) -> None:
-        """
-        Plots the Sun.
-
-        If you specified a lat/lon when creating the plot (e.g. for perspective projections or optic plots), then the Sun's _apparent_ RA/DEC will be calculated.
+    def sun(self, style: ObjectStyle = None, label: str = None, legend_label: str = "Sun"):
+        """Plots the Sun
 
         Args:
-            style: Styling of the Sun. If None, then the plot's style (specified when creating the plot) will be used
-            true_size: If True, then the Sun's true apparent size in the sky will be plotted as a circle (the marker style's symbol will be ignored). If False, then the style's marker size will be used.
-            label: How the Sun will be labeled on the plot
-            legend_label: How the sun will be labeled in the legend
+            style: Style of the Sun marker. If None, then the plot's style definition will be used.
+            label: Label for the Sun
+            legend_label: Label in the legend
         """
-        s = models.Sun.get(
-            dt=self.dt, lat=self.lat, lon=self.lon, ephemeris=self._ephemeris_name
+        if not self.dt:
+            raise ValueError("dt is required for plotting the Sun")
+
+        sun = self.ephemeris["sun"]
+        earth = self.ephemeris["earth"]
+        astrometric = earth.at(self.timescale).observe(sun)
+        ra, dec, _ = astrometric.apparent().radec()
+
+        self._objects.sun = models.Sun.get(
+            dt=self.dt,
+            lat=self.lat if hasattr(self, 'lat') else None,
+            lon=self.lon if hasattr(self, 'lon') else None,
+            ephemeris=self._ephemeris_name
         )
-        s.name = label or s.name
 
-        if not self.in_bounds(s.ra, s.dec):
-            return
-
-        self._objects.sun = s
-
-        if true_size:
-            polygon_style = style.marker.to_polygon_style()
-
-            # hide the edge because it can interfere with the true size
-            polygon_style.edge_color = None
-
-            self.circle(
-                (s.ra, s.dec),
-                s.apparent_size,
-                style=polygon_style,
-                gid="sun-marker",
-            )
-
-            style.marker.symbol = MarkerSymbolEnum.CIRCLE
-            self._add_legend_handle_marker(legend_label, style.marker)
-
-            if label:
-                self.text(label, s.ra, s.dec, style.label, gid="sun-label")
-
-        else:
-            self.marker(
-                ra=s.ra,
-                dec=s.dec,
-                style=style,
-                label=label,
-                legend_label=legend_label,
-                gid_marker="sun-marker",
-                gid_label="sun-label",
-            )
+        self.marker(
+            ra=ra.hours * 15,
+            dec=dec.degrees,
+            style=style,
+            label=label,
+            legend_label=legend_label,
+            **style.marker.matplot_kwargs(self.scale) if style else self.style.star.marker.matplot_kwargs(self.scale)
+        )
 
     @abstractmethod
     def in_bounds(self, ra: float, dec: float) -> bool:
