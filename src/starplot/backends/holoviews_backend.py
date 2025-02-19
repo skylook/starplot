@@ -17,12 +17,15 @@ class HoloViewsBackend(PlotBackend):
     def initialize(self, backend: str = "matplotlib", dpi: int = 100, scale: float = 1.0, **kwargs):
         """Initialize the HoloViews backend with the specified rendering backend"""
         # Handle backend parameter from kwargs first
-        if 'backend' in kwargs:
+        if 'backend_kwargs' in kwargs and 'backend' in kwargs['backend_kwargs']:
+            backend = kwargs['backend_kwargs']['backend']
+        elif 'backend' in kwargs:
             backend = kwargs.pop('backend')
 
         # Initialize HoloViews with the specified backend
+        backend = backend.lower()  # Ensure backend name is lowercase
         hv.extension(backend)
-        self.backend = backend.lower()  # Ensure backend name is lowercase
+        self.backend = backend
         self.overlay = hv.Overlay([])
         self.dpi = dpi
         self.scale = scale

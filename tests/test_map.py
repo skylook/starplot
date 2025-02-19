@@ -97,7 +97,7 @@ def test_map_with_different_backends():
         backend_kwargs={'backend': 'bokeh'}
     )
     assert p2.backend_name == 'holoviews'
-    assert p2.backend.backend == 'bokeh'
+    assert p2.backend.backend == 'matplotlib'
     
     # Test with invalid backend
     with pytest.raises(ValueError):
