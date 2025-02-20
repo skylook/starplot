@@ -83,3 +83,6 @@ def get_backend(name: str) -> Type[PlotBackend]:
     if name not in _registered_backends:
         raise ValueError(f"Backend {name} not found. Available backends: {list(_registered_backends.keys())}")
     return _registered_backends[name]
+
+# Import and register available backends
+from .holoviews_backend import HoloViewsBackend
