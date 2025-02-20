@@ -1221,7 +1221,7 @@ class PlotStyle(BaseStyle):
 
     class Config:
         validate_assignment = True
-        extra = "forbid"  # 不允许额外的字段
+        extra = "allow"  # 允许额外的字段以支持样式扩展
 
     def extend(self, extension: dict) -> "PlotStyle":
         """Extend the current style with additional settings from a dictionary.
