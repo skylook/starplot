@@ -163,3 +163,4 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+star_chart_plotly.html

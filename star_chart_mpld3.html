@@ -1,0 +1,21 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Star Chart</title>
+    <script src="https://d3js.org/d3.v5.min.js"></script>
+    <script src="https://mpld3.github.io/js/mpld3.v0.5.10.js"></script>
+</head>
+<body>
+    <div id="figure"></div>
+    <script>
+        fetch('star_chart_data.json')
+            .then(response => response.json())
+            .then(data => {
+                mpld3.draw_figure('figure', data);
+            })
+            .catch(error => console.error('Error loading the chart data:', error));
+    </script>
+</body>
+</html>

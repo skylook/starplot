@@ -1,0 +1,76 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Detailed Star Chart</title>
+    <script src="https://d3js.org/d3.v5.min.js"></script>
+    <script src="https://mpld3.github.io/js/mpld3.v0.5.10.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #ffffff;
+            font-family: Arial, sans-serif;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            color: #ffd700;
+        }
+        .chart-container {
+            background: rgba(0, 0, 0, 0.5);
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+        }
+        #figure {
+            width: 100%;
+            height: 100%;
+        }
+        .description {
+            margin-top: 20px;
+            text-align: center;
+            font-style: italic;
+            color: #cccccc;
+        }
+        .comparison {
+            margin-top: 30px;
+            text-align: center;
+        }
+        .comparison a {
+            color: #ffd700;
+            text-decoration: none;
+        }
+        .comparison a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Interactive Detailed Star Chart</h1>
+        <div class="chart-container">
+            <div id="figure"></div>
+        </div>
+        <div class="description">
+            Interactive star chart showing celestial objects and constellations
+        </div>
+        <div class="comparison">
+            <a href="star_chart_detail.png" target="_blank">View Static PNG Version</a>
+        </div>
+    </div>
+    <script>
+        fetch('star_chart_detail_data.json')
+            .then(response => response.json())
+            .then(data => {
+                mpld3.draw_figure('figure', data);
+            })
+            .catch(error => console.error('Error loading the chart data:', error));
+    </script>
+</body>
+</html>
