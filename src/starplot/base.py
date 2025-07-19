@@ -334,15 +334,59 @@ class BasePlot(ABC):
         return sum([x_labels, x_constellations, x_stars]) / 3
 
     def _text(self, x, y, text, **kwargs):
-        label = self.ax.annotate(
-            text,
-            (x, y),
-            **kwargs,
-            **self._plot_kwargs(),
-        )
-        if kwargs.get("clip_on"):
-            label.set_clip_on(True)
-            label.set_clip_path(self._background_clip_path)
+        # Use backend system if available, otherwise fallback to matplotlib
+        if hasattr(self, '_backend') and self._backend:
+            # Ensure matplotlib backend has figure and axes set  
+            if self._backend_name == 'matplotlib' and (not hasattr(self._backend, 'ax') or self._backend.ax is None):
+                if hasattr(self, 'ax') and self.ax is not None:
+                    self._backend.ax = self.ax
+                    self._backend.figure = self.ax.figure
+                elif hasattr(self, 'fig') and self.fig is not None:
+                    self._backend.set_figure(self.fig)
+            # Extract parameters for backend compatibility
+            fontsize = kwargs.get('fontsize', 12)
+            color = kwargs.get('color', 'black')
+            ha = kwargs.get('ha', 'center')
+            va = kwargs.get('va', 'center')
+            
+            label = self._backend.add_text(
+                x, y, text,
+                fontsize=fontsize,
+                color=color,
+                ha=ha,
+                va=va
+            )
+            # For non-matplotlib backends, return a mock object for compatibility
+            if self._backend_name != 'matplotlib':
+                class MockLabel:
+                    def get_window_extent(self, renderer=None):
+                        # Return a simple mock extent for collision detection
+                        return type('MockExtent', (), {
+                            'x0': x - 10, 'y0': y - 5, 
+                            'x1': x + 10, 'y1': y + 5,
+                            'width': 20, 'height': 10
+                        })()
+                    def remove(self):
+                        # Mock remove method for compatibility
+                        pass
+                    def set_clip_on(self, b):
+                        # Mock set_clip_on method
+                        pass
+                    def set_clip_path(self, path):
+                        # Mock set_clip_path method  
+                        pass
+                label = MockLabel()
+        else:
+            # Fallback to original matplotlib implementation
+            label = self.ax.annotate(
+                text,
+                (x, y),
+                **kwargs,
+                **self._plot_kwargs(),
+            )
+            if kwargs.get("clip_on"):
+                label.set_clip_on(True)
+                label.set_clip_path(self._background_clip_path)
         return label
 
     def _text_point(
@@ -630,14 +674,21 @@ class BasePlot(ABC):
 
         """
         self.logger.debug("Exporting...")
-        self.fig.savefig(
-            filename,
-            format=format,
-            bbox_inches="tight",
-            pad_inches=padding,
-            dpi=144,  # (self.resolution / self.figure_size * 1.28),
-            **kwargs,
-        )
+        
+        # Use backend-specific export if available
+        if hasattr(self, '_backend') and self._backend:
+            # Backend-specific export
+            self._backend.export(filename, dpi=144, format=format, padding=padding, **kwargs)
+        else:
+            # Fallback to matplotlib export
+            self.fig.savefig(
+                filename,
+                format=format,
+                bbox_inches="tight",
+                pad_inches=padding,
+                dpi=144,  # (self.resolution / self.figure_size * 1.28),
+                **kwargs,
+            )
 
     @use_style(ObjectStyle)
     def marker(

@@ -32,23 +32,55 @@ class StarPlotterMixin:
             else:
                 edge_colors = "none"
 
-        plotted = self.ax.scatter(
-            ras,
-            decs,
-            s=sizes,
-            c=colors,
-            marker=kwargs.pop("symbol", None) or style.marker.symbol_matplot,
-            zorder=kwargs.pop("zorder", None) or style.marker.zorder,
-            edgecolors=edge_colors,
-            alpha=alphas,
-            gid="stars",
-            **self._plot_kwargs(),
-            **kwargs,
-        )
+        # Use backend system if available, otherwise fallback to matplotlib
+        if hasattr(self, '_backend') and self._backend:
+            # Ensure matplotlib backend has figure and axes set
+            if self._backend_name == 'matplotlib' and (not hasattr(self._backend, 'ax') or self._backend.ax is None):
+                if hasattr(self, 'ax') and self.ax is not None:
+                    self._backend.ax = self.ax
+                    self._backend.figure = self.ax.figure
+                elif hasattr(self, 'fig') and self.fig is not None:
+                    self._backend.set_figure(self.fig)
+            
+            # Convert numpy arrays to regular arrays for backend compatibility
+            x_array = np.asarray(ras)
+            y_array = np.asarray(decs)
+            sizes_array = np.asarray(sizes) if sizes is not None else None
+            colors_array = colors if isinstance(colors, str) else np.asarray(colors)
+            alphas_array = np.asarray(alphas) if alphas is not None else None
+            
+            # Convert matplotlib marker to backend-compatible symbol
+            symbol = kwargs.pop("symbol", None) or style.marker.symbol_matplot
+            
+            plotted = self._backend.scatter(
+                x_array,
+                y_array,
+                sizes=sizes_array,
+                colors=colors_array,
+                alpha=alphas_array,
+                marker=symbol,
+                edgecolors=edge_colors,
+                **kwargs
+            )
+        else:
+            # Fallback to original matplotlib implementation
+            plotted = self.ax.scatter(
+                ras,
+                decs,
+                s=sizes,
+                c=colors,
+                marker=kwargs.pop("symbol", None) or style.marker.symbol_matplot,
+                zorder=kwargs.pop("zorder", None) or style.marker.zorder,
+                edgecolors=edge_colors,
+                alpha=alphas,
+                gid="stars",
+                **self._plot_kwargs(),
+                **kwargs,
+            )
 
-        if self._background_clip_path is not None:
-            plotted.set_clip_on(True)
-            plotted.set_clip_path(self._background_clip_path)
+            if self._background_clip_path is not None:
+                plotted.set_clip_on(True)
+                plotted.set_clip_path(self._background_clip_path)
 
         return plotted
 

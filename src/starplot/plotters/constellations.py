@@ -158,18 +158,49 @@ class ConstellationPlotterMixin:
                 obj = constellation_from_tuple(c)
                 self._objects.constellations.append(obj)
 
-        style_kwargs = style.matplot_line_collection_kwargs(self.scale)
+        # Use backend system if available, otherwise fallback to matplotlib
+        if hasattr(self, '_backend') and self._backend:
+            # Ensure matplotlib backend has figure and axes set
+            if self._backend_name == 'matplotlib' and (not hasattr(self._backend, 'ax') or self._backend.ax is None):
+                if hasattr(self, 'ax') and self.ax is not None:
+                    self._backend.ax = self.ax
+                    self._backend.figure = self.ax.figure
+                elif hasattr(self, 'fig') and self.fig is not None:
+                    self._backend.set_figure(self.fig)
+            # Plot lines using the backend system
+            for line_coords in lines:
+                if len(line_coords) >= 2:
+                    x_coords = [point[0] for point in line_coords]
+                    y_coords = [point[1] for point in line_coords]
+                    
+                    # Extract line style parameters for backend
+                    color = getattr(style, 'color', 'blue')
+                    if hasattr(color, 'as_hex'):
+                        color = color.as_hex()
+                    linewidth = getattr(style, 'width', 1.0)
+                    linestyle = getattr(style, 'style', '-')
+                    
+                    self._backend.plot_lines(
+                        np.array(x_coords),
+                        np.array(y_coords),
+                        color=color,
+                        linewidth=linewidth,
+                        linestyle=linestyle
+                    )
+        else:
+            # Fallback to original matplotlib implementation
+            style_kwargs = style.matplot_line_collection_kwargs(self.scale)
 
-        line_collection = LineCollection(
-            lines,
-            **style_kwargs,
-            transform=transform,
-            clip_on=True,
-            clip_path=self._background_clip_path,
-            gid="constellations-line",
-        )
+            line_collection = LineCollection(
+                lines,
+                **style_kwargs,
+                transform=transform,
+                clip_on=True,
+                clip_path=self._background_clip_path,
+                gid="constellations-line",
+            )
 
-        self.ax.add_collection(line_collection)
+            self.ax.add_collection(line_collection)
 
         if self._constellations_rtree.get_size() == 0:
             self._constellations_rtree = rtree.index.Index(

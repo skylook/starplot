@@ -15,6 +15,7 @@ from starplot.coordinates import CoordinateSystem
 from starplot import geod
 from starplot.base import BasePlot, DPI
 from starplot.mixins import ExtentMaskMixin
+from starplot.backends.factory import BackendFactory
 from starplot.plotters import (
     ConstellationPlotterMixin,
     StarPlotterMixin,
@@ -65,6 +66,8 @@ class MapPlot(
         scale: Scaling factor that will be applied to all sizes in styles (e.g. font size, marker size, line widths, etc). For example, if you want to make everything 2x bigger, then set the scale to 2. At `scale=1` and `resolution=4096` (the default), all sizes are optimized visually for a map that covers 1-3 constellations. So, if you're creating a plot of a _larger_ extent, then it'd probably be good to decrease the scale (i.e. make everything smaller) -- and _increase_ the scale if you're plotting a very small area.
         autoscale: If True, then the scale will be set automatically based on resolution.
         suppress_warnings: If True (the default), then all warnings will be suppressed
+        backend: Plotting backend to use ('matplotlib' or 'plotly'). Default is 'matplotlib'.
+        backend_kwargs: Additional keyword arguments to pass to the backend constructor
 
     Returns:
         MapPlot: A new instance of a MapPlot
@@ -91,6 +94,8 @@ class MapPlot(
         scale: float = 1.0,
         autoscale: bool = False,
         suppress_warnings: bool = True,
+        backend: str = "matplotlib",
+        backend_kwargs: dict = None,
         *args,
         **kwargs,
     ) -> "MapPlot":
@@ -149,6 +154,20 @@ class MapPlot(
             globe=ccrs.Globe(ellipse="sphere", flattening=0),
         )
         self._init_plot()
+
+        # Initialize backend
+        self._backend_name = backend
+        backend_kwargs = backend_kwargs or {}
+        
+        from starplot.backends import BackendFactory
+        self._backend = BackendFactory.create(self._backend_name, **backend_kwargs)
+        
+        # Set figure for backends
+        if self._backend_name == 'matplotlib' and hasattr(self._backend, 'set_figure'):
+            self._backend.set_figure(self.fig)
+        elif self._backend_name == 'plotly':
+            # Create plotly figure
+            self._backend.create_figure(self.resolution, self.resolution)
 
     def _plot_kwargs(self) -> dict:
         return dict(transform=self._crs)
@@ -611,3 +630,8 @@ class MapPlot(
 
         self.ax.add_patch(self._background_clip_path)
         self._update_clip_path_polygon()
+
+    def export(self, filename: str, format: str = "png", padding: float = 0, **kwargs):
+        """Export the map to a file using the appropriate backend"""
+        # Use the base class export method which handles backend routing
+        super().export(filename, format=format, padding=padding, **kwargs)
