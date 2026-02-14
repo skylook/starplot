@@ -362,7 +362,92 @@ class RecordingMixin:
             pass
 
     # ------------------------------------------------------------------
-    # Method 8: Gradient background
+    # Method 8: Horizon (ZenithPlot circular border and compass labels)
+    # ------------------------------------------------------------------
+
+    def horizon(self, style=None, labels=None):
+        """Override horizon() to record the circular border and compass labels."""
+        super().horizon(style=style, labels=labels)
+        try:
+            from starplot.styles import PathStyle
+            resolved_style = style or self.style.horizon
+            
+            # Record circular border
+            # In matplotlib, horizon() draws a Circle patch at (0.5, 0.5) with radius 0.454
+            # in axes coordinates. We need to convert this to data coordinates.
+            xlim = self.ax.get_xlim()
+            ylim = self.ax.get_ylim()
+            center_x = (xlim[0] + xlim[1]) / 2
+            center_y = (ylim[0] + ylim[1]) / 2
+            radius = (xlim[1] - xlim[0]) / 2 * 0.454 / 0.5  # Scale from axes to data coords
+            
+            # Generate circle points
+            import numpy as np
+            theta = np.linspace(0, 2 * np.pi, 100)
+            circle_x = center_x + radius * np.cos(theta)
+            circle_y = center_y + radius * np.sin(theta)
+            
+            self._recorder.record_line(
+                x=list(circle_x),
+                y=list(circle_y),
+                style_dict={
+                    "color": resolved_style.line.color.as_hex(),
+                    "width": resolved_style.line.width,
+                    "line_style": str(resolved_style.line.style),
+                    "alpha": resolved_style.line.alpha,
+                },
+                gid="horizon-circle",
+                zorder=resolved_style.line.zorder,
+            )
+            
+            # Record compass labels (N, E, S, W)
+            if labels is None:
+                labels = ["N", "E", "S", "W"]
+            if labels:
+                from starplot.data.translations import translate
+                labels = [translate(label, self.language) for label in labels]
+                
+                # Convert axes coordinates to data coordinates
+                # North: (0.5, 0.95), East: (0.045, 0.5), South: (0.5, 0.045), West: (0.954, 0.5)
+                label_ax_coords = [
+                    (0.5, 0.95),   # north
+                    (0.045, 0.5),  # east
+                    (0.5, 0.045),  # south
+                    (0.954, 0.5),  # west
+                ]
+                
+                for label, (ax_x, ax_y) in zip(labels, label_ax_coords):
+                    # Convert from axes coordinates to data coordinates
+                    data_x = xlim[0] + (xlim[1] - xlim[0]) * ax_x
+                    data_y = ylim[0] + (ylim[1] - ylim[0]) * ax_y
+                    
+                    # Convert Color objects to hex strings for Plotly
+                    font_color = resolved_style.label.font_color
+                    if hasattr(font_color, 'as_hex'):
+                        font_color = font_color.as_hex()
+                    elif not isinstance(font_color, str):
+                        font_color = str(font_color)
+                    
+                    self._recorder.record_text(
+                        text=str(label),
+                        x=data_x,
+                        y=data_y,
+                        style_dict={
+                            "font_size": resolved_style.label.font_size,
+                            "font_color": font_color,
+                            "font_weight": resolved_style.label.font_weight,
+                            "font_style": resolved_style.label.font_style,
+                            "alpha": resolved_style.label.font_alpha,
+                        },
+                        gid="compass-label",
+                        zorder=resolved_style.label.zorder,
+                    )
+        except Exception as e:
+            # Silently fail if horizon() is not available (e.g., MapPlot)
+            pass
+
+    # ------------------------------------------------------------------
+    # Method 9: Gradient background
     # ------------------------------------------------------------------
 
     def _plot_gradient_background(self, gradient_preset):

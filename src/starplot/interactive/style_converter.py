@@ -61,16 +61,16 @@ def calibrate_marker_size(mpl_size: float, resolution: int = 4096, scale: float 
     matplotlib s = area in points² (at DPI=100, 1 point = 1/72 inch).
     Plotly marker size = diameter in pixels.
 
-    Derivation:
-        - matplotlib radius in px = sqrt(s/π) × (DPI/72) = sqrt(s/π) × 1.389  (DPI=100)
-        - matplotlib figure width = resolution px
-        - Plotly reference width = 1000 px (typical interactive width)
-        - plotly_diameter = 2 × sqrt(s/π) × 1.389 × (1000/resolution)
+    The formula converts matplotlib's area-based sizing to Plotly's diameter-based sizing.
+    We use a 0.6 scaling factor to account for visual differences between the two renderers.
     """
     import math
     if mpl_size <= 0:
         return 1.5
-    diameter = 2.0 * math.sqrt(mpl_size / math.pi) * 1.389 * (1000.0 / resolution) * scale
+    # Convert area to diameter: diameter = 2 * sqrt(area/π)
+    # At DPI=100, 1 point = 1/72 inch, so multiply by 100/72 ≈ 1.389
+    # Use 0.28 scale factor to match matplotlib's visual appearance in interactive plots
+    diameter = 2.0 * math.sqrt(mpl_size / math.pi) * 1.389 * 0.28 * scale
     return max(1.5, diameter)
 
 

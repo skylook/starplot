@@ -95,6 +95,11 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Debug and temporary files
+debug/
+comparison_side_by_side.png
+star_chart_basic_html_screenshot.png
+
 # Unit test / coverage reports
 htmlcov/
 .tox/

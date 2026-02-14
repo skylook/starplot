@@ -1,0 +1,279 @@
+{
+  "testModules": [
+    {
+      "moduleId": "tests/test_interactive/test_commands.py",
+      "tests": [
+        {
+          "name": "test_drawing_command_creation",
+          "fullName": "tests/test_interactive/test_commands.py::test_drawing_command_creation",
+          "state": "passed"
+        },
+        {
+          "name": "test_drawing_command_defaults",
+          "fullName": "tests/test_interactive/test_commands.py::test_drawing_command_defaults",
+          "state": "passed"
+        },
+        {
+          "name": "test_drawing_command_kinds",
+          "fullName": "tests/test_interactive/test_commands.py::test_drawing_command_kinds",
+          "state": "passed"
+        },
+        {
+          "name": "test_drawing_command_metadata",
+          "fullName": "tests/test_interactive/test_commands.py::test_drawing_command_metadata",
+          "state": "passed"
+        },
+        {
+          "name": "test_drawing_command_zorder",
+          "fullName": "tests/test_interactive/test_commands.py::test_drawing_command_zorder",
+          "state": "passed"
+        },
+        {
+          "name": "test_drawing_command_polygon",
+          "fullName": "tests/test_interactive/test_commands.py::test_drawing_command_polygon",
+          "state": "passed"
+        },
+        {
+          "name": "test_drawing_command_text",
+          "fullName": "tests/test_interactive/test_commands.py::test_drawing_command_text",
+          "state": "passed"
+        },
+        {
+          "name": "test_drawing_command_line_collection",
+          "fullName": "tests/test_interactive/test_commands.py::test_drawing_command_line_collection",
+          "state": "passed"
+        }
+      ]
+    },
+    {
+      "moduleId": "tests/test_interactive/test_interactive_plots.py",
+      "tests": [
+        {
+          "name": "test_interactive_map_plot_imports",
+          "fullName": "tests/test_interactive/test_interactive_plots.py::test_interactive_map_plot_imports",
+          "state": "passed"
+        },
+        {
+          "name": "test_interactive_map_plot_creates",
+          "fullName": "tests/test_interactive/test_interactive_plots.py::test_interactive_map_plot_creates",
+          "state": "passed"
+        },
+        {
+          "name": "test_recorder_initialized",
+          "fullName": "tests/test_interactive/test_interactive_plots.py::test_recorder_initialized",
+          "state": "passed"
+        },
+        {
+          "name": "test_stars_records_scatter",
+          "fullName": "tests/test_interactive/test_interactive_plots.py::test_stars_records_scatter",
+          "state": "passed"
+        },
+        {
+          "name": "test_stars_metadata",
+          "fullName": "tests/test_interactive/test_interactive_plots.py::test_stars_metadata",
+          "state": "passed"
+        },
+        {
+          "name": "test_constellations_records_line_collection",
+          "fullName": "tests/test_interactive/test_interactive_plots.py::test_constellations_records_line_collection",
+          "state": "passed"
+        },
+        {
+          "name": "test_to_plotly_returns_figure",
+          "fullName": "tests/test_interactive/test_interactive_plots.py::test_to_plotly_returns_figure",
+          "state": "passed"
+        },
+        {
+          "name": "test_export_html_creates_file",
+          "fullName": "tests/test_interactive/test_interactive_plots.py::test_export_html_creates_file",
+          "state": "passed"
+        },
+        {
+          "name": "test_matplotlib_output_unchanged",
+          "fullName": "tests/test_interactive/test_interactive_plots.py::test_matplotlib_output_unchanged",
+          "state": "passed"
+        },
+        {
+          "name": "test_stars_count_matches_recorded",
+          "fullName": "tests/test_interactive/test_interactive_plots.py::test_stars_count_matches_recorded",
+          "state": "passed"
+        },
+        {
+          "name": "test_style_info_recorded",
+          "fullName": "tests/test_interactive/test_interactive_plots.py::test_style_info_recorded",
+          "state": "passed"
+        },
+        {
+          "name": "test_ecliptic_records_line",
+          "fullName": "tests/test_interactive/test_interactive_plots.py::test_ecliptic_records_line",
+          "state": "passed"
+        },
+        {
+          "name": "test_celestial_equator_records_line",
+          "fullName": "tests/test_interactive/test_interactive_plots.py::test_celestial_equator_records_line",
+          "state": "passed"
+        },
+        {
+          "name": "test_text_labels_recorded",
+          "fullName": "tests/test_interactive/test_interactive_plots.py::test_text_labels_recorded",
+          "state": "passed"
+        }
+      ]
+    },
+    {
+      "moduleId": "tests/test_interactive/test_plotly_renderer.py",
+      "tests": [
+        {
+          "name": "test_renderer_creates_figure",
+          "fullName": "tests/test_interactive/test_plotly_renderer.py::test_renderer_creates_figure",
+          "state": "passed"
+        },
+        {
+          "name": "test_renderer_layout_background",
+          "fullName": "tests/test_interactive/test_plotly_renderer.py::test_renderer_layout_background",
+          "state": "passed"
+        },
+        {
+          "name": "test_renderer_scatter_trace",
+          "fullName": "tests/test_interactive/test_plotly_renderer.py::test_renderer_scatter_trace",
+          "state": "passed"
+        },
+        {
+          "name": "test_renderer_line_collection",
+          "fullName": "tests/test_interactive/test_plotly_renderer.py::test_renderer_line_collection",
+          "state": "passed"
+        },
+        {
+          "name": "test_renderer_polygon",
+          "fullName": "tests/test_interactive/test_plotly_renderer.py::test_renderer_polygon",
+          "state": "passed"
+        },
+        {
+          "name": "test_renderer_polygon_no_fill",
+          "fullName": "tests/test_interactive/test_plotly_renderer.py::test_renderer_polygon_no_fill",
+          "state": "passed"
+        },
+        {
+          "name": "test_renderer_text_annotation",
+          "fullName": "tests/test_interactive/test_plotly_renderer.py::test_renderer_text_annotation",
+          "state": "passed"
+        },
+        {
+          "name": "test_renderer_line",
+          "fullName": "tests/test_interactive/test_plotly_renderer.py::test_renderer_line",
+          "state": "passed"
+        },
+        {
+          "name": "test_renderer_zorder_sorting",
+          "fullName": "tests/test_interactive/test_plotly_renderer.py::test_renderer_zorder_sorting",
+          "state": "passed"
+        },
+        {
+          "name": "test_renderer_legend_dedup",
+          "fullName": "tests/test_interactive/test_plotly_renderer.py::test_renderer_legend_dedup",
+          "state": "passed"
+        },
+        {
+          "name": "test_renderer_gradient_skipped",
+          "fullName": "tests/test_interactive/test_plotly_renderer.py::test_renderer_gradient_skipped",
+          "state": "passed"
+        },
+        {
+          "name": "test_renderer_hover_star_text",
+          "fullName": "tests/test_interactive/test_plotly_renderer.py::test_renderer_hover_star_text",
+          "state": "passed"
+        }
+      ]
+    },
+    {
+      "moduleId": "tests/test_interactive/test_recorder.py",
+      "tests": [
+        {
+          "name": "test_recorder_initial_state",
+          "fullName": "tests/test_interactive/test_recorder.py::test_recorder_initial_state",
+          "state": "passed"
+        },
+        {
+          "name": "test_recorder_records_scatter",
+          "fullName": "tests/test_interactive/test_recorder.py::test_recorder_records_scatter",
+          "state": "passed"
+        },
+        {
+          "name": "test_recorder_records_scatter_with_single_color",
+          "fullName": "tests/test_interactive/test_recorder.py::test_recorder_records_scatter_with_single_color",
+          "state": "passed"
+        },
+        {
+          "name": "test_recorder_records_line",
+          "fullName": "tests/test_interactive/test_recorder.py::test_recorder_records_line",
+          "state": "passed"
+        },
+        {
+          "name": "test_recorder_records_polygon",
+          "fullName": "tests/test_interactive/test_recorder.py::test_recorder_records_polygon",
+          "state": "passed"
+        },
+        {
+          "name": "test_recorder_records_text",
+          "fullName": "tests/test_interactive/test_recorder.py::test_recorder_records_text",
+          "state": "passed"
+        },
+        {
+          "name": "test_recorder_records_line_collection",
+          "fullName": "tests/test_interactive/test_recorder.py::test_recorder_records_line_collection",
+          "state": "passed"
+        },
+        {
+          "name": "test_recorder_records_gradient",
+          "fullName": "tests/test_interactive/test_recorder.py::test_recorder_records_gradient",
+          "state": "passed"
+        },
+        {
+          "name": "test_recorder_clear",
+          "fullName": "tests/test_interactive/test_recorder.py::test_recorder_clear",
+          "state": "passed"
+        },
+        {
+          "name": "test_recorder_multiple_commands",
+          "fullName": "tests/test_interactive/test_recorder.py::test_recorder_multiple_commands",
+          "state": "passed"
+        }
+      ]
+    },
+    {
+      "moduleId": "tests/test_interactive/test_visual_consistency.py",
+      "tests": [
+        {
+          "name": "test_star_count_consistency",
+          "fullName": "tests/test_interactive/test_visual_consistency.py::test_star_count_consistency",
+          "state": "passed"
+        },
+        {
+          "name": "test_constellation_line_count_consistency",
+          "fullName": "tests/test_interactive/test_visual_consistency.py::test_constellation_line_count_consistency",
+          "state": "passed"
+        },
+        {
+          "name": "test_star_coordinates_are_finite",
+          "fullName": "tests/test_interactive/test_visual_consistency.py::test_star_coordinates_are_finite",
+          "state": "passed"
+        },
+        {
+          "name": "test_constellation_line_coordinates_are_finite",
+          "fullName": "tests/test_interactive/test_visual_consistency.py::test_constellation_line_coordinates_are_finite",
+          "state": "passed"
+        },
+        {
+          "name": "test_plotly_figure_has_traces",
+          "fullName": "tests/test_interactive/test_visual_consistency.py::test_plotly_figure_has_traces",
+          "state": "passed"
+        },
+        {
+          "name": "test_plotly_figure_axes_configured",
+          "fullName": "tests/test_interactive/test_visual_consistency.py::test_plotly_figure_axes_configured",
+          "state": "passed"
+        }
+      ]
+    }
+  ]
+}
