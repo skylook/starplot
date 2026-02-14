@@ -39,6 +39,9 @@ dependencies = [
     "astropy-healpix >= 1.1.2"
 ]
 
+[project.optional-dependencies]
+interactive = ["plotly>=5.0", "kaleido>=0.2"]
+
 [project.urls]
 Home = "https://starplot.dev"
 Documentation = "https://starplot.dev"
