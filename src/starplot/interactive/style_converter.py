@@ -58,19 +58,34 @@ ANCHOR_MAP = {
 def calibrate_marker_size(mpl_size: float, resolution: int = 4096, scale: float = 1.0) -> float:
     """Convert matplotlib scatter s parameter (points²) to Plotly marker size (px).
 
-    matplotlib s = area in points² (at DPI=100, 1 point = 1/72 inch).
-    Plotly marker size = diameter in pixels.
-
-    The formula converts matplotlib's area-based sizing to Plotly's diameter-based sizing.
-    We use a 0.6 scaling factor to account for visual differences between the two renderers.
+    Theoretical derivation:
+    1. matplotlib renders at DPI=200, creating a figure of (resolution*2) × (resolution*2) pixels
+    2. This is then scaled down to resolution × resolution for export
+    3. Plotly renders in a 1000×1000 viewport by default
+    
+    Complete formula:
+    - Convert area to diameter: d = 2 * sqrt(s / π) points
+    - Convert points to pixels: d_px = d * (DPI / 72) = d * (200 / 72) = d * 2.778
+    - Scale to target resolution: d_scaled = d_px * (resolution / (resolution*2)) = d_px * 0.5
+    - Scale to Plotly viewport: d_final = d_scaled * (1000 / resolution)
+    
+    Combined: d_final = 2 * sqrt(s / π) * 2.778 * 0.5 * (1000 / resolution)
+             = 2 * sqrt(s / π) * 1.389 * (1000 / resolution)
+    
+    For resolution=3600: factor = 1.389 * (1000/3600) = 0.3858
     """
     import math
     if mpl_size <= 0:
         return 1.5
-    # Convert area to diameter: diameter = 2 * sqrt(area/π)
-    # At DPI=100, 1 point = 1/72 inch, so multiply by 100/72 ≈ 1.389
-    # Use 0.28 scale factor to match matplotlib's visual appearance in interactive plots
-    diameter = 2.0 * math.sqrt(mpl_size / math.pi) * 1.389 * 0.28 * scale
+    
+    # Theoretical formula derived from rendering pipeline analysis
+    # DPI conversion: 200/72 = 2.778, but after scaling: 2.778 * 0.5 = 1.389
+    # Viewport scaling: 1000 / resolution (default Plotly viewport is 1000x1000)
+    # Rendering correction: 0.70 factor to match PNG appearance
+    # Final factor: 1.389 * 0.70 = 0.972 (for resolution=3600: 0.270)
+    plotly_viewport = 1000.0
+    rendering_correction = 0.70  # Adjusted based on visual comparison with PNG
+    diameter = 2.0 * math.sqrt(mpl_size / math.pi) * 1.389 * rendering_correction * (plotly_viewport / resolution) * scale
     return max(1.5, diameter)
 
 

@@ -32,6 +32,8 @@ class _InteractiveMixin:
             width: Chart width in pixels (default depends on plot type).
             height: Chart height in pixels (default depends on plot type).
             **kwargs: Passed to ``plotly.io.write_html``.
+                     By default, uses CDN for Plotly.js to reduce file size.
+                     Set include_plotlyjs=True to embed the full library.
         """
         fig = self.to_plotly()
         if width or height:
@@ -39,6 +41,10 @@ class _InteractiveMixin:
                 width=width or fig.layout.width,
                 height=height or fig.layout.height,
             )
+        # Use CDN by default to reduce file size from ~5MB to ~200KB
+        # Users can override with include_plotlyjs=True if needed
+        if 'include_plotlyjs' not in kwargs:
+            kwargs['include_plotlyjs'] = 'cdn'
         fig.write_html(filename, **kwargs)
 
     def to_plotly(self):

@@ -171,3 +171,7 @@ dmypy.json
 # Pyre type checker
 .pyre/
 .worktrees/
+star_chart_basic.html
+star_chart_basic.png
+star_chart_detail.html
+star_chart_detail.png
