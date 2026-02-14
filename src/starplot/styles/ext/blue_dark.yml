@@ -45,7 +45,6 @@ constellation_lines:
 constellation_labels:
   font_alpha: 0.37
   font_color: hsl(209, 23%, 80%)
-  font_weight: light
 constellation_borders:
   width: 2
   color: hsl(209, 50%, 74%)
@@ -105,7 +104,6 @@ dso_unknown: &DSO
     edge_color: hsl(209, 50%, 20%)
     zorder: -500
 dso_dark_nebula: *DSO
-dso_hii_ionized_region: *DSO
 dso_supernova_remnant: *DSO
 dso_nova_star: *DSO
 dso_nonexistant: *DSO
@@ -144,7 +142,6 @@ moon:
 star:
   label:
     font_color: hsl(209, 23%, 84%)
-    font_weight: bold
   marker:
     color: hsl(209, 50%, 94%)
     edge_color: hsl(209, 50%, 24%)
@@ -152,7 +149,6 @@ sun:
   label:
     font_color: hsl(209, 23%, 80%)
     font_size: 9
-    font_weight: bold
   marker:
     color: hsl(209, 50%, 94%)
     edge_color: hsl(209, 50%, 94%)

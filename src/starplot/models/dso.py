@@ -1,11 +1,15 @@
+from dataclasses import dataclass
 from typing import Optional, Iterator
 from enum import Enum
 
 from ibis import _
+import pyarrow as pa
+from shapely import Polygon, MultiPolygon
 
+from starplot.data.utils import to_pandas
+from starplot.data.catalogs import Catalog, OPEN_NGC
 from starplot.data.dsos import load
-from starplot.mixins import CreateMapMixin, CreateOpticMixin
-from starplot.models.base import SkyObject, ShapelyPolygon, ShapelyMultiPolygon
+from starplot.models.base import SkyObject, CatalogObject
 
 
 class DsoType(str, Enum):
@@ -77,17 +81,28 @@ class DsoType(str, Enum):
     """Duplicate record of another object"""
 
 
-class DSO(SkyObject, CreateMapMixin, CreateOpticMixin):
+@dataclass(slots=True, kw_only=True)
+class DSO(CatalogObject, SkyObject):
     """
     Deep Sky Object (DSO) model. An instance of this model is passed to any [callables](/reference-callables) you define when plotting DSOs.
     So, you can use any attributes of this model in your callables. Note that some may be null.
     """
 
-    name: str
+    geometry: Polygon | MultiPolygon
+    """Shapely Polygon of the DSO's extent. Right ascension coordinates are in degrees (0...360)."""
+
+    name: str = None
     """Name of the DSO (as specified in OpenNGC)"""
 
-    type: DsoType
+    type: DsoType = DsoType.UNKNOWN
     """Type of DSO"""
+
+    common_names: list[str] = None
+    """
+    List of common names for the DSO (e.g. 'Andromeda Galaxy' for M31)
+    
+    Note: this field is parsed into a list of strings _after_ querying DSOs, so if you want to query on this field, you should treat it as a comma-separated list.
+    """
 
     magnitude: Optional[float] = None
     """Magnitude (if available)"""
@@ -119,21 +134,47 @@ class DSO(SkyObject, CreateMapMixin, CreateOpticMixin):
     Index Catalogue (IC) identifier. *Note that this field is a string, to support objects like '4974 NED01'.*
     """
 
-    geometry: ShapelyPolygon | ShapelyMultiPolygon = None
-    """Shapely Polygon of the DSO's extent. Right ascension coordinates are in degrees (0...360)."""
+    @classmethod
+    def _pyarrow_schema(cls):
+        base_schema = super(DSO, cls)._pyarrow_schema()
+        dso_fields = [
+            pa.field("pk", pa.int64(), nullable=False),
+            pa.field("geometry", pa.binary(), nullable=False),
+            pa.field("name", pa.string()),
+            pa.field("type", pa.string()),
+            pa.field("common_names", pa.string()),
+            pa.field("magnitude", pa.float64()),
+            pa.field("maj_ax", pa.float64()),
+            pa.field("min_ax", pa.float64()),
+            pa.field("angle", pa.float64()),
+            pa.field("size", pa.float64()),
+            pa.field("m", pa.string()),
+            pa.field("ngc", pa.string()),
+            pa.field("ic", pa.string()),
+        ]
+        return pa.schema(list(base_schema) + dso_fields)
 
     def __repr__(self) -> str:
         return f"DSO(name={self.name}, magnitude={self.magnitude})"
 
     @classmethod
-    def all(cls) -> Iterator["DSO"]:
-        df = load().to_pandas()
+    def all(cls, catalog: Catalog = OPEN_NGC) -> Iterator["DSO"]:
+        """
+        Get all DSOs from a catalog
+
+        Args:
+            catalog: Catalog you want to get DSO objects from
+
+        Returns:
+            Iterator of DSO instances
+        """
+        df = to_pandas(load(catalog=catalog))
 
         for d in df.itertuples():
             yield from_tuple(d)
 
     @classmethod
-    def get(cls, sql: str = None, **kwargs) -> "DSO":
+    def get(cls, catalog: Catalog = OPEN_NGC, sql: str = None, **kwargs) -> "DSO":
         """
         Get a DSO, by matching its attributes.
 
@@ -142,6 +183,7 @@ class DSO(SkyObject, CreateMapMixin, CreateOpticMixin):
             d = DSO.get(m=13)
 
         Args:
+            catalog: Catalog you want to search
             sql: SQL query for selecting DSO (table name is "_")
             **kwargs: Attributes on the DSO you want to match
 
@@ -152,7 +194,7 @@ class DSO(SkyObject, CreateMapMixin, CreateOpticMixin):
         for k, v in kwargs.items():
             filters.append(getattr(_, k) == v)
 
-        df = load(filters=filters, sql=sql).to_pandas()
+        df = to_pandas(load(catalog=catalog, filters=filters, sql=sql))
 
         results = [from_tuple(d) for d in df.itertuples()]
 
@@ -167,11 +209,14 @@ class DSO(SkyObject, CreateMapMixin, CreateOpticMixin):
         return None
 
     @classmethod
-    def find(cls, where: list = None, sql: str = None) -> list["DSO"]:
+    def find(
+        cls, catalog: Catalog = OPEN_NGC, where: list = None, sql: str = None
+    ) -> list["DSO"]:
         """
         Find DSOs
 
         Args:
+            catalog: Catalog you want to search
             where: A list of expressions that determine which DSOs to find. See [Selecting Objects](/reference-selecting-objects/) for details.
             sql: SQL query for selecting DSOs (table name is "_")
 
@@ -179,29 +224,40 @@ class DSO(SkyObject, CreateMapMixin, CreateOpticMixin):
             List of DSOs that match all `where` expressions
 
         """
-        df = load(filters=where, sql=sql).to_pandas()
+        df = to_pandas(load(catalog=catalog, filters=where, sql=sql))
         return [from_tuple(d) for d in df.itertuples()]
+
+    @classmethod
+    def get_label(cls, dso) -> str:
+        """
+        Default function for determining the plotted label for a DSO.
+
+        Returns:
+
+        1. `"M13"` if DSO is a Messier object
+        2. `"6456"` if DSO is an NGC object
+        3. `"IC1920"` if DSO is an IC object
+        4. Empty string otherwise
+
+        """
+        if dso.m:
+            return f"M{dso.m}"
+
+        if dso.ngc:
+            return f"{dso.ngc}"
+
+        if dso.ic:
+            return f"IC{dso.ic}"
+
+        return ""
 
 
 def from_tuple(d: tuple) -> DSO:
-    dso = DSO(
-        name=d.name,
-        ra=d.ra,
-        dec=d.dec,
-        type=d.type,
-        maj_ax=d.maj_ax,
-        min_ax=d.min_ax,
-        angle=d.angle,
-        magnitude=d.magnitude,
-        size=d.size,
-        m=d.m,
-        ngc=d.ngc,
-        ic=d.ic,
-        geometry=d.geometry,
-    )
-    dso._constellation_id = d.constellation_id
-    dso._row_id = getattr(d, "rowid", None)
-    return dso
+    kwargs = {f: getattr(d, f) for f in DSO._fields() if hasattr(d, f)}
+    if "common_names" in kwargs and kwargs["common_names"] is not None:
+        kwargs["common_names"] = kwargs["common_names"].split(",")
+
+    return DSO(**kwargs)
 
 
 ONGC_TYPE = {
@@ -243,10 +299,11 @@ DSO_LEGEND_LABELS = {
     DsoType.GROUP_OF_GALAXIES: "Galaxy",
     # Nebulas ----------
     DsoType.NEBULA: "Nebula",
-    DsoType.PLANETARY_NEBULA: "Nebula",
+    DsoType.PLANETARY_NEBULA: "Planetary Nebula",
     DsoType.EMISSION_NEBULA: "Nebula",
     DsoType.STAR_CLUSTER_NEBULA: "Nebula",
     DsoType.REFLECTION_NEBULA: "Nebula",
+    DsoType.HII_IONIZED_REGION: "Nebula",
     # Star Clusters ----------
     DsoType.OPEN_CLUSTER: "Open Cluster",
     DsoType.GLOBULAR_CLUSTER: "Globular Cluster",
@@ -255,7 +312,6 @@ DSO_LEGEND_LABELS = {
     DsoType.ASSOCIATION_OF_STARS: "Association of stars",
     DsoType.NOVA_STAR: "Nova Star",
     # Others
-    DsoType.HII_IONIZED_REGION: "HII Ionized Region",
     DsoType.DARK_NEBULA: "Dark Nebula",
     DsoType.SUPERNOVA_REMNANT: "Supernova Remnant",
 }

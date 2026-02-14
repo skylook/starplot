@@ -2,7 +2,7 @@ import json
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Union, List
+from typing import Optional, Union
 
 import yaml
 
@@ -47,6 +47,21 @@ class BaseStyle(BaseModel):
         use_enum_values = True
         validate_assignment = True
 
+    def __enter__(self):
+        self._original = self.model_copy(deep=True)
+        return self
+
+    def __exit__(self, exception_type, exception_value, traceback):
+        for field_name in self.__pydantic_fields__.keys():
+            original_value = getattr(self._original, field_name)
+            setattr(self, field_name, original_value)
+
+
+class GradientDirection(str, Enum):
+    LINEAR = "linear"
+    RADIAL = "radial"
+    MOLLWEIDE = "mollweide"
+
 
 class FillStyleEnum(str, Enum):
     """Constants that represent the possible fill styles for markers."""
@@ -70,15 +85,32 @@ class FillStyleEnum(str, Enum):
     """Do not fill the marker. It'll still have an edge, but the inside will be transparent."""
 
 
-class FontWeightEnum(str, Enum):
+class FontWeightEnum(int, Enum):
     """Options for font weight."""
 
-    NORMAL = "normal"
-    BOLD = "bold"
-    HEAVY = "heavy"
-    LIGHT = "light"
-    ULTRA_BOLD = "ultrabold"
-    ULTRA_LIGHT = "ultralight"
+    THIN = 100
+    EXTRA_LIGHT = 200
+    # LIGHT = 300   # matplotlib's font dict doesn't have 300?
+    NORMAL = 400
+    MEDIUM = 500
+    SEMI_BOLD = 600
+    BOLD = 700
+    EXTRA_BOLD = 800
+    HEAVY = 900
+
+    def as_matplot(self) -> str:
+        """Returns the font weight as a matplotlib string, which avoids a bug with integer font weights and rendering text as elements in SVG."""
+        return {
+            FontWeightEnum.THIN: "ultralight",
+            FontWeightEnum.EXTRA_LIGHT: "light",  # matplotlib maps 'light' to 200, which is really extra light
+            # FontWeightEnum.LIGHT: "light",
+            FontWeightEnum.NORMAL: "normal",
+            FontWeightEnum.MEDIUM: "medium",
+            FontWeightEnum.SEMI_BOLD: "semibold",
+            FontWeightEnum.BOLD: "bold",
+            FontWeightEnum.EXTRA_BOLD: "extra bold",
+            FontWeightEnum.HEAVY: "black",
+        }[self.value]
 
 
 class FontStyleEnum(str, Enum):
@@ -182,9 +214,15 @@ class LineStyleEnum(str, Enum):
     DOTTED = "dotted"
 
 
-class DashCapStyleEnum(str, Enum):
+class CapStyleEnum(str, Enum):
     BUTT = "butt"
     PROJECTING = "projecting"
+    ROUND = "round"
+
+
+class JoinStyleEnum(str, Enum):
+    MITRE = "mitre"
+    BEVEL = "bevel"
     ROUND = "round"
 
 
@@ -197,8 +235,14 @@ class LegendLocationEnum(str, Enum):
     INSIDE_BOTTOM = "lower center"
     INSIDE_BOTTOM_RIGHT = "lower right"
     INSIDE_BOTTOM_LEFT = "lower left"
-    OUTSIDE_TOP = "outside upper center"
-    OUTSIDE_BOTTOM = "outside lower center"
+
+    # OUTSIDE_TOP = "outside upper center"
+    # OUTSIDE_BOTTOM = "outside lower center"
+
+    OUTSIDE_TOP_LEFT = "outside left upper"
+    OUTSIDE_TOP_RIGHT = "outside right upper"
+    OUTSIDE_BOTTOM_RIGHT = "outside right lower"
+    OUTSIDE_BOTTOM_LEFT = "outside left lower"
 
 
 class AnchorPointEnum(str, Enum):
@@ -253,6 +297,14 @@ class AnchorPointEnum(str, Enum):
         return options.get(value)
 
 
+class AlignmentEnum(str, Enum):
+    """Alignment options for the legend's title and entries"""
+
+    LEFT = "left"
+    RIGHT = "right"
+    CENTER = "center"
+
+
 class ZOrderEnum(int, Enum):
     """
     Z Order presets for managing layers
@@ -289,7 +341,7 @@ class MarkerStyle(BaseStyle):
     line_style: Union[LineStyleEnum, tuple] = LineStyleEnum.SOLID
     """Edge line style. Can be a predefined value in `LineStyleEnum` or a [Matplotlib linestyle tuple](https://matplotlib.org/stable/gallery/lines_bars_and_markers/linestyles.html)."""
 
-    dash_capstyle: DashCapStyleEnum = DashCapStyleEnum.PROJECTING
+    dash_capstyle: CapStyleEnum = CapStyleEnum.PROJECTING
     """Style of dash endpoints"""
 
     symbol: MarkerSymbolEnum = MarkerSymbolEnum.POINT
@@ -364,7 +416,7 @@ class LineStyle(BaseStyle):
     style: Union[LineStyleEnum, tuple] = LineStyleEnum.SOLID
     """Style of the line (e.g. solid, dashed, etc). Can be a predefined value in `LineStyleEnum` or a [Matplotlib linestyle tuple](https://matplotlib.org/stable/gallery/lines_bars_and_markers/linestyles.html)."""
 
-    dash_capstyle: DashCapStyleEnum = DashCapStyleEnum.PROJECTING
+    dash_capstyle: CapStyleEnum = CapStyleEnum.PROJECTING
     """Style of dash endpoints"""
 
     alpha: float = 1.0
@@ -466,6 +518,34 @@ class PolygonStyle(BaseStyle):
         )
 
 
+class ArrowStyle(PolygonStyle):
+    body_width: float = 24
+    """Width of the arrow's body, in pixels"""
+
+    head_width: float = 60
+    """Width of the arrow's head, in pixels"""
+
+    head_height: float = 100
+    """Height of the arrow's head, in pixels"""
+
+    cap_style: CapStyleEnum = CapStyleEnum.BUTT
+    """Cap style of the arrow"""
+
+    join_style: JoinStyleEnum = JoinStyleEnum.MITRE
+    """Join style of the arrow"""
+
+    def shapely_kwargs(self):
+        cap_styles = {
+            CapStyleEnum.BUTT: "flat",
+            CapStyleEnum.ROUND: "round",
+            CapStyleEnum.PROJECTING: "square",
+        }
+        return {
+            "cap_style": cap_styles[self.cap_style],
+            "join_style": self.join_style,
+        }
+
+
 class LabelStyle(BaseStyle):
     """
     Styling properties for a label.
@@ -532,7 +612,7 @@ class LabelStyle(BaseStyle):
             fontsize=self.font_size * scale,
             fontstyle=self.font_style,
             fontname=self.font_name,
-            weight=self.font_weight,
+            weight=FontWeightEnum(self.font_weight).as_matplot(),
             alpha=self.font_alpha,
             zorder=self.zorder,
         )
@@ -555,6 +635,8 @@ class LabelStyle(BaseStyle):
         return style
 
     def offset_from_marker(self, marker_symbol, marker_size, scale: float = 1.0):
+        """Handles auto offsets from marker"""
+
         if self.offset_x != "auto" or self.offset_y != "auto":
             return self
 
@@ -574,8 +656,7 @@ class LabelStyle(BaseStyle):
             offset /= SQR_2
             offset *= scale
 
-        offset += 1.1
-
+        offset += 0.65
         new_style.offset_x = offset * float(x_direction)
         new_style.offset_y = offset * float(y_direction)
 
@@ -605,7 +686,10 @@ class PathStyle(BaseStyle):
 class LegendStyle(BaseStyle):
     """Defines the style for the map legend. *Only applies to map plots.*"""
 
-    location: LegendLocationEnum = LegendLocationEnum.OUTSIDE_BOTTOM
+    alignment: AlignmentEnum = AlignmentEnum.LEFT
+    """Alignment for the legend's title and entries"""
+
+    location: LegendLocationEnum = LegendLocationEnum.INSIDE_BOTTOM_RIGHT
     """Location of the legend, relative to the map area (inside or outside)"""
 
     background_color: ColorStr = ColorStr("#fff")
@@ -613,6 +697,15 @@ class LegendStyle(BaseStyle):
 
     background_alpha: float = 1.0
     """Background's alpha (transparency)"""
+
+    padding: float = 0
+    """Padding on the outside of the legend. Negative numbers are supported."""
+
+    padding_x: float = 0
+    """Padding (in pixels) between the _outside_ of the legend and the map in the X axis. Negative numbers are supported."""
+
+    padding_y: float = 0
+    """Padding (in pixels) between the _outside_ of the legend and the map in the Y axis. Negative numbers are supported."""
 
     expand: bool = False
     """If True, the legend will be expanded to fit the full width of the map"""
@@ -629,14 +722,32 @@ class LegendStyle(BaseStyle):
     symbol_padding: float = 0.2
     """Padding between each symbol and its label"""
 
+    border_color: ColorStr = ColorStr("#c5c5c5")
+    """Border color of the legend box"""
+
     border_padding: float = 1.28
-    """Padding around legend border"""
+    """Padding between legend entries and the legend border"""
+
+    font_name: str = "Inter"
+    """Font name for legend labels"""
 
     font_size: int = 23
     """Font size of the legend labels, in points"""
 
+    font_weight: FontWeightEnum = FontWeightEnum.NORMAL
+    """Font weight of the legend labels"""
+
     font_color: ColorStr = ColorStr("#000")
     """Font color for legend labels"""
+
+    title_font_size: int = 36
+    """Font size of the legend title"""
+
+    title_font_weight: FontWeightEnum = FontWeightEnum.BOLD
+    """Font weight of the legend title"""
+
+    title_font_name: str = "Inter"
+    """Name of the font to use for the title. Comma-separated list."""
 
     zorder: int = ZOrderEnum.LAYER_5
     """Zorder of the legend"""
@@ -646,13 +757,25 @@ class LegendStyle(BaseStyle):
             loc=self.location,
             ncols=self.num_columns,
             framealpha=self.background_alpha,
-            fontsize=self.font_size * scale,
+            prop={
+                "family": self.font_name,
+                "weight": FontWeightEnum(self.font_weight),
+                "size": self.font_size * scale,
+            },
             labelcolor=self.font_color.as_hex(),
             borderpad=self.border_padding,
             labelspacing=self.label_padding,
             handletextpad=self.symbol_padding,
             mode="expand" if self.expand else None,
             facecolor=self.background_color.as_hex(),
+            title_fontproperties=dict(
+                weight=self.title_font_weight,
+                size=self.title_font_size,
+                family=self.title_font_name.split(","),
+            ),
+            alignment=self.alignment,
+            edgecolor=self.border_color.as_hex(),
+            borderaxespad=self.padding,
         )
 
 
@@ -661,8 +784,28 @@ class PlotStyle(BaseStyle):
     Defines the styling for a plot
     """
 
-    background_color: ColorStr = ColorStr("#fff")
-    """Background color of the map region"""
+    background_color: list[tuple[float, str]] | ColorStr = ColorStr("#fff")
+    """
+    Background color of the map region.
+
+    This can either be a single color (e.g. `#7abfff`) or a list that defines a gradient.
+
+    For gradients, the list items should be tuples with two elements: a float that defines 
+    the stop and a string that defines the color for that stop. For example:
+
+    ```
+    "background_color": [
+        (0.0, "#7abfff"),
+        (0.2, "#7abfff"),
+        (0.9, "#568feb"),
+        (1.0, "#3f7ee3"),  # the last stop should always be at 1.0
+    ]
+    ```
+
+    There are a few predefined gradients available as [style extensions](/reference-styling/#style-extensions).
+
+    **Gradient backgrounds are not yet supported for optic plots that use a camera.**
+    """
 
     figure_background_color: ColorStr = ColorStr("#fff")
 
@@ -670,18 +813,6 @@ class PlotStyle(BaseStyle):
     """Text border (aka halos) width. This will apply to _all_ text labels on the plot. If you'd like to control these borders by object type, then set this global width to `0` and refer to the label style's `border_width` and `border_color` properties."""
 
     text_border_color: ColorStr = ColorStr("#fff")
-
-    text_anchor_fallbacks: List[AnchorPointEnum] = [
-        AnchorPointEnum.BOTTOM_RIGHT,
-        AnchorPointEnum.TOP_LEFT,
-        AnchorPointEnum.TOP_RIGHT,
-        AnchorPointEnum.BOTTOM_LEFT,
-        AnchorPointEnum.BOTTOM_CENTER,
-        AnchorPointEnum.TOP_CENTER,
-        AnchorPointEnum.RIGHT_CENTER,
-        AnchorPointEnum.LEFT_CENTER,
-    ]
-    """If a label's preferred anchor point results in a collision, then these fallbacks will be tried in sequence until a collision-free position is found."""
 
     # Borders
     border_font_size: int = 18
@@ -692,10 +823,10 @@ class PlotStyle(BaseStyle):
 
     # Title
     title: LabelStyle = LabelStyle(
-        font_size=20,
+        font_size=70,
         font_weight=FontWeightEnum.BOLD,
         zorder=ZOrderEnum.LAYER_5,
-        line_spacing=48,
+        line_spacing=150,
         anchor_point=AnchorPointEnum.BOTTOM_CENTER,
     )
     """Styling for info text (only applies to zenith and optic plots)"""
@@ -730,7 +861,7 @@ class PlotStyle(BaseStyle):
 
     bayer_labels: LabelStyle = LabelStyle(
         font_size=21,
-        font_weight=FontWeightEnum.LIGHT,
+        font_weight=FontWeightEnum.EXTRA_LIGHT,
         font_name="GFS Didot",
         zorder=ZOrderEnum.LAYER_4,
         anchor_point=AnchorPointEnum.TOP_LEFT,
@@ -890,17 +1021,6 @@ class PlotStyle(BaseStyle):
     )
     """Styling for dark nebulas"""
 
-    dso_hii_ionized_region: ObjectStyle = ObjectStyle(
-        marker=MarkerStyle(
-            symbol=MarkerSymbolEnum.SQUARE,
-            fill=FillStyleEnum.TOP,
-            color="#000",
-            zorder=ZOrderEnum.LAYER_3 - 1,
-        ),
-        label=LabelStyle(),
-    )
-    """Styling for HII Ionized regions"""
-
     dso_supernova_remnant: ObjectStyle = ObjectStyle(
         marker=MarkerStyle(
             symbol=MarkerSymbolEnum.SQUARE,
@@ -956,7 +1076,9 @@ class PlotStyle(BaseStyle):
     )
     """Styling for 'duplicate record' (as designated by OpenNGC) types of deep sky objects"""
 
-    constellation_lines: LineStyle = LineStyle(color="#c8c8c8")
+    constellation_lines: LineStyle = LineStyle(
+        color="#c8c8c8", zorder=ZOrderEnum.LAYER_3
+    )
     """Styling for constellation lines"""
 
     constellation_borders: LineStyle = LineStyle(
@@ -999,10 +1121,11 @@ class PlotStyle(BaseStyle):
             zorder=ZOrderEnum.LAYER_2,
         ),
         label=LabelStyle(
-            font_size=20,
+            font_size=24,
             font_color="#000",
             font_alpha=1,
             anchor_point=AnchorPointEnum.BOTTOM_CENTER,
+            zorder=ZOrderEnum.LAYER_5 + 1000,
         ),
     )
     """Styling for gridlines (including Right Ascension / Declination labels). *Only applies to map plots*."""
@@ -1013,7 +1136,7 @@ class PlotStyle(BaseStyle):
             color="#777",
             width=3,
             style=LineStyleEnum.DOTTED,
-            dash_capstyle=DashCapStyleEnum.ROUND,
+            dash_capstyle=CapStyleEnum.ROUND,
             alpha=1,
             zorder=ZOrderEnum.LAYER_3 - 1,
         ),
@@ -1038,7 +1161,7 @@ class PlotStyle(BaseStyle):
         label=LabelStyle(
             font_size=22,
             font_color="#999",
-            font_weight=FontWeightEnum.LIGHT,
+            font_weight=FontWeightEnum.EXTRA_LIGHT,
             font_alpha=0.65,
             zorder=ZOrderEnum.LAYER_3,
         ),
@@ -1052,7 +1175,7 @@ class PlotStyle(BaseStyle):
             edge_width=4,
             edge_color="#000",
             style=LineStyleEnum.SOLID,
-            dash_capstyle=DashCapStyleEnum.BUTT,
+            dash_capstyle=CapStyleEnum.BUTT,
             alpha=1,
             zorder=ZOrderEnum.LAYER_5,
         ),
@@ -1078,6 +1201,23 @@ class PlotStyle(BaseStyle):
     )
     """Styling for the zenith marker"""
 
+    optic_fov: PolygonStyle = PolygonStyle(
+        fill_color=None,
+        edge_color="red",
+        line_style=[1, [2, 3]],
+        edge_width=3,
+        zorder=-1000,
+    )
+    """Styling for optic fields of view"""
+
+    arrow: ArrowStyle = ArrowStyle(
+        fill_color="hsl(0, 99%, 31%)",
+        edge_color="#ff0019",
+        edge_width=2,
+        zorder=ZOrderEnum.LAYER_4,
+    )
+    """Styling for optic fields of view"""
+
     def get_dso_style(self, dso_type: DsoType):
         """Returns the style for a DSO type"""
         styles_by_type = {
@@ -1095,13 +1235,13 @@ class PlotStyle(BaseStyle):
             DsoType.EMISSION_NEBULA: self.dso_nebula,
             DsoType.STAR_CLUSTER_NEBULA: self.dso_nebula,
             DsoType.REFLECTION_NEBULA: self.dso_nebula,
+            DsoType.HII_IONIZED_REGION: self.dso_nebula,
             # Stars ----------
             DsoType.STAR: self.star,
             DsoType.DOUBLE_STAR: self.dso_double_star,
             DsoType.ASSOCIATION_OF_STARS: self.dso_association_stars,
             # Others ----------
             DsoType.DARK_NEBULA: self.dso_dark_nebula,
-            DsoType.HII_IONIZED_REGION: self.dso_hii_ionized_region,
             DsoType.SUPERNOVA_REMNANT: self.dso_supernova_remnant,
             DsoType.NOVA_STAR: self.dso_nova_star,
             DsoType.NONEXISTENT: self.dso_nonexistant,
@@ -1176,3 +1316,6 @@ class PlotStyle(BaseStyle):
                 raise TypeError("Style overrides must be dictionary types.")
             merge_dict(style_dict, a)
         return PlotStyle.parse_obj(style_dict)
+
+    def has_gradient_background(self):
+        return isinstance(self.background_color, list)

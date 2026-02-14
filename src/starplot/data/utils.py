@@ -1,11 +1,13 @@
 import sys
 
 import requests
+import numpy as np
 
 
-def download(url, download_path, description=""):
+def download(url, download_path, description: str = "", silent=False):
     with open(download_path, "wb") as f:
-        print(f"Downloading {description}...")
+        if not silent:
+            print(f"Downloading {description}...")
 
         response = requests.get(url, stream=True)
         total_size = response.headers.get("content-length")
@@ -21,7 +23,13 @@ def download(url, download_path, description=""):
             f.write(chunk)
 
             progress = int(25 * bytes_written / total_size)
-            sys.stdout.write("\r[%s%s]" % ("=" * progress, " " * (25 - progress)))
-            sys.stdout.flush()
+            if not silent:
+                sys.stdout.write("\r[%s%s]" % ("=" * progress, " " * (25 - progress)))
+                sys.stdout.flush()
 
-        print("Download complete!")
+        if not silent:
+            print("Download complete!")
+
+
+def to_pandas(value):
+    return value.to_pandas().replace({np.nan: None})

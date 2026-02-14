@@ -2,7 +2,7 @@ PYTHON=./venv/bin/python
 DE421_URL=https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/a_old_versions/de421.bsp
 
 ifeq ($(CI), true)
- DR_ARGS=
+ DR_ARGS=-e FLIT_USERNAME -e FLIT_PASSWORD
 else
  DR_ARGS=-it --env-file ./.env
 endif
@@ -16,21 +16,17 @@ endif
 DOCKER_RUN=docker run --rm $(DR_ARGS) -v $(shell pwd):/starplot starplot-dev bash -c
 DOCKER_BUILDER=starplot-builder
 
-DOCKER_BUILD_PYTHON=docker build -t starplot-$(PYTHON_VERSION) $(DOCKER_BUILD_ARGS) --build-arg="PYTHON_VERSION=$(PYTHON_VERSION)" --target dev .
+DOCKER_BUILD_PYTHON=docker build -t starplot-$(PYTHON_VERSION) $(DOCKER_BUILD_ARGS) --build-arg="PYTHON_VERSION=$(PYTHON_VERSION)" .
 DOCKER_RUN_PYTHON_TEST=docker run --rm $(DR_ARGS) starplot-$(PYTHON_VERSION)
 
 export PYTHONPATH=./src/
 
 # ------------------------------------------------------------------
-build: PYTHON_VERSION=3.11.11
+build: PYTHON_VERSION=3.12.12
 build: DOCKER_BUILD_ARGS=-t starplot-dev
 build:
 	touch -a .env
 	$(DOCKER_BUILD_PYTHON)
-
-docker-multi-arch:
-	docker buildx inspect $(DOCKER_BUILDER) && echo "Builder already exists!" || docker buildx create --name $(DOCKER_BUILDER) --bootstrap --use
-	docker buildx build --push --platform linux/arm64/v8,linux/amd64 --tag sberardi/starplot-base:latest --target base .
 
 lint:
 	$(DOCKER_RUN) "ruff check src/ tests/ hash_checks/ $(ARGS)"
@@ -59,6 +55,10 @@ shell:
 scratchpad:
 	$(DOCKER_RUN) "python $(SCRATCH_ARGS) scripts/scratchpad.py"
 
+marimo: DR_ARGS=-it -p 9009:9009
+marimo:
+	$(DOCKER_RUN) "marimo edit scripts/marimo.py --no-token  --host 0.0.0.0 --port 9009"
+
 examples:
 	$(DOCKER_RUN) "cd examples && rm -f *.png && rm -f *.jpg && python examples.py"
 
@@ -78,17 +78,8 @@ build-data-clean:
 	mkdir -p data/build
 	rm -rf data/build/*
 
-build-stars-mag11:
-	@$(DOCKER_RUN) "python data/scripts/bigsky_mag11.py"
-
-build-dsos:
-	@$(DOCKER_RUN) "python data/scripts/dsos.py"
-
 build-star-designations:
 	@$(DOCKER_RUN) "python data/scripts/star_designations.py"
-
-build-constellations:
-	@$(DOCKER_RUN) "python data/scripts/constellations.py"
 
 build-doc-data:
 	@$(DOCKER_RUN) "python data/scripts/docdata.py"
@@ -99,28 +90,22 @@ version:
 # ------------------------------------------------------------------
 # Python version testing
 # ------------------------------------------------------------------
-test-3.9: PYTHON_VERSION=3.9.21
-test-3.9:
-	$(DOCKER_BUILD_PYTHON)
-	$(DOCKER_RUN_PYTHON_TEST)
-
-test-3.10: PYTHON_VERSION=3.10.16
+test-3.10: PYTHON_VERSION=3.10.19
 test-3.10:
 	$(DOCKER_BUILD_PYTHON)
 	$(DOCKER_RUN_PYTHON_TEST)
 
-test-3.11: PYTHON_VERSION=3.11.11
+test-3.11: PYTHON_VERSION=3.11.14
 test-3.11:
 	$(DOCKER_BUILD_PYTHON)
 	$(DOCKER_RUN_PYTHON_TEST)
 
-test-3.12: PYTHON_VERSION=3.12.8
+test-3.12: PYTHON_VERSION=3.12.12
 test-3.12:
 	$(DOCKER_BUILD_PYTHON)
 	$(DOCKER_RUN_PYTHON_TEST)
 
-# Python 3.13 not supported yet!
-test-3.13: PYTHON_VERSION=3.13.1
+test-3.13: PYTHON_VERSION=3.13.8
 test-3.13:
 	$(DOCKER_BUILD_PYTHON)
 	$(DOCKER_RUN_PYTHON_TEST)
@@ -142,7 +127,6 @@ docs-publish:
 flit-build:
 	$(DOCKER_RUN) "python -m flit build"
 
-flit-publish: DR_ARGS=-e FLIT_USERNAME -e FLIT_PASSWORD
 flit-publish:
 	$(DOCKER_RUN) "python -m flit publish"
 
@@ -154,14 +138,8 @@ flit-install:
 ephemeris:
 	$(DOCKER_RUN) "python -m jplephem excerpt 2025/1/1 2050/1/1 $(DE421_URL) de421sub.bsp"
 
-hip8:
-	$(DOCKER_RUN) "python ./scripts/hip.py ./src/starplot/data/library/hip_main.dat hip8.dat 15"
-
 scripts:
 	$(DOCKER_RUN) "python ./scripts/$(SCRIPT).py"
-
-allsky:
-	$(DOCKER_RUN) "python ./scripts/temp/allsky.py"
 
 clean:
 	rm -rf __pycache__
@@ -171,4 +149,4 @@ clean:
 	rm -rf htmlcov
 	rm -f tests/data/*.png
 
-.PHONY: build test shell flit-build flit-publish clean ephemeris hip8 scratchpad examples scripts tutorial prep-dsos prep-constellations
+.PHONY: build test shell flit-build flit-publish clean ephemeris scratchpad examples scripts tutorial

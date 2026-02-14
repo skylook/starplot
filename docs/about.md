@@ -1,10 +1,10 @@
-![Starplot](images/favicon.svg){ align=right width="128" .off-glb }
+![Starplot](images/logo.svg){ align=right width="128" .off-glb }
 
-**Starplot** is a Python library for creating star charts and maps of the sky. It lets you create zenith plots that show the whole sky from a time/place, map plots that show more detail of an area, and optic plots that simulate the field of view from a particular optic (e.g. telescope, binoculars, or a camera).
+**Starplot** is a Python library for creating star charts and maps of the sky. It lets you create zenith charts that show the whole sky from a time/place, maps that show more detail of an area, horizon charts that show the sky above the horizon at a time/place, and optic simulations that show the field of view from a particular optic (e.g. telescope, binoculars, or a camera).
 
 👷 **Work In Progress** 🚧 Starplot is still very much a work in progress, and under active development. We try to follow [semantic versioning](https://semver.org/), which means that [_anything_ can change between versions before `1.0.0`](https://semver.org/#spec-item-4).
 
-However, the Starplot API becomes more stable with each new version. We anticipate that version `1.0.0` is still at least a year away. The best way to help us get there faster is to [join as a contributor](https://github.com/steveberardi/starplot/blob/main/CONTRIBUTING.md) 😃 help is wanted and very much appreciated!
+However, the Starplot API becomes more stable with each new version. We anticipate that version `1.0.0` is still at least a year away (2026+). The best way to help us get there faster is to [join as a contributor](https://github.com/steveberardi/starplot/blob/main/CONTRIBUTING.md) 😃 help is wanted and very much appreciated!
 
 --8<-- "docs/snippets/_newsletter.html"
 

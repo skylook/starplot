@@ -1,16 +1,19 @@
-from typing import Callable, Mapping
+from pathlib import Path
+from typing import Callable
 
 import rtree
 import numpy as np
 from ibis import _ as ibis_table
-from skyfield.api import Star as SkyfieldStar, wgs84
+from skyfield.api import Star as SkyfieldStar
 
 from starplot import callables
 from starplot.data import stars
-from starplot.data.stars import StarCatalog
+from starplot.data.catalogs import Catalog, BIG_SKY_MAG11
+from starplot.data.translations import translate
 from starplot.models.star import Star, from_tuple
 from starplot.styles import ObjectStyle, use_style
 from starplot.profile import profile
+from starplot.plotters.text import CollisionHandler
 
 
 class StarPlotterMixin:
@@ -58,19 +61,19 @@ class StarPlotterMixin:
         self,
         star_objects: list[Star],
         star_sizes: list[float],
-        label_row_ids: list,
+        label_pks: list,
         style: ObjectStyle,
-        labels: Mapping[str, str],
         bayer_labels: bool,
         flamsteed_labels: bool,
         label_fn: Callable[[Star], str],
+        collision_handler: CollisionHandler,
     ):
         _bayer = []
         _flamsteed = []
 
         # Plot all star common names first
         for i, s in enumerate(star_objects):
-            if s._row_id not in label_row_ids:
+            if s.pk not in label_pks:
                 continue
 
             if (
@@ -85,13 +88,7 @@ class StarPlotterMixin:
             elif s.tyc:
                 self._labeled_stars.append(s.tyc)
 
-            if label_fn is not None:
-                label = label_fn(s)
-            elif s.hip in labels:
-                label = labels.get(s.hip)
-            else:
-                label = s.name
-
+            label = label_fn(s)
             bayer_desig = s.bayer
             flamsteed_num = s.flamsteed
 
@@ -105,14 +102,14 @@ class StarPlotterMixin:
                         marker_size=star_sizes[i],
                         scale=self.scale,
                     ),
-                    hide_on_collision=self.hide_colliding_labels,
+                    collision_handler=collision_handler,
                     gid="stars-label-name",
                 )
 
-            if bayer_labels and bayer_desig:
+            if bayer_labels and bayer_desig and s.is_primary:
                 _bayer.append((bayer_desig, s.ra, s.dec, star_sizes[i]))
 
-            if flamsteed_labels and flamsteed_num and not bayer_desig:
+            if flamsteed_labels and flamsteed_num and not bayer_desig and s.is_primary:
                 _flamsteed.append((flamsteed_num, s.ra, s.dec, star_sizes[i]))
 
         # Plot bayer/flamsteed
@@ -126,7 +123,7 @@ class StarPlotterMixin:
                     marker_size=star_size,
                     scale=self.scale,
                 ),
-                hide_on_collision=self.hide_colliding_labels,
+                collision_handler=collision_handler,
                 gid="stars-label-bayer",
             )
 
@@ -140,7 +137,7 @@ class StarPlotterMixin:
                     marker_size=star_size,
                     scale=self.scale,
                 ),
-                hide_on_collision=self.hide_colliding_labels,
+                collision_handler=collision_handler,
                 gid="stars-label-flamsteed",
             )
 
@@ -157,45 +154,37 @@ class StarPlotterMixin:
         self,
         where: list = None,
         where_labels: list = None,
-        catalog: StarCatalog = StarCatalog.BIG_SKY_MAG11,
+        catalog: Catalog | Path | str = BIG_SKY_MAG11,
         style: ObjectStyle = None,
         size_fn: Callable[[Star], float] = callables.size_by_magnitude,
         alpha_fn: Callable[[Star], float] = None,
         color_fn: Callable[[Star], str] = None,
-        label_fn: Callable[[Star], str] = None,
-        labels: Mapping[int, str] = None,
+        label_fn: Callable[[Star], str] = Star.get_label,
         legend_label: str = "Star",
         bayer_labels: bool = False,
         flamsteed_labels: bool = False,
         sql: str = None,
         sql_labels: str = None,
-        *args,
-        **kwargs,
+        collision_handler: CollisionHandler = None,
     ):
         """
         Plots stars
 
-        Labels for stars are determined in this order:
-
-        1. Return value from `label_fn`
-        2. Value for star's HIP id in `labels`
-        3. IAU-designated name, as listed in the [data reference](/data/star-designations/)
-
         Args:
             where: A list of expressions that determine which stars to plot. See [Selecting Objects](/reference-selecting-objects/) for details.
             where_labels: A list of expressions that determine which stars are labeled on the plot (this includes all labels: name, Bayer, and Flamsteed). If you want to hide **all** labels, then set this arg to `[False]`. See [Selecting Objects](/reference-selecting-objects/) for details.
-            catalog: The catalog of stars to use: "big-sky-mag11", or "big-sky" -- see [star catalogs](/data/star-catalogs/) for details
+            catalog: The catalog of stars to use -- see [catalogs overview](/data/overview/) for details
             style: If `None`, then the plot's style for stars will be used
             size_fn: Callable for calculating the marker size of each star. If `None`, then the marker style's size will be used.
             alpha_fn: Callable for calculating the alpha value (aka "opacity") of each star. If `None`, then the marker style's alpha will be used.
             color_fn: Callable for calculating the color of each star. If `None`, then the marker style's color will be used.
-            label_fn: Callable for determining the label of each star. If `None`, then the names in the `labels` kwarg will be used.
-            labels: A dictionary that maps a star's HIP id to the label that'll be plotted for that star. If `None`, then the star's IAU-designated name will be used.
+            label_fn: Callable for determining the label of each star.
             legend_label: Label for stars in the legend. If `None`, then they will not be in the legend.
             bayer_labels: If True, then Bayer labels for stars will be plotted.
             flamsteed_labels: If True, then Flamsteed number labels for stars will be plotted.
             sql: SQL query for selecting stars (table name is `_`). This query will be applied _after_ any filters in the `where` kwarg.
             sql_labels: SQL query for selecting stars that will be labeled (table name is `_`). Applied _after_ any filters in the `where_labels` kwarg.
+            collision_handler: An instance of [CollisionHandler][starplot.CollisionHandler] that describes what to do on label collisions with other labels, markers, etc. If `None`, then the collision handler of the plot will be used.
         """
 
         # fallback to style if callables are None
@@ -206,10 +195,10 @@ class StarPlotterMixin:
         alpha_fn = alpha_fn or (lambda d: style.marker.alpha)
         color_fn = color_fn or (lambda d: color_hex)
 
+        handler = collision_handler or self.collision_handler
         where = where or []
         where_labels = where_labels or []
         stars_to_index = []
-        labels = labels or {}
 
         star_results = self._load_stars(catalog, filters=where, sql=sql)
 
@@ -219,39 +208,25 @@ class StarPlotterMixin:
 
         if sql_labels:
             result = (
-                star_results_labeled.alias("_").sql(sql_labels).select("sk").execute()
+                star_results_labeled.alias("_").sql(sql_labels).select("pk").execute()
             )
-            skids = result["sk"].to_list()
-            star_results_labeled = star_results_labeled.filter(
-                ibis_table.sk.isin(skids)
-            )
+            pks = result["pk"].to_list()
+            star_results_labeled = star_results_labeled.filter(ibis_table.pk.isin(pks))
 
-        label_row_ids = star_results_labeled.to_pandas()["rowid"].tolist()
+        label_pks = star_results_labeled.to_pandas()["pk"].tolist()
 
         stars_df = star_results.to_pandas()
+        stars_df["ra_hours"], stars_df["dec_degrees"] = (stars_df.ra / 15, stars_df.dec)
 
-        if getattr(self, "projection", None) == "zenith":
-            # filter stars for zenith plots to only include those above horizon
-            self.location = self.earth + wgs84.latlon(self.lat, self.lon)
-            stars_apparent = (
-                self.location.at(self.timescale)
-                .observe(SkyfieldStar.from_dataframe(stars_df))
-                .apparent()
-            )
-            # we only need altitude
-            stars_alt, _, _ = stars_apparent.altaz()
-            stars_df["alt"] = stars_alt.degrees
-            stars_df = stars_df[stars_df["alt"] > 0]
-        else:
-            nearby_stars = SkyfieldStar.from_dataframe(stars_df)
-            astrometric = self.earth.at(self.timescale).observe(nearby_stars)
-            stars_ra, stars_dec, _ = astrometric.radec()
-            stars_df["ra"], stars_df["dec"] = (
-                stars_ra.hours * 15,
-                stars_dec.degrees,
-            )
-
+        nearby_stars = SkyfieldStar.from_dataframe(stars_df)
+        astrometric = self.earth.at(self.observer.timescale).observe(nearby_stars)
+        stars_ra, stars_dec, _ = astrometric.radec()
+        stars_df["ra"], stars_df["dec"] = (
+            stars_ra.hours * 15,
+            stars_dec.degrees,
+        )
         stars_df = self._prepare_star_coords(stars_df)
+
         starz = []
         rtree_id = 1
 
@@ -275,7 +250,6 @@ class StarPlotterMixin:
 
             if obj.magnitude < 5:
                 rtree_id += 1
-                # radius = ((size**0.5 / 2) / self.scale) #/ 3.14
                 radius = size**0.5 / 5
                 bbox = np.array(
                     (
@@ -285,6 +259,8 @@ class StarPlotterMixin:
                         display_y + radius,
                     )
                 )
+                if self.debug_text:
+                    self._debug_bbox(bbox, color="#39FF14", width=1)
                 if self._stars_rtree.get_size() > 0:
                     self._stars_rtree.insert(
                         0,
@@ -323,7 +299,8 @@ class StarPlotterMixin:
             else "none",
         )
 
-        self._add_legend_handle_marker(legend_label, style.marker)
+        _legend_label = translate(legend_label, self.language) or legend_label
+        self._add_legend_handle_marker(_legend_label, style.marker)
 
         if stars_to_index:
             self._stars_rtree = rtree.index.Index(stars_to_index)
@@ -331,10 +308,10 @@ class StarPlotterMixin:
         self._star_labels(
             star_objects,
             sizes,
-            label_row_ids,
+            label_pks,
             style,
-            labels,
             bayer_labels,
             flamsteed_labels,
             label_fn,
+            handler,
         )

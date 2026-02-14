@@ -5,6 +5,7 @@ Starplot has a styling framework that lets you fully customize the appearance of
 - [Basic Usage](#basic-usage)
 - [Creating a Style](#creating-a-style)
 - [Extending a Style](#extending-a-style)
+- [Overriding a Style at plot time](#overriding-styles-when-plotting)
 - [Built-in Style Extensions](#built-in-style-extensions)
 - [Code Reference](#code-reference)
 
@@ -24,7 +25,7 @@ Using styles is usually a 3-step process:
 Example:
 <div class="tutorial" markdown>
 ```python linenums="1"
-from starplot import MapPlot
+from starplot import MapPlot, Miller
 from starplot.styles import PlotStyle, extensions
 
 # Step 1: create a style
@@ -38,6 +39,7 @@ style = style.extend(
 
 # Step 3: apply the style in a new map plot
 mp = MapPlot(
+    projection=Miller(),
     ra_min=4,
     ra_max=8,
     dec_min=0,
@@ -72,7 +74,7 @@ This works well when you only want to change a couple properties, but for more c
 
 Once you have an instance of a PlotStyle, then you can customize it with the PlotStyle's [`extend`](#starplot.PlotStyle.extend) method. This method takes in one or more args of dictionaries and applies them to the original style in sequential order. In other words, when extending a PlotStyle, **you only have to define style properties that you want to override from the current style** — similar to how Cascading Style Sheets (CSS) work.
 
-Starplot has a few [built-in extensions](#built-in-style-extensions) for applying color schemes and optimizing different plot types. But, you can also easily create your own extensions.
+Starplot has a few [built-in extensions](#style-extensions) for applying color schemes and optimizing different plot types. But, you can also easily create your own extensions.
 
 ### Basic Example
 Here's a simple example of extending a style to use a different font for Bayer labels of stars:
@@ -144,164 +146,81 @@ p = MapPlot(
 
 ```
 
-### Built-in Style Extensions
-
-Starplot has a bunch of built-in style extensions (all imported from `starplot.styles.extensions`):
-
-- **Color Schemes**
-    - `GRAYSCALE` - Optimized for printing in grayscale ([details](#extensions-grayscale))
-    - `GRAYSCALE_DARK` - Like `GRAYSCALE`, but inverted (white stars, black background) ([details](#extensions-grayscale-dark))
-    - `BLUE_LIGHT` - Light and bright colors ([details](#extensions-blue-light))
-    - `BLUE_MEDIUM` - Medium brightness blue colors ([details](#extensions-blue-medium))
-    - `BLUE_DARK` - Dark blue and contrasting colors ([details](#extensions-blue-dark))
-    - `BLUE_GOLD` - Dark blue / gold colors ([details](#extensions-blue-gold))
-    - `ANTIQUE` - Antique map inspired colors ([details](#extensions-antique))
-    - `NORD` - Nord-inspired colors ([details](#extensions-nord))
-- **Plot types**
-    - `OPTIC` - Basic styling tailored for optic plots ([details](#extensions-optic))
-    - `MAP` - Basic styling tailored for map plots ([details](#extensions-map))
-
 ---
 
 ## Overriding Styles When Plotting
 
 After you create a plot instance and start plotting stuff (e.g. stars, DSOs, etc), then you may want to override the plot's style sometimes. For example, you may want to plot the brightest stars with one style and the dimmer stars with a different style (see the example [map of Sagittarius](/examples/map-sagittarius/) which uses different markers for brighter stars). Starplot provides two easy ways to do this:
 
-1. ####  Via `style` kwarg {.mt-none}
+### Via `style` kwarg {.mt-none}
 All plotting functions have an optional `style` kwarg that lets you pass in a dictionary of any styles you want to override for that plotting call. For example, here's how you can plot bright stars with a different marker and color than the plot's style:
 
-    ```python
-    p.stars(
-        where=[_.magnitude < 3],
-        style={
-            "marker": {
-                "symbol": "star",
-                "color": "red",
-            }
+```python
+p.stars(
+    where=[_.magnitude < 3],
+    style={
+        "marker": {
+            "symbol": "star",
+            "color": "red",
         }
-    )
-    ```
+    }
+)
+```
 
 
-2. #### Via `style__*` kwargs
+### Via `style__*` kwargs
 When you only want to override one or two style properties, it can be tedious to create a dictionary, so Starplot also lets you specify overrides through keyword arguments that start with `style__` and separate each level by `__`. For example, we could re-write the previous example like this:
 
-    ```python
-    p.stars(
-        where=[_.magnitude < 3],
-        style__marker__symbol="star",
-        style__marker__color="red",
-    )
-    ```
+```python
+p.stars(
+    where=[_.magnitude < 3],
+    style__marker__symbol="star",
+    style__marker__color="red",
+)
+```
 
 **When overriding styles like this, you only have to define style properties you want to override.** Other properties will be inherited from the plot's style.
-    
-    
----
 
-## Code Reference
+### Via style context manager
 
-::: starplot.PlotStyle
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
-        separate_signature: true
-        show_signature_annotations: true
-        signature_crossrefs: true
-        members: true
+!!! example "Experimental"
 
+    This is currently an "experimental" feature, which means it's likely to be changed and improved in upcoming versions of Starplot.
+    It also means the feature likely has limitations.
 
----
-::: starplot.styles.MarkerStyle
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
+    **Help us improve this feature by submitting feedback on [GitHub (open an issue)](https://github.com/steveberardi/starplot/issues) or chat with us on [Discord](https://discord.gg/WewJJjshFu). Thanks!**
 
-::: starplot.styles.LineStyle
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
+You can also use a context manager to temporarily override styles:
 
-::: starplot.styles.PolygonStyle
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
+```python
 
+with p.style.dso_open_cluster as oc:
+    # make open cluster labels bigger and bolder
+    oc.label.font_size *= 1.5
+    oc.label.font_weight = 'heavy'
+    p.open_clusters(where=[_.magnitude < 9])
 
-::: starplot.styles.LabelStyle
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
-
----
-
-::: starplot.styles.ObjectStyle
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
-
-::: starplot.styles.PathStyle
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
-
-::: starplot.styles.LegendStyle
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
-
----
-::: starplot.styles.FillStyleEnum
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
-        members: true
-
-::: starplot.styles.FontStyleEnum
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
-        members: true
-
-::: starplot.styles.FontWeightEnum
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
-        members: true
-
-::: starplot.styles.LineStyleEnum
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
-        members: true
-
-::: starplot.styles.MarkerSymbolEnum
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
-        members: true
-
-::: starplot.styles.LegendLocationEnum
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
-        members: true
-
-::: starplot.styles.AnchorPointEnum
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
-        members: true
-
-::: starplot.styles.ZOrderEnum
-    options:
-        show_root_heading: true
-        show_docstring_attributes: true
-        members: true
+# when exiting the context manager, the style will be reverted to its original value
+# so, the following line will use the original style (BEFORE the context manager)
+p.open_clusters(where=[_.magnitude >= 9])
+```
 
 ---
 
 ## Style Extensions
+
+Starplot has many built-in style extensions for different color schemes, plot types, and gradient backgrounds.
+
+Using them is pretty simple:
+
+```python
+from starplot import styles
+
+style = styles.PlotStyle().extend(
+    styles.extensions.BLUE_GOLD,
+    styles.extensions.GRADIENT_PRE_DAWN,
+)
+```
 
 - **Color Schemes**
     - `GRAYSCALE` - Optimized for printing in grayscale ([details](#extensions-grayscale))
@@ -310,11 +229,23 @@ When you only want to override one or two style properties, it can be tedious to
     - `BLUE_MEDIUM` - Medium brightness bluish gray colors ([details](#extensions-blue-medium))
     - `BLUE_DARK` - Dark "Starplot blue" colors ([details](#extensions-blue-dark))
     - `BLUE_GOLD` - Dark blue / gold colors ([details](#extensions-blue-gold))
+    - `BLUE_NIGHT` - Very dark blue background with colored markers ([details](#extensions-blue-night))
     - `ANTIQUE` - Antique map inspired colors ([details](#extensions-antique))
     - `NORD` - Nord-inspired colors ([details](#extensions-nord))
 - **Plot types**
     - `OPTIC` - Basic styling tailored for optic plots ([details](#extensions-optic))
     - `MAP` - Basic styling tailored for map plots ([details](#extensions-map))
+    - `PUBLICATION` - Styling rules tailored for plots that will be imported to design applications ([details](#extensions-publication))
+- **Gradients**
+    - `GRADIENT_DAYLIGHT`
+    - `GRADIENT_BOLD_SUNSET`
+    - `GRADIENT_CIVIL_TWILIGHT`
+    - `GRADIENT_NAUTICAL_TWILIGHT`
+    - `GRADIENT_ASTRONOMICAL_TWILIGHT`
+    - `GRADIENT_TRUE_NIGHT`
+    - `GRADIENT_PRE_DAWN`
+    - `GRADIENT_OPTIC_FALLOFF`
+    - `GRADIENT_OPTIC_FALL_IN`
 
 <!-- GRAYSCALE -->
 <h2 class="doc doc-heading" id="extensions-grayscale"><code>GRAYSCALE</code></h2>
@@ -394,6 +325,19 @@ Dark bluish gold colors
     ```
 </div>
 
+<!-- BLUE NIGHT -->
+<h2 class="doc doc-heading" id="extensions-blue-night"><code>BLUE_NIGHT</code></h2>
+
+<div class="indent" markdown>
+Very dark blue background with colored markers
+
+???- star "Source"
+
+    ```yaml 
+    --8<-- "src/starplot/styles/ext/blue_night.yml"
+    ```
+</div>
+
 <!-- ANTIQUE -->
 <h2 class="doc doc-heading" id="extensions-antique"><code>ANTIQUE</code></h2>
 
@@ -445,3 +389,142 @@ Basic styling tailored for map plots
     --8<-- "src/starplot/styles/ext/map.yml"
     ```
 </div>
+
+
+<!-- PUBLICATION -->
+<h2 class="doc doc-heading" id="extensions-publication"><code>PUBLICATION</code></h2>
+
+<div class="indent" markdown>
+Styling rules tailored for plots that will be imported to design applications
+
+???- star "Source"
+
+    ```yaml 
+    --8<-- "src/starplot/styles/ext/publication.yml"
+    ```
+</div>
+
+---
+
+## Code Reference
+
+::: starplot.PlotStyle
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+        separate_signature: true
+        show_signature_annotations: true
+        signature_crossrefs: true
+        members: true
+
+
+---
+::: starplot.styles.MarkerStyle
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+
+::: starplot.styles.LineStyle
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+
+::: starplot.styles.PolygonStyle
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+
+::: starplot.styles.LabelStyle
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+
+::: starplot.styles.ArrowStyle
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+        inherited_members: true
+
+---
+
+::: starplot.styles.ObjectStyle
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+
+::: starplot.styles.PathStyle
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+
+::: starplot.styles.LegendStyle
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+
+---
+::: starplot.styles.FillStyleEnum
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+        members: true
+
+::: starplot.styles.FontStyleEnum
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+        members: true
+
+::: starplot.styles.FontWeightEnum
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+        members: true
+        members_order: source
+
+::: starplot.styles.LineStyleEnum
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+        members: true
+
+::: starplot.styles.MarkerSymbolEnum
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+        members: true
+
+::: starplot.styles.LegendLocationEnum
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+        members: true
+
+::: starplot.styles.AnchorPointEnum
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+        members: true
+
+::: starplot.styles.CapStyleEnum
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+        members: true
+
+::: starplot.styles.JoinStyleEnum
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+        members: true
+
+::: starplot.styles.ZOrderEnum
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+        members: true
+
+---
+
+<br/>
+<br/>

@@ -9,20 +9,29 @@ nav:
     - Tutorial: tutorial.md
     - Reference:
         - MapPlot: reference-mapplot.md
+        - ZenithPlot: reference-zenithplot.md
         - HorizonPlot: reference-horizonplot.md
         - OpticPlot: reference-opticplot.md
         - Models: reference-models.md
         - Selecting Objects: reference-selecting-objects.md
         - Styling: reference-styling.md
         - Callables: reference-callables.md
-        - Data:
-            - Star Catalogs: data/star-catalogs.md
-            - Star Designations: data/star-designations.md
-            - Deep Sky Objects: data/dsos.md
+        - Collision Handling: reference-collisions.md
+        - Positions: reference-positions.md
+        - Data Catalogs:
+            - Overview: data/overview.md
+            - Stars: data/stars.md
             - Constellations: data/constellations.md
+            - Deep Sky Objects: data/dsos.md
+            - Building: data/building.md
+        - Object Names:
+            - Stars: object-names/stars.md
+            - Constellations: object-names/constellations.md
+            - Deep Sky Objects: object-names/dsos.md
+        - Localization: reference-localization.md
         - Settings: reference-settings.md
     - Data Sources: data-sources.md
-    - Publications: publications.md
+    - Showcase: showcase.md
     - License: license.md
     - Changelog: changelog.md
     - Coming Soon: coming-soon.md
@@ -73,6 +82,8 @@ plugins:
             annotations_path: brief
             separate_signature: true
             show_signature_annotations: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
             signature_crossrefs: true
             line_length: 80
   - macros:
@@ -87,14 +98,12 @@ markdown_extensions:
   - tables
   - pymdownx.highlight:
       anchor_linenums: true
-      line_spans: __span
-      pygments_lang_class: true
   - pymdownx.inlinehilite
   - pymdownx.snippets
   - pymdownx.superfences
   - pymdownx.details
   - pymdownx.tabbed:
-      alternate_style: true 
+      alternate_style: true
   - pymdownx.emoji:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg

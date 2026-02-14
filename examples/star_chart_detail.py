@@ -1,18 +1,22 @@
 from datetime import datetime
-from pytz import timezone
-from starplot import MapPlot, Projection, Star, DSO, _
+from zoneinfo import ZoneInfo
+
+from starplot import ZenithPlot, Observer, _
 from starplot.styles import PlotStyle, extensions
 
-tz = timezone("America/Los_Angeles")
+tz = ZoneInfo("America/Los_Angeles")
 dt = datetime(2023, 7, 13, 22, 0, tzinfo=tz)  # July 13, 2023 at 10pm PT
 
-p = MapPlot(
-    projection=Projection.ZENITH,
+observer = Observer(
+    dt=dt,
     lat=33.363484,
     lon=-116.836394,
-    dt=dt,
+)
+p = ZenithPlot(
+    observer=observer,
     style=PlotStyle().extend(
         extensions.BLUE_GOLD,
+        extensions.GRADIENT_PRE_DAWN,
     ),
     resolution=3600,
     autoscale=True,
@@ -21,10 +25,17 @@ p.horizon()
 p.constellations()
 p.stars(where=[_.magnitude < 4.6], where_labels=[_.magnitude < 2.1])
 
-p.galaxies(where=[_.magnitude < 9], true_size=False, labels=None)
-p.open_clusters(where=[_.magnitude < 9], true_size=False, labels=None)
+p.galaxies(
+    where=[_.magnitude < 9],
+    where_labels=[False],
+    where_true_size=[False],
+)
+p.open_clusters(
+    where=[_.magnitude < 9],
+    where_labels=[False],
+    where_true_size=[False],
+)
 
-p.constellation_borders()
 p.ecliptic()
 p.celestial_equator()
 p.milky_way()
@@ -47,7 +58,7 @@ p.marker(
         "label": {
             "zorder": 200,
             "font_size": 22,
-            "font_weight": "bold",
+            "font_weight": 700,
             "font_color": "hsl(44, 70%, 64%)",
             "font_alpha": 1,
             "offset_x": "auto",

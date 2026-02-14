@@ -1,4 +1,94 @@
+## v0.19.x
+
+- Adds a `CollisionHandler` for defining what to do when labels collide with something
+- Introduces catalogs for the Milky Way and constellation borders
+- Makes map plots default to plotting at epoch J2000
+- Replaces the `true_size` kwarg on the DSO plotting function with `where_true_size` which is a list of filters
+- Fixes a bug with auto label offsets from markers
+- [**v0.19.1**] Fixes issue with constellation boundaries
+- [**v0.19.2**]
+    - Adds a `border` field to the constellation model
+    - Modifies the `line` function to accept a Shapely geometry OR a list of coordinates
+    - Fixes bug with plotting true apparent size of solar system objects
+- [**v0.19.3**]
+    - Makes `resolution` property more predictable
+    - Fixes multiple issues with label collision handling
+- [**v0.19.4**] Fixes tiny bug with plotting labels
+- [**v0.19.5**] 
+    - Fixes bug with plotting labels when `attempts=1`
+    - Improves performance of plotting constellations on horizon plots
+
+---
+
+## v0.18.x
+[Documentation](https://archives.starplot.dev/0.18.3/)
+
+- Adds function for plotting an arrow, from one point to another or as a pointer to a target
+- Adds support for custom data catalogs for stars, DSOs, and constellations
+- Converts sky object models to data classes, improving performance when many objects are plotted
+- Adds Farsi translation
+- Increases max field of view for optic plots to 20 degrees
+- Optimizes spatial query for optic plots
+- [**v0.18.1**] 
+    - Sets schema explicitly for catalog objects
+    - Removes `format` kwarg on `export` function
+    - Changes font weight style from string to integer, and added missing weights
+    - Adds helper functions for plotting planetary and dark nebulae
+- [**v0.18.2**] Fixes bug with `starplot setup` command
+- [**v0.18.3**]
+    - Adds Spanish translation
+    - Remaps font weights to strings, to avoid a bug in matplotlib
+
+---
+
+## v0.17.x
+[Documentation](https://archives.starplot.dev/0.17.1/)
+
+- Consolidates the scope/binoculars field of view function into a general optic fov function (which means it also supports cameras now)
+- Adds models for comets and satellites and supports data formats from MPC and CelesTrak
+- Adds font name and weight style properties to legend labels
+- Adds callable for constellation labels
+- Deprecates the `labels` parameter on star/DSO/constellation plotting functions
+- Defines a default `label_fn` for stars/DSOs/constellations
+- Introduces localization with two language translations for labels: French and Chinese
+- [**v0.17.1**] 
+    - Adds Lithuanian translation
+    - Fixes a few small errors in the Chinese translation
+
+---
+
+## v0.16.x
+[Documentation](https://archives.starplot.dev/0.16.7/) | [Migration Guide](migration-guides/0.16.0.md)
+
+- Adds support for gradient backgrounds
+- Refactors projections, allowing you to change central RA/DEC
+- Adds equidistant and oblique Mercator projections
+- Introduces an Observer model to encapsulate a time and place
+- Makes zenith plots a separate plot type
+- Adds a function for plotting a star magnitude scale (experimental, feedback wanted!)
+- Adds more location options for legends and allows separate X/Y padding
+- Adds a `settings` class for managing global settings
+- Adds a global setting for how text is rendered in SVG exports
+- Adds more options for plotting gridlines on horizon plots
+- Adds a `common_names` field to deep sky objects
+- Added more public properties to plots (including `magnitude_range` and `alt`/`az` for optic plots)
+- Adds the `BLUE_NIGHT` plot style
+- [**v0.16.1**] Fixes constellation borders and Milky Way outline when they cross the first point of Aries (RA=0)
+- [**v0.16.2**] Fixes bug with rendering constellation labels as text elements for SVG exports
+- [**v0.16.3**] Locks version of DuckDB to < 1.4 (which seems to have an incompatibility issue)
+- [**v0.16.4**] 
+    - Removes `pydantic-settings` dependency
+    - Fixes constellation line plotting on a few projections to make them straight
+    - Cleans up a few imports to improve performance
+- [**v0.16.5**] Adds missing legend function to horizon and optic plots
+- [**v0.16.6**] Support for Python 3.13
+- [**v0.16.7**] Fixes bug with plotting horizon labels on horizon plots that prevented the use of offsets
+
+---
+
 ## v0.15.x
+[Documentation](https://archives.starplot.dev/0.15.8/)
+
 - Replaces data backend with DuckDB + Ibis, making plotting 2-3x faster and object lookup up to 10x faster
 - Changes default unit of right ascension to degrees (0...360)
 - Improves performance of constellation label placement
@@ -26,6 +116,8 @@
     - Adds a `sql` kwarg to object selection and plotting functions to allow querying by SQL
 - [**v0.15.8**] Fixes four point star marker
 
+---
+
 ## v0.14.x
 [Documentation](https://archives.starplot.dev/0.14.0/)
 
@@ -35,6 +127,8 @@
 - Plots constellation lines and borders as a `LineCollection` to improve performance
 - Adds option to suppress warnings from dependencies
 - Adds legend labels to shape functions
+
+---
 
 ## v0.13.x
 [Documentation](https://archives.starplot.dev/0.13.0/)
@@ -48,6 +142,8 @@
 - Adds the standard symbol for planetary nebulae
 - Adds a border size/color property to label styles
 - Bundles fonts: Inter & GFS Didot
+
+---
 
 ## v0.12.x
 [Documentation](https://archives.starplot.dev/0.12.5/)
@@ -68,6 +164,8 @@
     - Fixes bug with a few constellation ids
     - Fixes bug with `zenith()` function on map plots
 
+---
+
 ## v0.11.x
 [Documentation](https://archives.starplot.dev/0.11.4/)
 
@@ -86,6 +184,8 @@
 - [**v0.11.2**] Adds `requests` as a required dependency
 - [**v0.11.3**] Fixes bug with plotting the celestial equator
 - [**v0.11.4**] Fixes bug with filtering DSOs by NGC/IC identifier
+
+---
 
 ## v0.10.x
 [Documentation](https://archives.starplot.dev/0.10.2/)
@@ -106,6 +206,8 @@
     - Adds lat/lon kwargs to Sun/Moon/Planet models to allow _apparent_ RA/DEC calculation
 - [**v0.10.2**] Fixes a few issues with plotting legends
 
+---
+
 ## v0.9.x
 [Documentation](https://archives.starplot.dev/0.9.1/)
 
@@ -117,6 +219,8 @@
 - Stars are now plotted in order of their calculated size, which prevents "bigger" stars from hiding "smaller" stars
 - Added more marker symbols and style extensions
 - [**v0.9.1**] Fixes bug with plotting moon and planets as their true size
+
+---
 
 ## v0.8.x
 [Documentation](https://archives.starplot.dev/0.8.4/)
@@ -130,5 +234,7 @@
 - [**v0.8.2**] Fixes a small bug in determining if a RA/DEC is in bounds of a plot
 - [**v0.8.3**] More consistent polygon/circle sizing across projections
 - [**v0.8.4**] Fixes a small bug in plotting text labels of DSOs, which prevented some styles from getting applied
+
+---
 
 <br/><br/>

@@ -1,23 +1,26 @@
-# <img src="https://raw.githubusercontent.com/steveberardi/starplot/main/docs/images/favicon.svg" width="48" style="vertical-align:middle"> Starplot
+# <img src="https://raw.githubusercontent.com/steveberardi/starplot/main/docs/images/logo.svg" width="48" style="vertical-align:middle"> Starplot
 ![Python](https://img.shields.io/pypi/pyversions/starplot?style=for-the-badge&color=6388b0)
 ![PyPI](https://img.shields.io/pypi/v/starplot?style=for-the-badge&color=57a8a8)
 ![License](https://img.shields.io/github/license/steveberardi/starplot?style=for-the-badge&color=8b63b0)
 ![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/steveberardi/starplot/test.yml?style=for-the-badge&color=88b063)
 
-**Starplot** is a Python library for creating star charts and maps of the sky.
+**Starplot** is a Python library for creating star charts and maps of the sky
 
-- ⭐ **Zenith Plots** - shows the entire sky at a specific time and place
-- 🗺️ **Map Plots** - including many map projections
-- 🌃 **Horizon Plots** - shows the horizon at a specific time and place
-- 🔭 **Optic Plots** - shows what you'll see through an optic (e.g. telescope) at a specific time and place
-- 🪐 **Planets and Deep Sky Objects (DSOs)** - more than 14,000 objects built-in
-- 🎨 **Custom Styles** - for all objects
+- 🗺️ **Maps** - including 10+ customizable projections
+- ⭐ **Zenith Charts** - shows the entire sky at a specific time and place
+- 🌃 **Horizon Charts** - shows the horizon at a specific time and place
+- 🔭 **Optic Simulations** - shows what you'll see through an optic (e.g. telescope) at a specific time and place
+- 🪐 **Planets and Deep Sky Objects (DSOs)** - with support for plotting their true extent
+- ☄️ **Comets and Satellites** - easy trajectory plotting
+- 🎨 **Custom Styles** - for all objects and with 8+ built-in themes
 - 📥 **Export** - png, svg, jpeg
 - 🚀 **Data Backend** - powered by DuckDB + Ibis for fast object lookup
-- 🧭 **Label Collision Avoidance**
+- 📓 **Custom Data Catalogs** - with helpers for building and optimizing
+- 🧭 **Label Collision Avoidance** - ensuring all labels are readable
+- 🌐 **Localization** - label translations for Chinese, French, Lithuanian, Persian, and Spanish
 
 ## Examples
-*Zenith plot of the stars from a specific time/location:*
+*Zenith chart of the stars from a specific time/location:*
 ![starchart-blue](https://starplot.dev/images/examples/star_chart_basic.png)
 
 *Map around the constellation Orion:*
@@ -32,18 +35,23 @@ To create a star chart for tonight's sky as seen from [Palomar Mountain](https:/
 
 ```python
 from datetime import datetime
-from pytz import timezone
-import starplot as sp
+from zoneinfo import ZoneInfo
 
-tz = timezone("America/Los_Angeles")
+from starplot import ZenithPlot, Observer, styles, _
 
-p = sp.MapPlot(
-    projection=sp.Projection.ZENITH,
+tz = ZoneInfo("America/Los_Angeles")
+dt = datetime.now(tz).replace(hour=22)
+
+observer = Observer(
+    dt=dt,
     lat=33.363484,
     lon=-116.836394,
-    dt=datetime.now(tz).replace(hour=22),
-    style=sp.styles.PlotStyle().extend(
-        sp.styles.extensions.BLUE_MEDIUM,
+)
+
+p = ZenithPlot(
+    observer=observer,
+    style=styles.PlotStyle().extend(
+        styles.extensions.BLUE_MEDIUM,
     ),
     resolution=4096,
     autoscale=True,
@@ -51,6 +59,7 @@ p = sp.MapPlot(
 p.constellations()
 p.stars(where=[_.magnitude < 4.6])
 p.constellation_labels()
+p.horizon()
 p.export("starchart.png")
 ```
 
@@ -60,15 +69,16 @@ p.export("starchart.png")
 
 
 ## Demo
-For a demo of Starplot's zenith plots, check out: 
+For a demo of Starplot's zenith charts, check out: 
 
 [Sky Atlas - Star Chart Creator](https://skyatlas.app/star-charts/)
 
-## Discord
+## Getting Help / Updates
 
-Chat with other starplotters on our Discord server:
-
-https://discord.gg/WewJJjshFu
+- Chat with other starplotters on our [Discord server](https://discord.gg/WewJJjshFu)
+- [Follow us on Bluesky](https://bsky.app/profile/starplot.dev)
+- [Join our newsletter](https://buttondown.com/starplot)
+- [See more examples at Starplotting.com](https://starplotting.com/)
 
 ## Contributing
 
@@ -78,10 +88,19 @@ Contributing to Starplot is welcome and very much appreciated! Please see [here]
 - 🧮 Coordinate system helpers
 - 🌑 Planet moons
 - ✴️ Custom markers
-- ☄️ Comet model
 - 😄 🔭 Clear skies
 
 See more details on the [Public Roadmap](https://trello.com/b/sUksygn4/starplot-roadmap)
+
+## Related Repositories
+
+- [starplot-bigsky](https://github.com/steveberardi/starplot-bigsky)
+- [starplot-constellations](https://github.com/steveberardi/starplot-constellations)
+- [starplot-ongc](https://github.com/steveberardi/starplot-ongc)
+- [starplot-hyg](https://github.com/steveberardi/starplot-hyg)
+- [starplot-gaia-dr3](https://github.com/steveberardi/starplot-gaia-dr3)
+- [starplot-hyperleda](https://github.com/steveberardi/starplot-hyperleda)
+- [starplot-milkyway](https://github.com/steveberardi/starplot-milkyway)
 
 ## License
 [MIT License](https://github.com/steveberardi/starplot/blob/main/LICENSE)

@@ -1,20 +1,54 @@
-Below are a few environment variables you can set to change settings for Starplot. 
+Starplot has a few global settings:
 
-<hr/>
+- Data path
+- Language
+- SVG text rendering method
 
-## `STARPLOT_DOWNLOAD_PATH`
+You can override these values in two ways: through code or through environment variables.
 
-Path for downloaded data, including the Big Sky catalog, ephemeris files, etc.
+<h3>Code</h3>
+To set values through code, just import the settings object:
 
-Default = `<starplot_source_path>/data/library/downloads/`
+```python
+from starplot import settings
 
-<hr/>
+settings.svg_text_type = "element"
 
-## `STARPLOT_DUCKDB_EXTENSIONS_PATH`
+# Create your plot and enjoy your editable text :)
 
-Path for the DuckDB spatial extension, which is required for the data backend.
+```
 
-Default = `<starplot_source_path>/data/library/duckdb-extensions/`
+There's also a context manager that lets you temporarily override settings:
+
+```python
+from starplot import override_settings
+
+with override_settings(language="zh-cn"):
+    ...
+    # all default labels plotted in here will be in Chinese
+
+# after exiting the context manager, language will revert to the default (en-us)
+
+```
+
+<h3>Environment Variables</h3>
+
+To set values through environment variables, just add the `STARPLOT_` prefix to the setting name (and uppercase the entire name):
+
+```shell
+
+STARPLOT_DATA_PATH=/home/myuser/data
+
+```
+
+::: starplot.config.Settings
+    options:
+        show_root_heading: true
+        show_docstring_attributes: true
+        separate_signature: true
+        show_signature_annotations: true
+        signature_crossrefs: true
+        members: true
 
 <hr/>
 

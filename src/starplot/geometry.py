@@ -2,10 +2,10 @@ import random
 import math
 from typing import Union
 
-from shapely import transform
-from shapely.geometry import Point, Polygon, MultiPolygon
+from shapely import transform, union_all
+from shapely.geometry import Point, Polygon, MultiPolygon, LineString
 
-from starplot import geod, utils
+from starplot import geod
 
 GLOBAL_EXTENT = Polygon(
     [
@@ -18,17 +18,18 @@ GLOBAL_EXTENT = Polygon(
 )
 
 
-def circle(center, diameter_degrees):
+def circle(center, diameter_degrees, num_pts=100):
     points = geod.ellipse(
         center,
         diameter_degrees,
         diameter_degrees,
         angle=0,
-        num_pts=100,
+        num_pts=num_pts,
     )
-    points = [
-        (round(24 - utils.lon_to_ra(lon), 4), round(dec, 4)) for lon, dec in points
-    ]
+    # points = [
+    #     (round(24 - utils.lon_to_ra(lon), 4), round(dec, 4)) for lon, dec in points
+    # ]
+    points = [(round(lon, 4), round(dec, 4)) for lon, dec in points]
     return Polygon(points)
 
 
@@ -93,6 +94,115 @@ def unwrap_polygon_360(polygon: Polygon) -> Polygon:
         return Polygon(list(zip(new_ra, dec)))
 
     return polygon
+
+
+def union_at_zero(a: Polygon, b: Polygon) -> Polygon:
+    """Returns union of two polygons"""
+    a_ra = list(a.exterior.coords.xy)[0]
+    b_ra = list(b.exterior.coords.xy)[0]
+
+    if max(a_ra) == 360 and min(b_ra) == 0:
+        points = list(zip(*b.exterior.coords.xy))
+        b = Polygon([[ra + 360, dec] for ra, dec in points])
+
+    elif min(a_ra) == 0 and max(b_ra) == 360:
+        points = list(zip(*a.exterior.coords.xy))
+        a = Polygon([[ra + 360, dec] for ra, dec in points])
+
+    return union_all([a, b])
+
+
+def split_polygon_at_zero(polygon: Polygon) -> list[Polygon]:
+    """
+    Splits a polygon at the first point of Aries (RA=0)
+
+    Args:
+        polygon: Polygon that possibly needs splitting
+
+    Returns:
+        List of polygons
+    """
+    ra, dec = [p for p in polygon.exterior.coords.xy]
+
+    if min(ra) < 180 and max(ra) > 300:
+        new_ra = [r + 360 if r < 180 else r for r in ra]
+        new_polygon = Polygon(list(zip(new_ra, dec)))
+
+        polygon_1 = new_polygon.intersection(
+            Polygon(
+                [
+                    [0, -90],
+                    [360, -90],
+                    [360, 90],
+                    [0, 90],
+                    [0, -90],
+                ]
+            )
+        )
+
+        polygon_2 = new_polygon.intersection(
+            Polygon(
+                [
+                    [360, -90],
+                    [720, -90],
+                    [720, 90],
+                    [360, 90],
+                    [360, -90],
+                ]
+            )
+        )
+
+        p2_ra, p2_dec = [p for p in polygon_2.exterior.coords.xy]
+        p2_new_ra = [ra - 360 for ra in p2_ra]
+
+        return [polygon_1, Polygon(list(zip(p2_new_ra, p2_dec)))]
+
+    return [polygon]
+
+
+def split_polygon_at_360(polygon: Polygon) -> list[Polygon]:
+    """
+    Splits a polygon at 360 degrees
+
+    Args:
+        polygon: Polygon that possibly needs splitting
+
+    Returns:
+        List of polygons
+    """
+    ra, _ = [p for p in polygon.exterior.coords.xy]
+
+    if max(ra) > 360:
+        polygon_1 = polygon.intersection(
+            Polygon(
+                [
+                    [0, -90],
+                    [360, -90],
+                    [360, 90],
+                    [0, 90],
+                    [0, -90],
+                ]
+            )
+        )
+
+        polygon_2 = polygon.intersection(
+            Polygon(
+                [
+                    [360, -90],
+                    [720, -90],
+                    [720, 90],
+                    [360, 90],
+                    [360, -90],
+                ]
+            )
+        )
+
+        p2_ra, p2_dec = [p for p in polygon_2.exterior.coords.xy]
+        p2_new_ra = [ra - 360 for ra in p2_ra]
+
+        return [polygon_1, Polygon(list(zip(p2_new_ra, p2_dec)))]
+
+    return [polygon]
 
 
 def random_point_in_polygon(
@@ -179,3 +289,8 @@ def is_wrapped_polygon(polygon: Polygon) -> bool:
         return True
 
     return False
+
+
+def line_segment(start, end, step):
+    """Returns coordinates on the line from start to end at the specified step-size"""
+    return LineString([start, end]).segmentize(step).coords

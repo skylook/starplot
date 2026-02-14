@@ -1,20 +1,58 @@
+# ruff: noqa: F401,F403
+
 """Star charts and maps of the sky"""
 
-__version__ = "0.15.8"
+__version__ = "0.19.5"
 
-from .base import BasePlot  # noqa: F401
-from .map import MapPlot, Projection  # noqa: F401
-from .horizon import HorizonPlot  # noqa: F401
-from .optic import OpticPlot  # noqa: F401
-from .models import (
-    DSO,  # noqa: F401
-    DsoType,  # noqa: F401
-    Star,  # noqa: F401
-    Constellation,  # noqa: F401
-    Planet,  # noqa: F401
-    Moon,  # noqa: F401
-    Sun,  # noqa: F401
-    ObjectList,  # noqa: F401
+from .plots import (
+    MapPlot,
+    HorizonPlot,
+    OpticPlot,
+    ZenithPlot,
 )
-from .styles import *  # noqa: F401 F403
-from ibis import _  # noqa: F401 F403
+from .models import (
+    DSO,
+    DsoType,
+    Star,
+    Constellation,
+    ConstellationBorder,
+    Comet,
+    Planet,
+    Moon,
+    Sun,
+    ObjectList,
+    Scope,
+    Binoculars,
+    Reflector,
+    Refractor,
+    Camera,
+    Satellite,
+    Observer,
+    MilkyWay,
+)
+from .data import Catalog
+from .styles import *
+from .projections import *
+from .config import settings
+from .plotters.text import CollisionHandler
+
+from ibis import _
+
+
+import contextlib
+
+
+@contextlib.contextmanager
+def override_settings(**kwargs):
+    original = {}
+
+    for key, value in kwargs.items():
+        original[key] = getattr(settings, key, None)
+        setattr(settings, key, value)
+
+    try:
+        yield
+
+    finally:
+        for key, value in original.items():
+            setattr(settings, key, value)

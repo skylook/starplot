@@ -1,13 +1,22 @@
+# ruff: noqa: F401,F403
+
+from pathlib import Path
+
 from skyfield.api import Loader
 
-from starplot import settings
+from starplot.config import settings
+from .catalogs import Catalog
 
-load = Loader(settings.DATA_PATH)
+load = Loader(settings.data_path)  # used for loading ephemeris
+
+
+HERE = Path(__file__).resolve().parent
+
+INTERNAL_DATA_PATH = HERE / "library"
+"""Path of starplot data"""
 
 
 class DataFiles:
-    BIG_SKY = settings.DOWNLOAD_PATH / "bigsky.0.4.0.stars.parquet"
-
-    BIG_SKY_MAG11 = settings.DATA_PATH / "bigsky.0.4.0.stars.mag11.parquet"
-
-    DATABASE = settings.DATA_PATH / "sky.db"
+    STAR_DESIGNATIONS = INTERNAL_DATA_PATH / "star_designations.parquet"
+    CONSTELLATION_NAMES = INTERNAL_DATA_PATH / "constellation_names.parquet"
+    DSO_NAMES = INTERNAL_DATA_PATH / "dso_names.parquet"

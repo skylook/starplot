@@ -1,4 +1,4 @@
-from starplot import MapPlot, Projection, callables, _
+from starplot import MapPlot, Miller, callables, _
 from starplot.styles import PlotStyle, extensions
 
 style = PlotStyle().extend(
@@ -6,7 +6,7 @@ style = PlotStyle().extend(
     extensions.MAP,
 )
 p = MapPlot(
-    projection=Projection.MILLER,
+    projection=Miller(),
     ra_min=15.6 * 15,
     ra_max=19.8 * 15,
     dec_min=-45.2,
@@ -34,29 +34,24 @@ p.stars(
     ],
     bayer_labels=True,
     flamsteed_labels=True,
-    catalog="big-sky-mag11",
 )
 
 p.nebula(
     where=[
         (_.magnitude.isnull()) | (_.magnitude < 12),
     ],
-    true_size=True,
-    label_fn=lambda d: d.ic,
 )
 p.open_clusters(
     where=[
         (_.magnitude.isnull()) | (_.magnitude < 12),
     ],
-    true_size=False,
-    label_fn=lambda d: d.ngc,
+    where_true_size=[False],
 )
 p.globular_clusters(
     where=[
         (_.magnitude.isnull()) | (_.magnitude < 12),
     ],
-    true_size=False,
-    label_fn=lambda d: d.ngc,
+    where_true_size=[False],
 )
 p.ecliptic()
 p.celestial_equator()

@@ -2,6 +2,8 @@
 
 These plots use an [azimuthal equidistant projection](https://en.wikipedia.org/wiki/Azimuthal_equidistant_projection), with the projection's center set to the target's position (in azimuth, altitude coordinates). This projection was chosen because it preserves the correct proportional distances from the center point.
 
+Stars on optic plots are plotted in their [_apparent_ positions](reference-positions.md).
+
 ::: starplot.OpticPlot
     options:
         inherited_members: true
@@ -9,36 +11,3 @@ These plots use an [azimuthal equidistant projection](https://en.wikipedia.org/w
         show_root_heading: true
         docstring_section_style: list
 
-## ::: starplot.optics.Optic
-    options:
-        show_root_heading: true
-
-### ::: starplot.optics.Binoculars
-    options:
-        merge_init_into_class: true
-        show_root_heading: true
-        show_docstring_attributes: true
-
-### ::: starplot.optics.Scope
-    options:
-        merge_init_into_class: true
-        show_root_heading: true
-        show_docstring_attributes: true
-
-### ::: starplot.optics.Refractor
-    options:
-        merge_init_into_class: true
-        show_root_heading: true
-        show_docstring_attributes: true
-
-### ::: starplot.optics.Reflector
-    options:
-        merge_init_into_class: true
-        show_root_heading: true
-        show_docstring_attributes: true
-
-### ::: starplot.optics.Camera
-    options:
-        merge_init_into_class: true
-        show_root_heading: true
-        show_docstring_attributes: true

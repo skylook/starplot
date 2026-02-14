@@ -1,4 +1,4 @@
-from starplot import MapPlot, Projection, _
+from starplot import MapPlot, Miller, _
 from starplot.styles import PlotStyle, extensions
 
 
@@ -8,7 +8,7 @@ style = PlotStyle().extend(
 )
 
 p = MapPlot(
-    projection=Projection.MILLER,
+    projection=Miller(),
     ra_min=0,
     ra_max=360,
     dec_min=-80,
@@ -22,29 +22,29 @@ p.gridlines()
 p.constellations()
 p.stars(where=[_.magnitude < 6], where_labels=[_.magnitude < 2.1])
 p.open_clusters(
-    labels=None,
     where=[
         _.magnitude <= 8,
     ],
-    true_size=False,
+    where_labels=[False],
+    where_true_size=[False],
 )
 p.globular_clusters(
-    labels=None,
     where=[
         _.magnitude <= 9,
     ],
-    true_size=False,
+    where_labels=[False],
+    where_true_size=[False],
 )
 p.galaxies(
-    labels=None,
     where=[
         _.magnitude <= 10,
     ],
-    true_size=False,
+    where_labels=[False],
+    where_true_size=[False],
 )
 p.nebula(
-    labels=None,
     where=[(_.magnitude <= 10) | (_.magnitude.isnull()), _.size > 0.05],
+    where_labels=[False],
 )
 
 p.constellation_labels(style__font_size=28)
