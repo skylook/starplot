@@ -53,6 +53,12 @@ class _InteractiveMixin:
         Returns:
             ``plotly.graph_objects.Figure``
         """
+        # Axis limits and style-related values can change after __init__
+        # (e.g. OpticPlot.info() adjusts x/y limits). Refresh metadata before
+        # rendering so Plotly uses the final matplotlib state.
+        if hasattr(self, "_record_plot_info"):
+            self._record_plot_info()
+
         renderer = PlotlyRenderer(
             projection_info=self._recorder.projection_info,
             style_info=self._recorder.style_info,

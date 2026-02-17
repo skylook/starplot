@@ -8,6 +8,8 @@ except ImportError as e:
         "Install it with: pip install starplot[interactive]"
     ) from e
 
+import numpy as np
+
 from starplot.interactive.commands import DrawingCommand
 from starplot.interactive.style_converter import (
     MARKER_SYMBOL_MAP,
@@ -37,6 +39,7 @@ class PlotlyRenderer:
                 "text": self._render_text,
                 "line_collection": self._render_line_collection,
                 "gradient": self._render_gradient,
+                "info_table": self._render_info_table,
             }.get(cmd.kind)
             if handler:
                 try:
@@ -67,12 +70,14 @@ class PlotlyRenderer:
             zeroline=False,
             scaleanchor="y",
             scaleratio=1,
+            constrain="domain",
             showticklabels=False,
             showline=False,
         )
         yaxis_cfg = dict(
             showgrid=False,
             zeroline=False,
+            constrain="domain",
             showticklabels=False,
             showline=False,
         )
@@ -88,7 +93,7 @@ class PlotlyRenderer:
             yaxis=yaxis_cfg,
             hovermode="closest",
             dragmode="pan",
-            showlegend=True,
+            showlegend=False,
             legend=dict(
                 bgcolor="rgba(0,0,0,0.5)",
                 font=dict(color="#ffffff", size=11),
@@ -248,13 +253,166 @@ class PlotlyRenderer:
     # ------------------------------------------------------------------
 
     def _render_gradient(self, cmd: DrawingCommand):
-        # V1: gradient is approximated by the plot's background_color.
-        # A full gradient implementation would use Heatmap or layered shapes.
-        pass
+        color_stops = self._normalize_color_stops(cmd.data.get("color_stops", []))
+        if len(color_stops) < 2:
+            return
+
+        x_min = self.projection_info.get("x_min")
+        x_max = self.projection_info.get("x_max")
+        y_min = self.projection_info.get("y_min")
+        y_max = self.projection_info.get("y_max")
+        if None in (x_min, x_max, y_min, y_max):
+            return
+
+        direction = str(cmd.data.get("direction", "linear")).lower()
+
+        # Plotly has no native gradient plot background. We render one as a low-z
+        # heatmap in the chart coordinate system so it aligns with axis bounds.
+        if direction == "radial":
+            steps = 220
+            xs = np.linspace(float(x_min), float(x_max), steps)
+            ys = np.linspace(float(y_min), float(y_max), steps)
+            xx, yy = np.meshgrid(xs, ys)
+            cx = (float(x_min) + float(x_max)) / 2.0
+            cy = (float(y_min) + float(y_max)) / 2.0
+            rx = max(abs(float(x_max) - cx), 1e-9)
+            ry = max(abs(float(y_max) - cy), 1e-9)
+
+            rr = np.sqrt(((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2)
+            z = np.clip(1.0 - rr, 0.0, 1.0)
+            z = np.flipud(z)
+        else:
+            # Linear gradients in starplot go from stop=0 at the bottom to stop=1 at the top.
+            steps = 600
+            ys = np.linspace(float(y_min), float(y_max), steps)
+            z = np.linspace(0.0, 1.0, steps, dtype=float).reshape(-1, 1)
+            z = np.repeat(z, 2, axis=1)
+
+        self.fig.add_trace(go.Heatmap(
+            x=[float(x_min), float(x_max)],
+            y=ys,
+            z=z,
+            colorscale=color_stops,
+            showscale=False,
+            hoverinfo="skip",
+            zsmooth="best",
+            showlegend=False,
+            name="",
+        ))
 
     # ------------------------------------------------------------------
     # Interactive features
     # ------------------------------------------------------------------
+
+    def _render_info_table(self, cmd: DrawingCommand):
+        columns = [str(c) for c in cmd.data.get("columns", [])]
+        values = [str(v) for v in cmd.data.get("values", [])]
+        count = min(len(columns), len(values))
+        if count <= 0:
+            return
+
+        raw_widths = list(cmd.data.get("widths", []))[:count]
+        parsed_widths = []
+        for w in raw_widths:
+            try:
+                parsed_widths.append(max(0.0, float(w)))
+            except Exception:
+                parsed_widths.append(0.0)
+        if len(parsed_widths) < count:
+            parsed_widths.extend([1.0] * (count - len(parsed_widths)))
+
+        total = sum(parsed_widths)
+        if total <= 0:
+            widths = [1.0 / count] * count
+        else:
+            widths = [w / total for w in parsed_widths]
+
+        style = cmd.style
+        font_color = style.get("font_color", "#111111")
+        font_name = style.get("font_name", "Inter, Arial, sans-serif")
+        font_alpha = float(style.get("font_alpha", 1.0))
+        base_size = float(style.get("font_size", 12))
+        header_size = max(11, base_size * 0.55)
+        value_size = max(10, base_size * 0.48)
+        bg_color = style.get(
+            "background_color",
+            self.style_info.get("figure_background_color", "#ffffff"),
+        )
+        line_color = style.get("line_color", "#999999")
+
+        margin = self.fig.layout.margin
+        self.fig.update_layout(
+            margin=dict(
+                l=margin.l if margin.l is not None else 10,
+                r=margin.r if margin.r is not None else 10,
+                t=margin.t if margin.t is not None else 30,
+                b=max(margin.b if margin.b is not None else 10, 170),
+            )
+        )
+
+        table_top = -0.01
+        header_y = -0.045
+        value_y = -0.09
+        table_bottom = -0.125
+
+        self.fig.add_shape(
+            type="rect",
+            xref="paper",
+            yref="paper",
+            x0=0,
+            x1=1,
+            y0=table_bottom,
+            y1=table_top,
+            line=dict(color=line_color, width=1),
+            fillcolor=bg_color,
+            layer="above",
+        )
+
+        x_left = 0.0
+        for idx in range(count):
+            width = widths[idx]
+            x_right = x_left + width
+            x_center = (x_left + x_right) / 2.0
+
+            if idx > 0:
+                self.fig.add_shape(
+                    type="line",
+                    xref="paper",
+                    yref="paper",
+                    x0=x_left,
+                    x1=x_left,
+                    y0=table_bottom,
+                    y1=table_top,
+                    line=dict(color=line_color, width=1),
+                    layer="above",
+                )
+
+            self.fig.add_annotation(
+                x=x_center,
+                y=header_y,
+                xref="paper",
+                yref="paper",
+                text=f"<b>{columns[idx]}</b>",
+                showarrow=False,
+                xanchor="center",
+                yanchor="middle",
+                font=dict(size=header_size, color=font_color, family=font_name),
+                opacity=font_alpha,
+            )
+            self.fig.add_annotation(
+                x=x_center,
+                y=value_y,
+                xref="paper",
+                yref="paper",
+                text=values[idx],
+                showarrow=False,
+                xanchor="center",
+                yanchor="middle",
+                font=dict(size=value_size, color=font_color, family=font_name),
+                opacity=font_alpha,
+            )
+
+            x_left = x_right
 
     def _add_interactive_features(self):
         self.fig.update_layout(
@@ -267,6 +425,45 @@ class PlotlyRenderer:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_color_stops(raw_stops) -> list[list]:
+        stops = []
+        for stop in raw_stops:
+            pos = None
+            color = None
+
+            if isinstance(stop, (list, tuple)) and len(stop) == 2:
+                pos, color = stop
+            elif isinstance(stop, dict):
+                pos = stop.get("position")
+                color = stop.get("color")
+
+            if pos is None or color is None:
+                continue
+
+            try:
+                p = float(pos)
+            except Exception:
+                continue
+
+            if hasattr(color, "as_hex"):
+                c = color.as_hex()
+            else:
+                c = str(color)
+
+            stops.append([min(1.0, max(0.0, p)), c])
+
+        if not stops:
+            return []
+
+        stops.sort(key=lambda s: s[0])
+        if stops[0][0] > 0:
+            stops.insert(0, [0.0, stops[0][1]])
+        if stops[-1][0] < 1:
+            stops.append([1.0, stops[-1][1]])
+
+        return stops
 
     def _build_hover_texts(self, metadata: list) -> list[str]:
         texts = []

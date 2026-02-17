@@ -12,12 +12,13 @@ class DrawingRecorder:
         self.style_info: dict = {}
         # Keys: background_color, figure_background_color, resolution
 
-    def record_scatter(self, x, y, sizes, colors, alphas, metadata, gid, zorder):
+    def record_scatter(self, x, y, sizes, colors, alphas, metadata, style_dict=None, gid="scatter", zorder=0):
         self.commands.append(DrawingCommand(
             kind="scatter",
             data={"x": list(x), "y": list(y), "sizes": list(sizes),
                   "colors": list(colors) if not isinstance(colors, str) else [colors] * len(list(x)),
                   "alphas": list(alphas) if not isinstance(alphas, (int, float)) else [alphas] * len(list(x))},
+            style=dict(style_dict) if style_dict else {},
             metadata=list(metadata),
             gid=gid,
             zorder=zorder,
@@ -66,6 +67,19 @@ class DrawingRecorder:
             data={"direction": direction, "color_stops": list(color_stops)},
             gid=gid,
             zorder=-1,
+        ))
+
+    def record_info_table(self, columns, values, widths, style_dict, gid="info-table", zorder=0):
+        self.commands.append(DrawingCommand(
+            kind="info_table",
+            data={
+                "columns": list(columns),
+                "values": list(values),
+                "widths": list(widths),
+            },
+            style=dict(style_dict),
+            gid=gid,
+            zorder=zorder,
         ))
 
     def clear(self):

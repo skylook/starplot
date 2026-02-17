@@ -142,6 +142,13 @@ class RecordingMixin:
         ys = [p[1] for p in projected]
 
         resolved_style = style or self.style.star
+        symbol = kwargs.get("symbol", getattr(resolved_style.marker, "symbol", "circle"))
+        symbol = getattr(symbol, "value", symbol)
+        style_dict = {
+            "symbol": str(symbol),
+            "edge_color": kwargs.get("edgecolors", "none"),
+            "edge_width": getattr(resolved_style.marker, "edge_width", 0),
+        }
         self._recorder.record_scatter(
             x=xs,
             y=ys,
@@ -149,6 +156,7 @@ class RecordingMixin:
             colors=colors,
             alphas=alphas,
             metadata=metadata,
+            style_dict=style_dict,
             gid=kwargs.get("gid", "stars"),
             zorder=kwargs.get("zorder", resolved_style.marker.zorder),
         )
@@ -159,6 +167,7 @@ class RecordingMixin:
     # ------------------------------------------------------------------
 
     def _polygon(self, points, style, **kwargs):
+        projected_points = [self._project_coords(ra, dec) for ra, dec in points]
         super()._polygon(points, style, **kwargs)
         try:
             style_dict = {
@@ -172,7 +181,7 @@ class RecordingMixin:
         except Exception:
             style_dict = {}
         self._recorder.record_polygon(
-            points=[(float(x), float(y)) for x, y in points],
+            points=[(float(x), float(y)) for x, y in projected_points],
             style_dict=style_dict,
             gid=kwargs.get("gid", "polygon"),
             zorder=getattr(style, "zorder", 0),
@@ -362,12 +371,19 @@ class RecordingMixin:
             pass
 
     # ------------------------------------------------------------------
-    # Method 8: Horizon (ZenithPlot circular border and compass labels)
+    # Method 8: Horizon (ZenithPlot/OpticPlot circular border and compass labels)
     # ------------------------------------------------------------------
 
     def horizon(self, style=None, labels=None):
         """Override horizon() to record the circular border and compass labels."""
         super().horizon(style=style, labels=labels)
+        
+        # Only record circular border for ZenithPlot and OpticPlot, not for HorizonPlot
+        from starplot.plots.zenith import ZenithPlot
+        from starplot.plots.optic import OpticPlot
+        if not isinstance(self, (ZenithPlot, OpticPlot)):
+            return
+        
         try:
             from starplot.styles import PathStyle
             resolved_style = style or self.style.horizon
@@ -447,7 +463,113 @@ class RecordingMixin:
             pass
 
     # ------------------------------------------------------------------
-    # Method 9: Gradient background
+    # Method 9: Optic info table
+    # ------------------------------------------------------------------
+
+    def info(self, style=None):
+        """Record OpticPlot's bottom info table for interactive parity."""
+        result = super().info(style=style)
+
+        from starplot.plots.optic import OpticPlot
+        if not isinstance(self, OpticPlot):
+            return result
+
+        try:
+            from starplot.utils import azimuth_to_string
+
+            resolved_style = style or self.style.info_text
+            dt_str = (
+                self.observer.dt.strftime("%m/%d/%Y @ %H:%M:%S")
+                + " "
+                + self.observer.dt.tzname()
+            )
+
+            columns = [
+                "Target (Alt/Az)",
+                "Target (RA/DEC)",
+                "Observer Lat, Lon",
+                "Observer Date/Time",
+                f"Optic - {self.optic.label}",
+            ]
+            values = [
+                f"{self.pos_alt.degrees:.0f}\N{DEGREE SIGN} / {self.pos_az.degrees:.0f}\N{DEGREE SIGN} ({azimuth_to_string(self.pos_az.degrees)})",
+                f"{(self.ra / 15):.2f}h / {self.dec:.2f}\N{DEGREE SIGN}",
+                f"{self.observer.lat:.2f}\N{DEGREE SIGN}, {self.observer.lon:.2f}\N{DEGREE SIGN}",
+                dt_str,
+                str(self.optic),
+            ]
+            widths = [0.15, 0.15, 0.2, 0.2, 0.3]
+
+            font_color = resolved_style.font_color.as_hex()
+            font_name = resolved_style.font_name or resolved_style.font_family or "Inter"
+
+            self._recorder.record_info_table(
+                columns=columns,
+                values=values,
+                widths=widths,
+                style_dict={
+                    "font_size": resolved_style.font_size * self.scale,
+                    "font_color": font_color,
+                    "font_weight": resolved_style.font_weight,
+                    "font_name": font_name,
+                    "font_alpha": resolved_style.font_alpha,
+                    "background_color": self.style.figure_background_color.as_hex(),
+                    "line_color": self.style.border_line_color.as_hex(),
+                },
+                gid="optic-info-table",
+                zorder=getattr(resolved_style, "zorder", 0) + 2000,
+            )
+        except Exception:
+            pass
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Method 10: OpticPlot border (circular field of view)
+    # ------------------------------------------------------------------
+
+    def _plot_border(self):
+        """Override _plot_border for OpticPlot to record circular border."""
+        super()._plot_border()
+        
+        # Only record for OpticPlot
+        from starplot.plots.optic import OpticPlot
+        if not isinstance(self, OpticPlot):
+            return
+        
+        try:
+            # Match OpticPlot._plot_border() outer ring:
+            # optic.patch(..., padding=0.05, linewidth=25 * self.scale,
+            #            edgecolor=self.style.border_bg_color)
+            color = self.style.border_bg_color.as_hex()
+            width = 25 * self.scale
+            alpha = 1.0
+
+            # Optic.patch() is a circle for scope/binocular optics.
+            # Keep fallback for non-circular optics.
+            import numpy as np
+            radius = getattr(self.optic, "radius", self.optic.xlim) + 0.05
+            theta = np.linspace(0, 2 * np.pi, 100)
+            circle_x = radius * np.cos(theta)
+            circle_y = radius * np.sin(theta)
+            
+            self._recorder.record_line(
+                x=list(circle_x),
+                y=list(circle_y),
+                style_dict={
+                    "color": color,
+                    "width": width,
+                    "line_style": "solid",
+                    "alpha": alpha,
+                },
+                gid="optic-border",
+                zorder=1000,
+            )
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Method 11: Gradient background
     # ------------------------------------------------------------------
 
     def _plot_gradient_background(self, gradient_preset):
