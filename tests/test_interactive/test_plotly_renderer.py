@@ -15,7 +15,7 @@ from starplot.interactive.plotly_renderer import PlotlyRenderer
 
 
 PROJ_INFO = {"ra_min": 0, "ra_max": 360, "dec_min": -90, "dec_max": 90}
-STYLE_INFO = {"background_color": "#0a0a1a", "figure_background_color": "#000000"}
+STYLE_INFO = {"background_color": "#0a0a1a", "figure_background_color": "#000000", "show_legend": True}
 
 
 def make_renderer():
@@ -166,8 +166,8 @@ def test_renderer_legend_dedup():
     assert legend_entries.count("Stars") == 1
 
 
-def test_renderer_gradient_skipped():
-    """Gradient commands should not add traces (V1: uses solid background)."""
+def test_renderer_gradient_no_traces_without_proj_info():
+    """Gradient without projected axis bounds should not add traces."""
     cmd = DrawingCommand(
         kind="gradient",
         data={"direction": "vertical", "color_stops": [(0.0, "#000"), (1.0, "#001")]},
@@ -176,6 +176,23 @@ def test_renderer_gradient_skipped():
     renderer = make_renderer()
     fig = renderer.render([cmd])
     assert len(fig.data) == 0
+
+
+def test_renderer_gradient_renders_heatmap_with_proj_info():
+    """Gradient with projected axis bounds should render a heatmap trace."""
+    proj_info = {
+        "ra_min": 0, "ra_max": 360, "dec_min": -90, "dec_max": 90,
+        "x_min": 0.0, "x_max": 100.0, "y_min": -50.0, "y_max": 50.0,
+    }
+    cmd = DrawingCommand(
+        kind="gradient",
+        data={"direction": "vertical", "color_stops": [(0.0, "#000"), (1.0, "#001")]},
+        zorder=-1,
+    )
+    renderer = PlotlyRenderer(proj_info, STYLE_INFO)
+    fig = renderer.render([cmd])
+    assert len(fig.data) == 1
+    assert fig.data[0].type == "heatmap"
 
 
 def test_renderer_hover_star_text():
@@ -194,3 +211,31 @@ def test_renderer_hover_star_text():
     assert "Sirius" in hover_text
     assert "Magnitude" in hover_text
     assert "RA" in hover_text
+
+
+def test_renderer_marker_uses_legend_label():
+    cmd = DrawingCommand(
+        kind="scatter",
+        data={"x": [10.0], "y": [20.0], "sizes": [50], "colors": ["#ff0000"], "alphas": [1.0]},
+        style={"legend_label": "Target", "symbol": "circle", "edge_width": 1},
+        metadata=[{}],
+        zorder=0, gid="marker",
+    )
+    renderer = make_renderer()
+    fig = renderer.render([cmd])
+    assert fig.data[0].name == "Target"
+    assert fig.data[0].showlegend is True
+
+
+def test_renderer_text_with_paper_ref():
+    cmd = DrawingCommand(
+        kind="text",
+        data={"text": "Title", "x": 0.5, "y": 0.98},
+        style={"font_size": 24, "font_color": "#ffffff", "xref": "paper", "yref": "paper"},
+        zorder=10, gid="title",
+    )
+    renderer = make_renderer()
+    fig = renderer.render([cmd])
+    ann = fig.layout.annotations[0]
+    assert ann.xref == "paper"
+    assert ann.yref == "paper"

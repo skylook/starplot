@@ -42,6 +42,7 @@ def test_interactive_map_plot_creates():
 def test_recorder_initialized():
     p = _make_map_plot()
     assert p._recorder.commands == []
+    p._record_plot_info()
     assert p._recorder.projection_info != {}
     assert "ra_min" in p._recorder.projection_info
 
@@ -136,6 +137,7 @@ def test_stars_count_matches_recorded():
 
 def test_style_info_recorded():
     p = _make_map_plot()
+    p._record_plot_info()
     assert "background_color" in p._recorder.style_info
     assert "resolution" in p._recorder.style_info
 
@@ -165,5 +167,72 @@ def test_text_labels_recorded():
     p.stars(where=[ibis_col.magnitude < 5], where_labels=[ibis_col.magnitude < 3])
 
     text_cmds = [c for c in p._recorder.commands if c.kind == "text"]
-    # At least some labels should be recorded
-    assert len(text_cmds) >= 0  # could be 0 if all labels collide
+    # Labels that survive collision detection should be recorded with text content
+    for cmd in text_cmds:
+        assert cmd.data.get("text", "") != "", "Recorded text label must have non-empty text"
+        assert "x" in cmd.data and "y" in cmd.data, "Text label must have coordinates"
+
+
+def test_marker_records_scatter():
+    p = _make_map_plot()
+    p.marker(
+        ra=90,
+        dec=10,
+        style={"marker": {"symbol": "circle", "size": 20, "color": "#ff0000"}},
+    )
+
+    scatter_cmds = [c for c in p._recorder.commands if c.kind == "scatter" and c.gid == "marker"]
+    assert len(scatter_cmds) == 1
+    assert len(scatter_cmds[0].data["x"]) == 1
+    assert scatter_cmds[0].style.get("legend_label") is None
+
+
+def test_marker_records_legend_label():
+    p = _make_map_plot()
+    p.marker(
+        ra=90,
+        dec=10,
+        style={"marker": {"symbol": "circle", "size": 20, "color": "#ff0000"}},
+        legend_label="Target",
+    )
+
+    scatter_cmds = [c for c in p._recorder.commands if c.kind == "scatter" and c.gid == "marker"]
+    assert len(scatter_cmds) == 1
+    assert scatter_cmds[0].style.get("legend_label") == "Target"
+
+
+def test_gridlines_records_line_collection():
+    p = _make_map_plot()
+    p.gridlines()
+
+    line_cmds = [c for c in p._recorder.commands if c.kind == "line_collection" and c.gid == "gridlines"]
+    assert len(line_cmds) >= 1
+    assert len(line_cmds[0].data["lines"]) > 0
+
+
+def test_title_records_text():
+    p = _make_map_plot()
+    p.title("Test Title")
+
+    text_cmds = [c for c in p._recorder.commands if c.kind == "text" and c.gid == "title"]
+    assert len(text_cmds) == 1
+    assert text_cmds[0].data["text"] == "Test Title"
+    assert text_cmds[0].style.get("xref") == "paper"
+    assert text_cmds[0].style.get("yref") == "paper"
+
+
+def test_legend_records_style_info():
+    p = _make_map_plot()
+    p.marker(ra=90, dec=10, style={"marker": {"symbol": "circle", "size": 20, "color": "#ff0000"}}, legend_label="Target")
+    p.legend(title="My Legend")
+
+    assert p._recorder.style_info.get("show_legend") is True
+    assert p._recorder.style_info.get("legend_title") == "My Legend"
+
+
+def test_constellation_borders_records_line_collection():
+    p = _make_map_plot()
+    p.constellation_borders()
+
+    line_cmds = [c for c in p._recorder.commands if c.kind == "line_collection" and c.gid == "constellations-border"]
+    assert len(line_cmds) >= 1

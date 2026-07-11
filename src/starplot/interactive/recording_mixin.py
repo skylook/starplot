@@ -10,9 +10,32 @@ Each overridden method calls super() first (preserving matplotlib rendering),
 then records a DrawingCommand for the Plotly renderer.
 """
 
+import logging
 import math
+from typing import Optional
 
 from starplot.interactive.recorder import DrawingRecorder
+from starplot.coordinates import CoordinateSystem
+from starplot.styles import ObjectStyle, PathStyle, LineStyle, LabelStyle, LegendStyle, ArrowStyle
+from starplot.styles.helpers import use_style
+
+LOGGER = logging.getLogger("starplot.interactive")
+
+
+def _split_points(points):
+    """Split a sequence of points into segments separated by non-finite coordinates."""
+    segments = []
+    current = []
+    for x, y in points:
+        if math.isfinite(x) and math.isfinite(y):
+            current.append((float(x), float(y)))
+        else:
+            if len(current) > 1:
+                segments.append(current)
+            current = []
+    if len(current) > 1:
+        segments.append(current)
+    return segments
 
 
 class RecordingMixin:
@@ -21,8 +44,8 @@ class RecordingMixin:
     def __init__(self, *args, **kwargs):
         self._recorder = DrawingRecorder()
         super().__init__(*args, **kwargs)
-        # After super().__init__ the plot axes are ready; record plot metadata.
-        self._record_plot_info()
+        # Metadata is recorded lazily in to_plotly() so __init__ does not
+        # produce matplotlib side effects (e.g., drawing).
 
     # ------------------------------------------------------------------
     # Coordinate projection helper
@@ -42,14 +65,20 @@ class RecordingMixin:
         """
         if hasattr(self, '_proj') and hasattr(self, '_crs'):
             try:
-                x, y = self._proj.transform_point(ra, dec, self._crs)
+                if self._coordinate_system == CoordinateSystem.AZ_ALT:
+                    # Inputs are RA/DEC; convert to AZ/ALT then project
+                    az, alt = self._prepare_coords(ra, dec)
+                    x, y = self._proj.transform_point(az, alt, self._crs)
+                else:
+                    x, y = self._proj.transform_point(ra, dec, self._crs)
                 if math.isfinite(x) and math.isfinite(y):
                     return float(x), float(y)
                 return float('nan'), float('nan')
-            except Exception:
+            except Exception as e:
+                LOGGER.debug("Projection failed for (%s, %s): %s", ra, dec, e)
                 return float('nan'), float('nan')
         else:
-            # HorizonPlot, OpticPlot — _prepare_coords handles conversion
+            # Fallback for plot types without a projection
             return self._prepare_coords(ra, dec)
 
     # ------------------------------------------------------------------
@@ -78,8 +107,8 @@ class RecordingMixin:
                 "y_min": ylim[0],
                 "y_max": ylim[1],
             })
-        except Exception:
-            pass
+        except Exception as e:
+            LOGGER.debug("Could not extract axis limits: %s", e)
 
         self._recorder.projection_info = proj_info
 
@@ -94,7 +123,8 @@ class RecordingMixin:
                 else self.style.background_color.as_hex()
             )
             fig_bg = self.style.figure_background_color.as_hex()
-        except Exception:
+        except Exception as e:
+            LOGGER.debug("Could not extract style info: %s", e)
             bg = "#ffffff"
             fig_bg = "#ffffff"
 
@@ -102,6 +132,12 @@ class RecordingMixin:
             "background_color": bg,
             "figure_background_color": fig_bg,
             "resolution": getattr(self, "resolution", 2048),
+            "show_legend": self._legend is not None,
+            "legend_title": (
+                self._legend.get_title().get_text()
+                if self._legend is not None
+                else None
+            ),
         }
 
     # ------------------------------------------------------------------
@@ -109,6 +145,7 @@ class RecordingMixin:
     # ------------------------------------------------------------------
 
     def _scatter_stars(self, ras, decs, sizes, alphas, colors, style=None, **kwargs):
+        legend_label = kwargs.pop("legend_label", "Star")
         result = super()._scatter_stars(ras, decs, sizes, alphas, colors, style, **kwargs)
 
         ras_list = list(ras)
@@ -121,8 +158,8 @@ class RecordingMixin:
             label = ""
             try:
                 label = s.get_label(s) if callable(getattr(s, "get_label", None)) else ""
-            except Exception:
-                pass
+            except Exception as e:
+                LOGGER.debug("Could not get star label: %s", e)
             metadata.append({
                 "name": label or "",
                 "magnitude": getattr(s, "magnitude", None),
@@ -148,6 +185,8 @@ class RecordingMixin:
             "symbol": str(symbol),
             "edge_color": kwargs.get("edgecolors", "none"),
             "edge_width": getattr(resolved_style.marker, "edge_width", 0),
+            "legend_label": legend_label,
+            "fill": getattr(resolved_style.marker, "fill", "full"),
         }
         self._recorder.record_scatter(
             x=xs,
@@ -158,7 +197,7 @@ class RecordingMixin:
             metadata=metadata,
             style_dict=style_dict,
             gid=kwargs.get("gid", "stars"),
-            zorder=kwargs.get("zorder", resolved_style.marker.zorder),
+            zorder=int(kwargs.get("zorder") or resolved_style.marker.zorder),
         )
         return result
 
@@ -176,15 +215,17 @@ class RecordingMixin:
                 "edge_width": getattr(style, "edge_width", 0),
                 "alpha": getattr(style, "alpha", 1.0),
                 "line_style": str(getattr(style, "line_style", "solid")),
-                "zorder": getattr(style, "zorder", 0),
+                "zorder": int(getattr(style, "zorder", 0) or 0),
+                "legend_label": kwargs.get("legend_label"),
             }
-        except Exception:
-            style_dict = {}
+        except Exception as e:
+            LOGGER.debug("Could not extract polygon style: %s", e)
+            style_dict = {"legend_label": kwargs.get("legend_label")}
         self._recorder.record_polygon(
             points=[(float(x), float(y)) for x, y in projected_points],
             style_dict=style_dict,
             gid=kwargs.get("gid", "polygon"),
-            zorder=getattr(style, "zorder", 0),
+            zorder=int(getattr(style, "zorder", 0) or 0),
         )
 
     # ------------------------------------------------------------------
@@ -253,10 +294,197 @@ class RecordingMixin:
                         "alpha": getattr(style, "alpha", 1.0),
                     },
                     gid=kwargs.get("gid", "line"),
-                    zorder=getattr(style, "zorder", 0),
+                    zorder=int(getattr(style, "zorder", 0) or 0),
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            LOGGER.warning("Failed to record line (gid=%s): %s", kwargs.get("gid", "line"), e)
+
+    # ------------------------------------------------------------------
+    # Method 4.5: Marker
+    # ------------------------------------------------------------------
+
+    @use_style(ObjectStyle)
+    def marker(
+        self,
+        ra: float,
+        dec: float,
+        style: ObjectStyle,
+        label: Optional[str] = None,
+        legend_label: str = None,
+        skip_bounds_check: bool = False,
+        collision_handler=None,
+        **kwargs,
+    ) -> None:
+        """Record a scatter command for every marker call."""
+        super().marker(
+            ra=ra,
+            dec=dec,
+            style=style,
+            label=label,
+            legend_label=legend_label,
+            skip_bounds_check=skip_bounds_check,
+            collision_handler=collision_handler,
+            **kwargs,
+        )
+
+        if not skip_bounds_check and not self.in_bounds(ra, dec):
+            return
+
+        x, y = self._project_coords(ra, dec)
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return
+
+        style_kwargs = style.marker.matplot_scatter_kwargs(self.scale)
+        style_dict = {
+            "symbol": str(getattr(style.marker.symbol, "value", style.marker.symbol)),
+            "edge_color": style_kwargs.get("edgecolors", "none"),
+            "edge_width": style_kwargs.get("linewidths", 0) or 0,
+            "fill": str(getattr(style.marker.fill, "value", style.marker.fill)),
+            "legend_label": legend_label,
+        }
+
+        self._recorder.record_scatter(
+            x=[x],
+            y=[y],
+            sizes=[style_kwargs.get("s", 22)],
+            colors=[style_kwargs.get("c", "#000000")],
+            alphas=[style_kwargs.get("alpha", 1.0)],
+            metadata=[{"type": "marker", "name": label or ""}],
+            style_dict=style_dict,
+            gid=kwargs.get("gid_marker") or "marker",
+            zorder=int(style_kwargs.get("zorder") or style.marker.zorder),
+        )
+
+    # ------------------------------------------------------------------
+    # Method 4.6: Gridlines (MapPlot and HorizonPlot)
+    # ------------------------------------------------------------------
+
+    @use_style(PathStyle, "gridlines")
+    def gridlines(self, *args, **kwargs):
+        """Record gridlines for MapPlot and HorizonPlot."""
+        super().gridlines(*args, **kwargs)
+
+        try:
+            style = kwargs.get("style") or self.style.gridlines
+
+            # Determine if labels should be drawn
+            labels_enabled = kwargs.get("labels")
+            if labels_enabled is None:
+                labels_enabled = kwargs.get("show_labels")
+            if labels_enabled is None:
+                labels_enabled = True
+
+            from starplot.plots.horizon import HorizonPlot
+            from starplot.plots.map import MapPlot
+
+            lines = []
+            label_texts = []
+
+            if isinstance(self, HorizonPlot):
+                az = self.az
+                alt = self.alt
+                az_locations = kwargs.get("az_locations") or [x for x in range(0, 360, 15)]
+                alt_locations = kwargs.get("alt_locations") or [d for d in range(-90, 90, 10)]
+                az_formatter_fn = kwargs.get("az_formatter_fn") or (lambda a: f"{round(a)}\u00b0 ")
+                alt_formatter_fn = kwargs.get("alt_formatter_fn") or (lambda a: f"{round(a)}\u00b0 ")
+
+                # Azimuth lines (constant az, alt varies)
+                for az_val in az_locations:
+                    if not (az[0] <= az_val <= az[1] or az[0] <= az_val + 360 <= az[1]):
+                        continue
+                    alts = [alt[0] + (alt[1] - alt[0]) * i / 60 for i in range(61)]
+                    points = [self._proj.transform_point(az_val, a, self._crs) for a in alts]
+                    segs = _split_points(points)
+                    for seg in segs:
+                        lines.append(seg)
+                        if labels_enabled:
+                            label_texts.append(
+                                (seg[0][0], seg[0][1], az_formatter_fn(az_val))
+                            )
+
+                # Altitude lines (constant alt, az varies)
+                for alt_val in alt_locations:
+                    if not (alt[0] <= alt_val <= alt[1]):
+                        continue
+                    azs = [az[0] + (az[1] - az[0]) * i / 60 for i in range(61)]
+                    points = [self._proj.transform_point(a, alt_val, self._crs) for a in azs]
+                    segs = _split_points(points)
+                    for seg in segs:
+                        lines.append(seg)
+                        if labels_enabled:
+                            label_texts.append(
+                                (seg[0][0], seg[0][1], alt_formatter_fn(alt_val))
+                            )
+
+            elif isinstance(self, MapPlot):
+                ra_min = self.ra_min
+                ra_max = self.ra_max
+                dec_min = self.dec_min
+                dec_max = self.dec_max
+                ra_locations = kwargs.get("ra_locations") or [x for x in range(0, 360, 15)]
+                dec_locations = kwargs.get("dec_locations") or [d for d in range(-80, 90, 10)]
+                ra_formatter_fn = kwargs.get("ra_formatter_fn") or (lambda r: f"{math.floor(r)}h")
+                dec_formatter_fn = kwargs.get("dec_formatter_fn") or (lambda d: f"{round(d)}\u00b0 ")
+
+                # RA meridians (constant RA, dec varies)
+                for ra_val in ra_locations:
+                    decs = [dec_min + (dec_max - dec_min) * i / 60 for i in range(61)]
+                    points = [self._project_coords(ra_val, d) for d in decs]
+                    segs = _split_points(points)
+                    for seg in segs:
+                        lines.append(seg)
+                        if labels_enabled:
+                            label_texts.append(
+                                (seg[0][0], seg[0][1], ra_formatter_fn(ra_val))
+                            )
+
+                # DEC parallels (constant dec, ra varies)
+                for dec_val in dec_locations:
+                    ras = [ra_min + (ra_max - ra_min) * i / 60 for i in range(61)]
+                    points = [self._project_coords(r, dec_val) for r in ras]
+                    segs = _split_points(points)
+                    for seg in segs:
+                        lines.append(seg)
+                        if labels_enabled:
+                            label_texts.append(
+                                (seg[0][0], seg[0][1], dec_formatter_fn(dec_val))
+                            )
+
+            if lines:
+                self._recorder.record_line_collection(
+                    lines=lines,
+                    style_dict={
+                        "color": style.line.color.as_hex(),
+                        "width": style.line.width,
+                        "alpha": style.line.alpha,
+                        "line_style": str(style.line.style),
+                    },
+                    gid="gridlines",
+                    zorder=int(style.line.zorder or 0),
+                    metadata=[{"type": "gridline"} for _ in lines],
+                )
+
+            if labels_enabled:
+                for x, y, text in label_texts:
+                    if not math.isfinite(x) or not math.isfinite(y) or not text:
+                        continue
+                    self._recorder.record_text(
+                        text=str(text),
+                        x=x,
+                        y=y,
+                        style_dict={
+                            "font_size": style.label.font_size,
+                            "font_color": style.label.font_color.as_hex(),
+                            "font_alpha": style.label.font_alpha,
+                            "font_weight": style.label.font_weight,
+                            "font_style": style.label.font_style,
+                            "font_name": style.label.font_name,
+                        },
+                        gid="gridlines-label",
+                        zorder=int(style.label.zorder or 0),
+                    )
+        except Exception as e:
+            LOGGER.warning("Failed to record gridlines: %s", e)
 
     # ------------------------------------------------------------------
     # Method 5: Constellation lines (re-extract line data after super() renders)
@@ -274,7 +502,8 @@ class RecordingMixin:
 
         try:
             constars = self._prepare_constellation_stars(cons)
-        except Exception:
+        except Exception as e:
+            LOGGER.warning("Failed to prepare constellation stars: %s", e)
             return
 
         constellation_lines = []
@@ -315,6 +544,69 @@ class RecordingMixin:
             )
 
     # ------------------------------------------------------------------
+    # Method 5.5: Constellation borders
+    # ------------------------------------------------------------------
+
+    @use_style(LineStyle, "constellation_borders")
+    def constellation_borders(self, style=None, catalog=None, **kwargs):
+        """Record constellation borders as a line collection."""
+        from starplot.data.catalogs import CONSTELLATION_BORDERS
+        catalog = catalog or CONSTELLATION_BORDERS
+        super().constellation_borders(style=style, catalog=catalog, **kwargs)
+
+        try:
+            from starplot.data import db
+            from starplot.data.catalogs import CONSTELLATION_BORDERS
+            from starplot.coordinates import CoordinateSystem
+            from ibis import _
+
+            con = db.connect()
+            borders = CONSTELLATION_BORDERS._load(
+                connection=con, table_name="constellation_borders"
+            )
+            borders = borders.mutate(geometry=_.geometry.cast("geometry"))
+
+            extent = self._extent_mask()
+            borders_df = borders.filter(_.geometry.intersects(extent)).to_pandas()
+
+            if borders_df.empty:
+                return
+
+            border_lines = []
+            geometries = [line.geometry for line in borders_df.itertuples()]
+
+            for ls in geometries:
+                if ls.length < 360:
+                    ls = ls.segmentize(1)
+                xy = [c for c in ls.coords]
+
+                if self._coordinate_system == CoordinateSystem.RA_DEC:
+                    coords = [self._project_coords(*p) for p in xy]
+                elif self._coordinate_system == CoordinateSystem.AZ_ALT:
+                    coords = [self._proj.transform_point(*p, self._crs) for p in xy]
+                else:
+                    continue
+
+                segments = _split_points(coords)
+                border_lines.extend(segments)
+
+            if border_lines:
+                self._recorder.record_line_collection(
+                    lines=border_lines,
+                    style_dict={
+                        "color": style.color.as_hex(),
+                        "width": style.width,
+                        "alpha": style.alpha,
+                        "line_style": str(style.style),
+                    },
+                    metadata=[{"type": "constellation-border"} for _ in border_lines],
+                    gid="constellations-border",
+                    zorder=int(style.zorder or 0),
+                )
+        except Exception as e:
+            LOGGER.warning("Failed to record constellation borders: %s", e)
+
+    # ------------------------------------------------------------------
     # Method 6: Ecliptic line
     # ------------------------------------------------------------------
 
@@ -340,8 +632,8 @@ class RecordingMixin:
                     gid="ecliptic-line",
                     zorder=resolved_style.line.zorder,
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            LOGGER.warning("Failed to record ecliptic line: %s", e)
 
     # ------------------------------------------------------------------
     # Method 7: Celestial equator
@@ -367,100 +659,312 @@ class RecordingMixin:
                 gid="celestial-equator-line",
                 zorder=resolved_style.line.zorder,
             )
-        except Exception:
-            pass
-
-    # ------------------------------------------------------------------
-    # Method 8: Horizon (ZenithPlot/OpticPlot circular border and compass labels)
-    # ------------------------------------------------------------------
-
-    def horizon(self, style=None, labels=None):
-        """Override horizon() to record the circular border and compass labels."""
-        super().horizon(style=style, labels=labels)
-        
-        # Only record circular border for ZenithPlot and OpticPlot, not for HorizonPlot
-        from starplot.plots.zenith import ZenithPlot
-        from starplot.plots.optic import OpticPlot
-        if not isinstance(self, (ZenithPlot, OpticPlot)):
-            return
-        
-        try:
-            from starplot.styles import PathStyle
-            resolved_style = style or self.style.horizon
-            
-            # Record circular border
-            # In matplotlib, horizon() draws a Circle patch at (0.5, 0.5) with radius 0.454
-            # in axes coordinates. We need to convert this to data coordinates.
-            xlim = self.ax.get_xlim()
-            ylim = self.ax.get_ylim()
-            center_x = (xlim[0] + xlim[1]) / 2
-            center_y = (ylim[0] + ylim[1]) / 2
-            radius = (xlim[1] - xlim[0]) / 2 * 0.454 / 0.5  # Scale from axes to data coords
-            
-            # Generate circle points
-            import numpy as np
-            theta = np.linspace(0, 2 * np.pi, 100)
-            circle_x = center_x + radius * np.cos(theta)
-            circle_y = center_y + radius * np.sin(theta)
-            
-            self._recorder.record_line(
-                x=list(circle_x),
-                y=list(circle_y),
-                style_dict={
-                    "color": resolved_style.line.color.as_hex(),
-                    "width": resolved_style.line.width,
-                    "line_style": str(resolved_style.line.style),
-                    "alpha": resolved_style.line.alpha,
-                },
-                gid="horizon-circle",
-                zorder=resolved_style.line.zorder,
-            )
-            
-            # Record compass labels (N, E, S, W)
-            if labels is None:
-                labels = ["N", "E", "S", "W"]
-            if labels:
-                from starplot.data.translations import translate
-                labels = [translate(label, self.language) for label in labels]
-                
-                # Convert axes coordinates to data coordinates
-                # North: (0.5, 0.95), East: (0.045, 0.5), South: (0.5, 0.045), West: (0.954, 0.5)
-                label_ax_coords = [
-                    (0.5, 0.95),   # north
-                    (0.045, 0.5),  # east
-                    (0.5, 0.045),  # south
-                    (0.954, 0.5),  # west
-                ]
-                
-                for label, (ax_x, ax_y) in zip(labels, label_ax_coords):
-                    # Convert from axes coordinates to data coordinates
-                    data_x = xlim[0] + (xlim[1] - xlim[0]) * ax_x
-                    data_y = ylim[0] + (ylim[1] - ylim[0]) * ax_y
-                    
-                    # Convert Color objects to hex strings for Plotly
-                    font_color = resolved_style.label.font_color
-                    if hasattr(font_color, 'as_hex'):
-                        font_color = font_color.as_hex()
-                    elif not isinstance(font_color, str):
-                        font_color = str(font_color)
-                    
-                    self._recorder.record_text(
-                        text=str(label),
-                        x=data_x,
-                        y=data_y,
-                        style_dict={
-                            "font_size": resolved_style.label.font_size,
-                            "font_color": font_color,
-                            "font_weight": resolved_style.label.font_weight,
-                            "font_style": resolved_style.label.font_style,
-                            "alpha": resolved_style.label.font_alpha,
-                        },
-                        gid="compass-label",
-                        zorder=resolved_style.label.zorder,
-                    )
         except Exception as e:
-            # Silently fail if horizon() is not available (e.g., MapPlot)
-            pass
+            LOGGER.warning("Failed to record celestial equator: %s", e)
+
+    # ------------------------------------------------------------------
+    # Method 8: Horizon (MapPlot great circle, HorizonPlot bar, ZenithPlot circle)
+    # ------------------------------------------------------------------
+
+    @use_style(PathStyle, "horizon")
+    def horizon(self, style=None, labels=None, **kwargs):
+        """Record horizon elements for MapPlot, HorizonPlot, and ZenithPlot."""
+        horizon_kwargs = {"style": style}
+        if labels is not None:
+            horizon_kwargs["labels"] = labels
+        super().horizon(**horizon_kwargs, **kwargs)
+
+        try:
+            from starplot.plots.horizon import (
+                HorizonPlot,
+                DEFAULT_HORIZON_LABELS,
+            )
+            from starplot.plots.map import MapPlot
+            from starplot.plots.zenith import ZenithPlot
+            from starplot.data.translations import translate
+            from starplot import geod
+
+            resolved_style = style or self.style.horizon
+
+            if isinstance(self, HorizonPlot):
+                labels = labels or DEFAULT_HORIZON_LABELS
+                patch_y = -0.11 * self.scale
+
+                # Bottom bar polygon in axes coordinates
+                self._recorder.record_polygon(
+                    points=[
+                        (0, -0.04 * self.scale),
+                        (1, -0.04 * self.scale),
+                        (1, patch_y),
+                        (0, patch_y),
+                        (0, -0.04 * self.scale),
+                    ],
+                    style_dict={
+                        "fill_color": resolved_style.line.color.as_hex(),
+                        "edge_color": resolved_style.line.color.as_hex(),
+                        "edge_width": 0,
+                        "alpha": 1.0,
+                        "xref": "paper",
+                        "yref": "paper",
+                    },
+                    gid="horizon-bottom",
+                    zorder=int(resolved_style.line.zorder or 0),
+                )
+
+                # Cardinal/azimuth labels in axes coordinates
+                if labels:
+                    for az, label in labels.items():
+                        az = int(az)
+                        x, _ = self._to_ax(az, self.alt[0])
+                        if x <= 0.03 or x >= 0.97 or math.isnan(x):
+                            continue
+                        self._recorder.record_text(
+                            text=str(label),
+                            x=x,
+                            y=patch_y + 0.027,
+                            style_dict={
+                                "font_size": resolved_style.label.font_size,
+                                "font_color": resolved_style.label.font_color.as_hex(),
+                                "font_alpha": resolved_style.label.font_alpha,
+                                "font_weight": resolved_style.label.font_weight,
+                                "font_style": resolved_style.label.font_style,
+                                "font_name": resolved_style.label.font_name,
+                                "xref": "paper",
+                                "yref": "paper",
+                                "ha": "center",
+                                "va": "center",
+                            },
+                            gid="horizon-label",
+                            zorder=int(resolved_style.label.zorder or 0),
+                        )
+
+            elif isinstance(self, MapPlot):
+                from skyfield.api import wgs84
+
+                if self.observer is None:
+                    return
+
+                geographic = wgs84.latlon(
+                    latitude_degrees=self.observer.lat,
+                    longitude_degrees=self.observer.lon,
+                )
+                observer = geographic.at(self.observer.timescale)
+                zenith = observer.from_altaz(alt_degrees=90, az_degrees=0)
+                ra, dec, _ = zenith.radec()
+
+                points = geod.ellipse(
+                    center=(ra.hours * 15, dec.degrees),
+                    height_degrees=180,
+                    width_degrees=180,
+                    num_pts=100,
+                )
+                projected = [self._project_coords(ra, dec) for ra, dec in points]
+                xs = [p[0] for p in projected if math.isfinite(p[0]) and math.isfinite(p[1])]
+                ys = [p[1] for p in projected if math.isfinite(p[0]) and math.isfinite(p[1])]
+
+                if xs:
+                    self._recorder.record_line(
+                        x=xs,
+                        y=ys,
+                        style_dict={
+                            "color": resolved_style.line.color.as_hex(),
+                            "width": resolved_style.line.width,
+                            "line_style": str(resolved_style.line.style),
+                            "alpha": resolved_style.line.alpha,
+                        },
+                        gid="horizon-circle",
+                        zorder=int(resolved_style.line.zorder or 0),
+                    )
+
+                if labels:
+                    labels = [translate(label, self.language) for label in labels]
+                    cardinal_directions = [
+                        observer.from_altaz(alt_degrees=0, az_degrees=0),
+                        observer.from_altaz(alt_degrees=0, az_degrees=90),
+                        observer.from_altaz(alt_degrees=0, az_degrees=180),
+                        observer.from_altaz(alt_degrees=0, az_degrees=270),
+                    ]
+                    for label, position in zip(labels, cardinal_directions):
+                        ra, dec, _ = position.radec()
+                        x, y = self._project_coords(ra.hours * 15, dec.degrees)
+                        if not math.isfinite(x) or not math.isfinite(y):
+                            continue
+                        self._recorder.record_text(
+                            text=str(label),
+                            x=x,
+                            y=y,
+                            style_dict={
+                                "font_size": resolved_style.label.font_size,
+                                "font_color": resolved_style.label.font_color.as_hex(),
+                                "font_alpha": resolved_style.label.font_alpha,
+                                "font_weight": resolved_style.label.font_weight,
+                                "font_style": resolved_style.label.font_style,
+                                "font_name": resolved_style.label.font_name,
+                                "ha": "center",
+                                "va": "center",
+                            },
+                            gid="horizon-label",
+                            zorder=int(resolved_style.label.zorder or 0),
+                        )
+
+            elif isinstance(self, ZenithPlot):
+                xlim = self.ax.get_xlim()
+                ylim = self.ax.get_ylim()
+                center_x = (xlim[0] + xlim[1]) / 2
+                center_y = (ylim[0] + ylim[1]) / 2
+                radius = (xlim[1] - xlim[0]) / 2 * 0.454 / 0.5
+
+                import numpy as np
+                theta = np.linspace(0, 2 * np.pi, 100)
+                circle_x = center_x + radius * np.cos(theta)
+                circle_y = center_y + radius * np.sin(theta)
+
+                self._recorder.record_line(
+                    x=list(circle_x),
+                    y=list(circle_y),
+                    style_dict={
+                        "color": resolved_style.line.color.as_hex(),
+                        "width": resolved_style.line.width,
+                        "line_style": str(resolved_style.line.style),
+                        "alpha": resolved_style.line.alpha,
+                    },
+                    gid="horizon-circle",
+                    zorder=int(resolved_style.line.zorder or 0),
+                )
+
+                if labels is None:
+                    labels = ["N", "E", "S", "W"]
+                if labels:
+                    labels = [translate(label, self.language) for label in labels]
+                    label_ax_coords = [
+                        (0.5, 0.95),
+                        (0.045, 0.5),
+                        (0.5, 0.045),
+                        (0.954, 0.5),
+                    ]
+                    for label, (ax_x, ax_y) in zip(labels, label_ax_coords):
+                        data_x = xlim[0] + (xlim[1] - xlim[0]) * ax_x
+                        data_y = ylim[0] + (ylim[1] - ylim[0]) * ax_y
+                        self._recorder.record_text(
+                            text=str(label),
+                            x=data_x,
+                            y=data_y,
+                            style_dict={
+                                "font_size": resolved_style.label.font_size,
+                                "font_color": resolved_style.label.font_color.as_hex(),
+                                "font_alpha": resolved_style.label.font_alpha,
+                                "font_weight": resolved_style.label.font_weight,
+                                "font_style": resolved_style.label.font_style,
+                                "font_name": resolved_style.label.font_name,
+                                "ha": "center",
+                                "va": "center",
+                            },
+                            gid="horizon-label",
+                            zorder=int(resolved_style.label.zorder or 0),
+                        )
+        except Exception as e:
+            LOGGER.debug("Could not record horizon: %s", e)
+
+    # ------------------------------------------------------------------
+    # Method 8.3: Arrow
+    # ------------------------------------------------------------------
+
+    @use_style(ArrowStyle, "arrow")
+    def arrow(
+        self,
+        origin: tuple[float, float] = None,
+        target: tuple[float, float] = None,
+        style: ArrowStyle = None,
+        scale: float = 0.99,
+        length: float = 5,
+        max_attempts: int = 100,
+        **kwargs,
+    ):
+        """Record the arrow polygon in axes (paper) coordinates."""
+        patches_before = len(self.ax.patches)
+        super().arrow(
+            origin=origin,
+            target=target,
+            style=style,
+            scale=scale,
+            length=length,
+            max_attempts=max_attempts,
+            **kwargs,
+        )
+
+        try:
+            if len(self.ax.patches) <= patches_before:
+                return
+            arrow_patch = self.ax.patches[patches_before]
+            points = [
+                (float(x), float(y))
+                for x, y in arrow_patch.get_xy()
+            ]
+            self._recorder.record_polygon(
+                points=points,
+                style_dict={
+                    "fill_color": style.fill_color.as_hex() if style.fill_color else None,
+                    "edge_color": style.edge_color.as_hex() if style.edge_color else None,
+                    "edge_width": getattr(style, "edge_width", 0),
+                    "alpha": getattr(style, "alpha", 1.0),
+                    "line_style": str(getattr(style, "line_style", "solid")),
+                    "xref": "paper",
+                    "yref": "paper",
+                },
+                gid="arrow",
+                zorder=int(getattr(style, "zorder", 0) or 0),
+            )
+        except Exception as e:
+            LOGGER.debug("Could not record arrow: %s", e)
+
+    # ------------------------------------------------------------------
+    # Method 8.5: Title
+    # ------------------------------------------------------------------
+
+    @use_style(LabelStyle, "title")
+    def title(self, text: str, style: LabelStyle = None, **kwargs):
+        """Record the plot title as a paper-coordinate text annotation."""
+        super().title(text=text, style=style, **kwargs)
+
+        try:
+            self._recorder.record_text(
+                text=str(text),
+                x=0.5,
+                y=0.98,
+                style_dict={
+                    "font_size": style.font_size,
+                    "font_color": style.font_color.as_hex(),
+                    "font_alpha": style.font_alpha,
+                    "font_weight": style.font_weight,
+                    "font_style": style.font_style,
+                    "font_name": style.font_name,
+                    "xref": "paper",
+                    "yref": "paper",
+                    "ha": "center",
+                    "va": "top",
+                },
+                gid="title",
+                zorder=int(style.zorder or 0),
+            )
+        except Exception as e:
+            LOGGER.debug("Could not record title: %s", e)
+
+    # ------------------------------------------------------------------
+    # Method 8.6: Legend
+    # ------------------------------------------------------------------
+
+    @use_style(LegendStyle, "legend")
+    def legend(self, title: str = "Legend", style: LegendStyle = None, **kwargs):
+        """Record legend state in style_info."""
+        super().legend(title=title, style=style, **kwargs)
+        self._recorder.style_info["show_legend"] = True
+        self._recorder.style_info["legend_title"] = title
+
+    @use_style(LegendStyle, "legend")
+    def star_magnitude_scale(self, title: str = "Star Magnitude", style: LegendStyle = None, **kwargs):
+        """Record star magnitude scale for interactive legends."""
+        super().star_magnitude_scale(title=title, style=style, **kwargs)
+        # TODO: record scatter commands for each magnitude step
 
     # ------------------------------------------------------------------
     # Method 9: Optic info table
@@ -519,8 +1023,8 @@ class RecordingMixin:
                 gid="optic-info-table",
                 zorder=getattr(resolved_style, "zorder", 0) + 2000,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            LOGGER.warning("Failed to record optic info table: %s", e)
 
         return result
 
@@ -565,8 +1069,8 @@ class RecordingMixin:
                 gid="optic-border",
                 zorder=1000,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            LOGGER.warning("Failed to record optic border: %s", e)
 
     # ------------------------------------------------------------------
     # Method 11: Gradient background
@@ -575,10 +1079,12 @@ class RecordingMixin:
     def _plot_gradient_background(self, gradient_preset):
         super()._plot_gradient_background(gradient_preset)
         try:
+            from starplot.styles import ZOrderEnum
             self._recorder.record_gradient(
                 direction=self._gradient_direction.value,
                 color_stops=gradient_preset,
                 gid="gradient",
+                zorder=ZOrderEnum.LAYER_1 - 1000,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            LOGGER.warning("Failed to record gradient background: %s", e)

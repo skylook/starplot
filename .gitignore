@@ -171,7 +171,18 @@ dmypy.json
 # Pyre type checker
 .pyre/
 .worktrees/
+
+# IDE / agent tooling
+.claude/
+.omc/
+
+# Temporary generated chart files
+/*.png
+/*.html
 star_chart_basic.html
 star_chart_basic.png
 star_chart_detail.html
 star_chart_detail.png
+
+# Comparison outputs
+comparison_outputs/

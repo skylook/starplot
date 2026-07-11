@@ -8,6 +8,8 @@ except ImportError as e:
         "Install it with: pip install starplot[interactive]"
     ) from e
 
+import logging
+
 import numpy as np
 
 from starplot.interactive.commands import DrawingCommand
@@ -17,6 +19,60 @@ from starplot.interactive.style_converter import (
     ANCHOR_MAP,
     calibrate_marker_size,
 )
+
+LOGGER = logging.getLogger("starplot.interactive")
+
+# matplotlib uses "none" to indicate no color; Plotly requires a transparent rgba.
+_MATPLOTLIB_NONE_COLORS = frozenset({"none", "None", "NONE", ""})
+
+
+def _is_transparent_color(value):
+    """Return True if a color value represents a fully transparent color."""
+    if value is None or (isinstance(value, str) and value in _MATPLOTLIB_NONE_COLORS):
+        return True
+    value_str = str(value).lower()
+    if value_str.startswith("rgba"):
+        try:
+            alpha = value_str.split(",")[-1].strip().rstrip(")")
+            return float(alpha) <= 0
+        except Exception:
+            pass
+    if value_str.startswith("rgba"):
+        return True
+    return False
+
+
+def _sanitize_color(value, default="rgba(0,0,0,0)"):
+    """Convert matplotlib 'none' color sentinel and Color objects to a Plotly-compatible color."""
+    if value is None or (isinstance(value, str) and value in _MATPLOTLIB_NONE_COLORS):
+        return default
+    if hasattr(value, "as_hex"):
+        return value.as_hex()
+    return str(value)
+
+
+def _sanitize_colors(colors):
+    """Sanitize a list of colors or a single color string."""
+    if isinstance(colors, (list, tuple)):
+        return [_sanitize_color(c) for c in colors]
+    if isinstance(colors, str):
+        return _sanitize_color(colors)
+    if colors is None:
+        return "rgba(0,0,0,0)"
+    if hasattr(colors, "as_hex"):
+        return colors.as_hex()
+    try:
+        return _sanitize_color(colors)
+    except Exception:
+        return "rgba(0,0,0,0)"
+
+
+_KNOWN_LEGEND_GIDS = frozenset({
+    "stars", "constellations-line", "constellations-border",
+    "constellations-label-name", "ecliptic-line", "celestial-equator-line",
+    "planet-marker", "moon-marker", "sun-marker", "marker", "dso",
+    "dso_galaxy", "dso_nebula", "dso_open_cluster", "dso_globular_cluster",
+})
 
 
 class PlotlyRenderer:
@@ -31,7 +87,7 @@ class PlotlyRenderer:
 
     def render(self, commands: list[DrawingCommand]) -> go.Figure:
         """Render all commands sorted by zorder."""
-        for cmd in sorted(commands, key=lambda c: c.zorder):
+        for cmd in sorted(commands, key=lambda c: c.zorder if c.zorder is not None else 0):
             handler = {
                 "scatter": self._render_scatter,
                 "line": self._render_line,
@@ -44,8 +100,11 @@ class PlotlyRenderer:
             if handler:
                 try:
                     handler(cmd)
-                except Exception:
-                    pass  # Silently skip rendering errors to not break the whole export
+                except Exception as e:
+                    LOGGER.warning(
+                        "Failed to render %s command (gid=%s): %s: %s",
+                        cmd.kind, cmd.gid, type(e).__name__, e,
+                    )
         self._add_interactive_features()
         return self.fig
 
@@ -86,6 +145,17 @@ class PlotlyRenderer:
         if y_min is not None and y_max is not None:
             yaxis_cfg["range"] = [y_min, y_max]
 
+        show_legend = self.style_info.get("show_legend", False)
+        legend_title = self.style_info.get("legend_title")
+        legend_cfg = dict(
+            bgcolor="rgba(0,0,0,0.5)",
+            font=dict(color="#ffffff", size=11),
+            bordercolor="rgba(255,255,255,0.2)",
+            borderwidth=1,
+        )
+        if legend_title:
+            legend_cfg["title"] = dict(text=str(legend_title), font=dict(color="#ffffff"))
+
         self.fig.update_layout(
             plot_bgcolor=bg,
             paper_bgcolor=fig_bg,
@@ -93,13 +163,8 @@ class PlotlyRenderer:
             yaxis=yaxis_cfg,
             hovermode="closest",
             dragmode="pan",
-            showlegend=False,
-            legend=dict(
-                bgcolor="rgba(0,0,0,0.5)",
-                font=dict(color="#ffffff", size=11),
-                bordercolor="rgba(255,255,255,0.2)",
-                borderwidth=1,
-            ),
+            showlegend=show_legend,
+            legend=legend_cfg,
             margin=dict(l=10, r=10, t=30, b=10),
         )
 
@@ -109,7 +174,7 @@ class PlotlyRenderer:
 
     def _render_scatter(self, cmd: DrawingCommand):
         hover_texts = self._build_hover_texts(cmd.metadata)
-        colors = cmd.data.get("colors", [])
+        colors = _sanitize_colors(cmd.data.get("colors", []))
         alphas = cmd.data.get("alphas", [1.0])
         sizes_raw = cmd.data.get("sizes", [])
         resolution = self.style_info.get("resolution", 4096)
@@ -119,25 +184,45 @@ class PlotlyRenderer:
         # For simplicity use the first alpha value for the whole trace
         alpha = alphas[0] if isinstance(alphas, (list, tuple)) and alphas else alphas if isinstance(alphas, (int, float)) else 1.0
 
+        edge_color = _sanitize_color(cmd.style.get("edge_color", "rgba(0,0,0,0)"))
+        edge_width = cmd.style.get("edge_width", 0) or 0
+
+        # Determine marker fill color: if fill is none or colors are transparent,
+        # use a transparent fill so only the outline is visible.
+        fill = str(cmd.style.get("fill", "")).lower()
+        if fill == "none" or _is_transparent_color(colors):
+            marker_color = "rgba(0,0,0,0)"
+        else:
+            marker_color = colors
+
+        legend_label = cmd.style.get("legend_label")
+        name = legend_label if legend_label is not None else self._gid_to_legend_name(cmd.gid)
+        show_legend = self.fig.layout.showlegend
+        show_legend_trace = (
+            show_legend
+            and (legend_label is not None or cmd.gid in _KNOWN_LEGEND_GIDS)
+            and cmd.gid not in self._trace_groups
+        )
+
         self.fig.add_trace(go.Scattergl(
             x=cmd.data.get("x"),
             y=cmd.data.get("y"),
             mode="markers",
             marker=dict(
                 size=sizes,
-                color=colors,
+                color=marker_color,
                 opacity=float(alpha),
                 symbol=MARKER_SYMBOL_MAP.get(cmd.style.get("symbol", "circle"), "circle"),
                 line=dict(
-                    color=cmd.style.get("edge_color", "rgba(0,0,0,0)"),
-                    width=cmd.style.get("edge_width", 0) * 0.3,
+                    color=edge_color,
+                    width=edge_width * 0.3,
                 ),
             ),
             text=hover_texts,
             hoverinfo="text",
-            name=self._gid_to_legend_name(cmd.gid),
+            name=name,
             legendgroup=cmd.gid,
-            showlegend=cmd.gid not in self._trace_groups,
+            showlegend=show_legend_trace,
         ))
         self._trace_groups.setdefault(cmd.gid, []).append(len(self.fig.data) - 1)
 
@@ -158,13 +243,20 @@ class PlotlyRenderer:
             y_all.append(None)
             hover_all.append(None)
 
+        line_style = cmd.style.get("line_style", "solid")
+        if isinstance(line_style, (list, tuple)):
+            dash = "solid"
+        else:
+            dash = LINE_STYLE_MAP.get(str(line_style), "solid")
+
         self.fig.add_trace(go.Scattergl(
             x=x_all,
             y=y_all,
             mode="lines",
             line=dict(
-                color=cmd.style.get("color", "#aaaaaa"),
+                color=_sanitize_color(cmd.style.get("color", "#aaaaaa")),
                 width=max(0.5, cmd.style.get("width", 1) * 0.3),
+                dash=dash,
             ),
             opacity=cmd.style.get("alpha", 1.0),
             text=hover_all,
@@ -183,24 +275,61 @@ class PlotlyRenderer:
         points = cmd.data.get("points", [])
         if not points:
             return
-        x = [p[0] for p in points] + [points[0][0]]
-        y = [p[1] for p in points] + [points[0][1]]
-        fill_color = cmd.style.get("fill_color")
-        self.fig.add_trace(go.Scatter(
-            x=x,
-            y=y,
-            mode="lines",
-            fill="toself" if fill_color else None,
-            fillcolor=fill_color,
-            line=dict(
-                color=cmd.style.get("edge_color", "rgba(0,0,0,0)"),
-                width=max(0, cmd.style.get("edge_width", 0) * 0.3),
-            ),
-            opacity=cmd.style.get("alpha", 1.0),
-            hoverinfo="none",
-            legendgroup=cmd.gid,
-            showlegend=False,
-        ))
+        raw_fill = cmd.style.get("fill_color")
+        has_fill = raw_fill is not None and (
+            not isinstance(raw_fill, str) or raw_fill.lower() not in _MATPLOTLIB_NONE_COLORS
+        )
+        fill_color = _sanitize_color(raw_fill)
+        edge_color = _sanitize_color(cmd.style.get("edge_color", "rgba(0,0,0,0)"))
+        edge_width = cmd.style.get("edge_width", 0) or 0
+        alpha = cmd.style.get("alpha", 1.0)
+        xref = cmd.style.get("xref", "x")
+        yref = cmd.style.get("yref", "y")
+        is_paper = xref == "paper" and yref == "paper"
+
+        if is_paper:
+            # Use a Plotly shape for axes/paper-coordinate polygons (e.g. the
+            # HorizonPlot bottom bar and arrow polygons).
+            def _build_path(pts):
+                if not pts:
+                    return ""
+                path = f"M {pts[0][0]},{pts[0][1]}"
+                for x, y in pts[1:]:
+                    path += f" L {x},{y}"
+                path += " Z"
+                return path
+
+            path_str = _build_path(points)
+            self.fig.add_shape(
+                type="path",
+                path=path_str,
+                xref="paper",
+                yref="paper",
+                fillcolor=fill_color if has_fill else "rgba(0,0,0,0)",
+                line=dict(
+                    color=edge_color,
+                    width=edge_width * 0.3,
+                ),
+                opacity=alpha,
+            )
+        else:
+            x = [p[0] for p in points] + [points[0][0]]
+            y = [p[1] for p in points] + [points[0][1]]
+            self.fig.add_trace(go.Scatter(
+                x=x,
+                y=y,
+                mode="lines",
+                fill="toself" if has_fill else None,
+                fillcolor=fill_color,
+                line=dict(
+                    color=edge_color,
+                    width=max(0, edge_width * 0.3),
+                ),
+                opacity=alpha,
+                hoverinfo="none",
+                legendgroup=cmd.gid,
+                showlegend=False,
+            ))
 
     # ------------------------------------------------------------------
     # Text annotation
@@ -210,19 +339,23 @@ class PlotlyRenderer:
         va = cmd.style.get("va", "center")
         ha = cmd.style.get("ha", "center")
         yanchor, xanchor = ANCHOR_MAP.get((va, ha), ("middle", "center"))
+        xref = cmd.style.get("xref", "x")
+        yref = cmd.style.get("yref", "y")
         self.fig.add_annotation(
             x=cmd.data.get("x"),
             y=cmd.data.get("y"),
             text=cmd.data.get("text", ""),
             showarrow=False,
             font=dict(
-                size=max(8, cmd.style.get("font_size", 12) * 0.4),
-                color=cmd.style.get("font_color", "#ffffff"),
+                size=max(8, cmd.style.get("font_size", 12) * 0.5),
+                color=_sanitize_color(cmd.style.get("font_color", "#ffffff")),
                 family=cmd.style.get("font_name", "Inter, Arial, sans-serif"),
             ),
             xanchor=xanchor,
             yanchor=yanchor,
-            opacity=cmd.style.get("alpha", 1.0),
+            xref=xref,
+            yref=yref,
+            opacity=cmd.style.get("font_alpha", cmd.style.get("alpha", 1.0)),
         )
 
     # ------------------------------------------------------------------
@@ -231,14 +364,19 @@ class PlotlyRenderer:
 
     def _render_line(self, cmd: DrawingCommand):
         style = cmd.style
+        line_style = style.get("line_style", "solid")
+        if isinstance(line_style, (list, tuple)):
+            dash = "solid"
+        else:
+            dash = LINE_STYLE_MAP.get(str(line_style), "solid")
         self.fig.add_trace(go.Scattergl(
             x=cmd.data.get("x"),
             y=cmd.data.get("y"),
             mode="lines",
             line=dict(
-                color=style.get("color", "#777777"),
+                color=_sanitize_color(style.get("color", "#777777")),
                 width=max(0.5, style.get("width", 1) * 0.3),
-                dash=LINE_STYLE_MAP.get(str(style.get("line_style", "solid")), "solid"),
+                dash=dash,
             ),
             opacity=style.get("alpha", 1.0),
             hoverinfo="none",

@@ -1,4 +1,5 @@
 from starplot.interactive.commands import DrawingCommand
+from starplot.styles import ZOrderEnum
 
 
 class DrawingRecorder:
@@ -61,12 +62,12 @@ class DrawingRecorder:
             zorder=zorder,
         ))
 
-    def record_gradient(self, direction, color_stops, gid="gradient"):
+    def record_gradient(self, direction, color_stops, gid="gradient", zorder=None):
         self.commands.append(DrawingCommand(
             kind="gradient",
             data={"direction": direction, "color_stops": list(color_stops)},
             gid=gid,
-            zorder=-1,
+            zorder=zorder if zorder is not None else ZOrderEnum.LAYER_1 - 1000,
         ))
 
     def record_info_table(self, columns, values, widths, style_dict, gid="info-table", zorder=0):
