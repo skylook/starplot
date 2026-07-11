@@ -1,4 +1,4 @@
-# <img src="https://raw.githubusercontent.com/steveberardi/starplot/main/docs/images/logo.svg" width="48" style="vertical-align:middle"> Starplot
+# <img src="https://raw.githubusercontent.com/steveberardi/starplot/main/docs/images/starplot-header.svg" width="360" alt="Starplot">
 ![Python](https://img.shields.io/pypi/pyversions/starplot?style=for-the-badge&color=6388b0)
 ![PyPI](https://img.shields.io/pypi/v/starplot?style=for-the-badge&color=57a8a8)
 ![License](https://img.shields.io/github/license/steveberardi/starplot?style=for-the-badge&color=8b63b0)
@@ -8,8 +8,9 @@
 
 - 🗺️ **Maps** - including 10+ customizable projections
 - ⭐ **Zenith Charts** - shows the entire sky at a specific time and place
-- 🌃 **Horizon Charts** - shows the horizon at a specific time and place
+- 🌅 **Horizon Charts** - shows the horizon at a specific time and place
 - 🔭 **Optic Simulations** - shows what you'll see through an optic (e.g. telescope) at a specific time and place
+- 🌌 **Galactic Charts** - shows a Mollweide projection in galactic coordinates
 - 🪐 **Planets and Deep Sky Objects (DSOs)** - with support for plotting their true extent
 - ☄️ **Comets and Satellites** - easy trajectory plotting
 - 🎨 **Custom Styles** - for all objects and with 8+ built-in themes

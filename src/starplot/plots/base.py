@@ -11,7 +11,8 @@ from matplotlib.lines import Line2D
 from shapely import Polygon, LineString
 
 from starplot.coordinates import CoordinateSystem
-from starplot import geod, models, warnings
+from starplot import models, warnings
+from starplot import geometry as _geometry
 from starplot.config import settings as StarplotSettings, SvgTextType
 from starplot.data import load, ecliptic
 from starplot.data.translations import translate
@@ -24,12 +25,12 @@ from starplot.styles import (
     MarkerStyle,
     ObjectStyle,
     LabelStyle,
-    LineStyle,
     MarkerSymbolEnum,
     PathStyle,
     PolygonStyle,
     GradientDirection,
     fonts,
+    AnchorPointEnum,
 )
 from starplot.plotters.debug import DebugPlotterMixin
 from starplot.plotters.text import TextPlotterMixin, CollisionHandler
@@ -50,30 +51,8 @@ DPI = 100
 
 
 class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
-    _background_clip_path = None
-    _clip_path_polygon: Polygon = None  # clip path in display coordinates
     _coordinate_system = CoordinateSystem.RA_DEC
     _gradient_direction: GradientDirection = GradientDirection.LINEAR
-
-    ax: Axes
-    """
-    The underlying [Matplotlib axes](https://matplotlib.org/stable/api/_as_gen/matplotlib.axes.Axes.html#matplotlib.axes.Axes) that everything is plotted on.
-    
-    **Important**: Most Starplot plotting functions also specify a transform based on the plot's projection when plotting things on the Matplotlib Axes instance, so use this property at your own risk!
-    """
-
-    fig: Figure
-    """
-    The underlying [Matplotlib figure](https://matplotlib.org/stable/api/_as_gen/matplotlib.figure.Figure.html#matplotlib.figure.Figure) that the axes is drawn on.
-    """
-
-    style: PlotStyle
-    """
-    The plot's style.
-    """
-
-    collision_handler: CollisionHandler
-    """Default [collision handler][starplot.CollisionHandler] for the plot."""
 
     def __init__(
         self,
@@ -81,7 +60,9 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
         ephemeris: str = "de421.bsp",
         style: PlotStyle = None,
         resolution: int = 4096,
-        collision_handler: CollisionHandler = None,
+        point_label_handler: CollisionHandler = None,
+        area_label_handler: CollisionHandler = None,
+        path_label_handler: CollisionHandler = None,
         scale: float = 1.0,
         autoscale: bool = False,
         suppress_warnings: bool = True,
@@ -89,6 +70,20 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+
+        self._clip_path_polygon: Polygon = None  # clip path in display coordinates
+
+        self.ax: Axes = None
+        """
+        The underlying [Matplotlib axes](https://matplotlib.org/stable/api/_as_gen/matplotlib.axes.Axes.html#matplotlib.axes.Axes) that everything is plotted on.
+        
+        **Important**: Most Starplot plotting functions also specify a transform based on the plot's projection when plotting things on the Matplotlib Axes instance, so use this property at your own risk!
+        """
+
+        self.fig: Figure = None
+        """
+        The underlying [Matplotlib figure](https://matplotlib.org/stable/api/_as_gen/matplotlib.figure.Figure.html#matplotlib.figure.Figure) that the axes is drawn on.
+        """
 
         if StarplotSettings.svg_text_type == SvgTextType.PATH:
             plt.rcParams["svg.fonttype"] = "path"
@@ -102,9 +97,35 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
         self.language = StarplotSettings.language
 
         self.style = style or PlotStyle()
+        """The plot's style."""
+
         self.figure_size = resolution * px
         self.resolution = resolution
-        self.collision_handler = collision_handler or CollisionHandler()
+
+        self.point_label_handler = point_label_handler or CollisionHandler(
+            attempts=10,
+            anchor_fallbacks=[
+                AnchorPointEnum.BOTTOM_RIGHT,
+                AnchorPointEnum.TOP_LEFT,
+                AnchorPointEnum.TOP_RIGHT,
+                AnchorPointEnum.BOTTOM_LEFT,
+                AnchorPointEnum.BOTTOM_CENTER,
+                AnchorPointEnum.TOP_CENTER,
+                AnchorPointEnum.RIGHT_CENTER,
+                AnchorPointEnum.LEFT_CENTER,
+            ],
+        )
+        """Default [collision handler][starplot.CollisionHandler] for point labels."""
+
+        self.area_label_handler = area_label_handler or CollisionHandler(
+            allow_constellation_line_collisions=True
+        )
+        """Default [collision handler][starplot.CollisionHandler] for area labels."""
+
+        self.path_label_handler = path_label_handler or CollisionHandler(
+            allow_constellation_line_collisions=True
+        )
+        """Default [collision handler][starplot.CollisionHandler] for path labels."""
 
         self.scale = scale
         self.autoscale = autoscale
@@ -117,7 +138,7 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
             warnings.suppress()
 
         self.observer = observer or Observer()
-        self._ephemeris_name = ephemeris
+        self.ephemeris_name = ephemeris
         self.ephemeris = load(ephemeris)
         self.earth = self.ephemeris["earth"]
 
@@ -146,6 +167,9 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
 
     def _prepare_coords(self, ra, dec) -> tuple[float, float]:
         return ra, dec
+
+    def _prepare_coords_many(self, coordinates: list, epoch_year: float = 2000) -> list:
+        return coordinates
 
     def _update_clip_path_polygon(self, buffer=8):
         self.fig.draw_without_rendering()
@@ -312,7 +336,7 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
                 ra,
                 dec,
                 label_style,
-                collision_handler=collision_handler or self.collision_handler,
+                collision_handler=collision_handler or self.point_label_handler,
                 gid=kwargs.get("gid_label") or "marker-label",
             )
 
@@ -329,9 +353,7 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
         collision_handler: CollisionHandler = None,
     ) -> None:
         """
-        Plots the planets.
-
-        If you specified a lat/lon when creating the plot (e.g. for perspective projections or optic plots), then the planet's _apparent_ RA/DEC will be calculated.
+        Plots the planets, at their _apparent_ RA/DEC (based on the observer you defined).
 
         Args:
             style: Styling of the planets. If None, then the plot's style (specified when creating the plot) will be used
@@ -341,12 +363,10 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
             collision_handler: An instance of [CollisionHandler][starplot.CollisionHandler] that describes what to do on label collisions with other labels, markers, etc. If `None`, then the collision handler of the plot will be used.
         """
         labels = labels or {}
-        planets = models.Planet.all(
-            self.observer.dt, self.observer.lat, self.observer.lon, self._ephemeris_name
-        )
+        planets = models.Planet.all(self.observer, self.ephemeris_name)
 
         legend_label = translate(legend_label, self.language)
-        handler = collision_handler or self.collision_handler
+        handler = collision_handler or self.point_label_handler
 
         for p in planets:
             label = labels.get(p.name)
@@ -397,9 +417,7 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
         collision_handler: CollisionHandler = None,
     ) -> None:
         """
-        Plots the Sun.
-
-        If you specified a lat/lon when creating the plot (e.g. for perspective projections or optic plots), then the Sun's _apparent_ RA/DEC will be calculated.
+        Plots the Sun, at its _apparent_ RA/DEC (based on the observer you defined).
 
         Args:
             style: Styling of the Sun. If None, then the plot's style (specified when creating the plot) will be used
@@ -409,15 +427,13 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
             collision_handler: An instance of [CollisionHandler][starplot.CollisionHandler] that describes what to do on label collisions with other labels, markers, etc. If `None`, then the collision handler of the plot will be used.
         """
         s = models.Sun.get(
-            dt=self.observer.dt,
-            lat=self.observer.lat,
-            lon=self.observer.lon,
-            ephemeris=self._ephemeris_name,
+            observer=self.observer,
+            ephemeris=self.ephemeris_name,
         )
         label = translate(label, self.language)
         legend_label = translate(legend_label, self.language)
         s.name = label or s.name
-        handler = collision_handler or self.collision_handler
+        handler = collision_handler or self.point_label_handler
 
         if not self.in_bounds(s.ra, s.dec):
             return
@@ -494,7 +510,8 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
         raise NotImplementedError
 
     def _polygon(self, points: list, style: PolygonStyle, **kwargs):
-        points = [self._prepare_coords(*p) for p in points]
+        # points = [self._prepare_coords(*p) for p in points]
+        points = self._prepare_coords_many(points)
         patch = patches.Polygon(
             points,
             # closed=False, # needs to be false for circles at poles?
@@ -564,12 +581,13 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
             angle: Angle of rotation clockwise (degrees)
             legend_label: Label for this object in the legend
         """
-        points = geod.rectangle(
+        polygon = _geometry.rectangle(
             center,
             height_degrees,
             width_degrees,
             angle,
         )
+        points = list(zip(*polygon.exterior.coords.xy))
         self._polygon(points, style, gid=kwargs.get("gid") or "polygon")
 
         if legend_label is not None:
@@ -606,7 +624,7 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
             legend_label: Label for this object in the legend
         """
 
-        points = geod.ellipse(
+        polygon = _geometry.ellipse(
             center,
             height_degrees,
             width_degrees,
@@ -615,6 +633,7 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
             start_angle,
             end_angle,
         )
+        points = list(zip(*polygon.exterior.coords.xy))
         self._polygon(points, style, gid=kwargs.get("gid") or "polygon")
 
         if legend_label is not None:
@@ -658,39 +677,6 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
                 style=style.to_marker_style(symbol=MarkerSymbolEnum.CIRCLE),
             )
 
-    @use_style(LineStyle)
-    def line(
-        self,
-        style: LineStyle,
-        coordinates: list[tuple[float, float]] = None,
-        geometry: LineString = None,
-        **kwargs,
-    ):
-        """Plots a line
-
-        Args:
-            coordinates: List of coordinates, e.g. `[(ra, dec), (ra, dec)]`
-            geometry: A shapely LineString. If this value is passed, then the `coordinates` kwarg will be ignored.
-            style: Style of the line
-        """
-
-        if coordinates is None and geometry is None:
-            raise ValueError("Must pass coordinates or geometry when plotting lines.")
-
-        coords = geometry.coords if geometry is not None else coordinates
-
-        x, y = zip(*[self._prepare_coords(*p) for p in coords])
-
-        self.ax.plot(
-            x,
-            y,
-            clip_on=True,
-            clip_path=self._background_clip_path,
-            gid=kwargs.get("gid") or "line",
-            **style.matplot_kwargs(self.scale),
-            **self._plot_kwargs(),
-        )
-
     @use_style(ObjectStyle, "moon")
     def moon(
         self,
@@ -702,28 +688,24 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
         collision_handler: CollisionHandler = None,
     ) -> None:
         """
-        Plots the Moon.
-
-        If you specified a lat/lon when creating the plot (e.g. for perspective projections or optic plots), then the Moon's _apparent_ RA/DEC will be calculated.
+        Plots the Moon, at its _apparent_ RA/DEC (based on the observer you defined).
 
         Args:
             style: Styling of the Moon. If None, then the plot's style (specified when creating the plot) will be used
             true_size: If True, then the Moon's true apparent size in the sky will be plotted as a circle (the marker style's symbol will be ignored). If False, then the style's marker size will be used.
-            show_phase: If True, and if `true_size = True`, then the approximate phase of the moon will be illustrated. The dark side of the moon will be colored with the marker's `edge_color`.
+            show_phase: If True, and if `true_size = True`, then the phase of the moon will be illustrated. The dark side of the moon will be colored with the marker's `edge_color`.
             label: How the Moon will be labeled on the plot
             legend_label: How the Moon will be labeled in the legend
             collision_handler: An instance of [CollisionHandler][starplot.CollisionHandler] that describes what to do on label collisions with other labels, markers, etc. If `None`, then the collision handler of the plot will be used.
         """
         m = models.Moon.get(
-            dt=self.observer.dt,
-            lat=self.observer.lat,
-            lon=self.observer.lon,
-            ephemeris=self._ephemeris_name,
+            observer=self.observer,
+            ephemeris=self.ephemeris_name,
         )
         label = translate(label, self.language)
         legend_label = translate(legend_label, self.language)
         m.name = label or m.name
-        handler = collision_handler or self.collision_handler
+        handler = collision_handler or self.point_label_handler
 
         if not self.in_bounds(m.ra, m.dec):
             return
@@ -747,8 +729,8 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
                 )
             else:
                 self.circle(
-                    (m.ra, m.dec),
-                    m.apparent_size,
+                    center=(m.ra, m.dec),
+                    radius_degrees=m.apparent_size / 2,
                     style=polygon_style,
                     gid="moon-marker",
                 )
@@ -785,13 +767,17 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
         radius_degrees: float,
         style: PolygonStyle,
         dark_side_color: str,
-        num_pts: int = 100,
+        num_pts: int = 200,
     ):
         """
         Plots the (approximate) moon phase by drawing two half circles and one ellipse in the center,
         and then determining the color of each of the three shapes by the moon phase.
         """
         illuminated_color = style.fill_color
+
+        ellipse_b_radius_degrees = np.abs(
+            radius_degrees * (2 * self._objects.moon.illumination - 1)
+        )
 
         left = style.copy()
         right = style.copy()
@@ -859,7 +845,8 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
         self.ellipse(
             center,
             height_degrees=radius_degrees * 2,
-            width_degrees=radius_degrees,
+            width_degrees=ellipse_b_radius_degrees * 2,
+            num_pts=num_pts,
             style=middle,
             gid="moon-marker",
         )
@@ -895,11 +882,13 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
                 style=style,
             )
 
+    @profile
     @use_style(PathStyle, "ecliptic")
     def ecliptic(
         self,
         style: PathStyle = None,
         label: str = "ECLIPTIC",
+        num_labels: int = 1,
         collision_handler: CollisionHandler = None,
     ):
         """Plots the ecliptic
@@ -907,7 +896,8 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
         Args:
             style: Styling of the ecliptic. If None, then the plot's style will be used
             label: How the ecliptic will be labeled on the plot
-            collision_handler: An instance of [CollisionHandler][starplot.CollisionHandler] that describes what to do on label collisions with other labels, markers, etc. If `None`, then the collision handler of the plot will be used.
+            num_labels: Max number of labels to plot along the line
+            collision_handler: An instance of [CollisionHandler][starplot.CollisionHandler] that describes what to do on label collisions with other labels, markers, etc. If `None`, then the plot's `path_label_handler` will be used.
         """
         x = []
         y = []
@@ -922,34 +912,23 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
             if self.in_bounds(ra * 15, dec):
                 inbounds.append((ra * 15, dec))
 
-        self.ax.plot(
-            x,
-            y,
-            dash_capstyle=style.line.dash_capstyle,
-            clip_path=self._background_clip_path,
-            gid="ecliptic-line",
-            **style.line.matplot_kwargs(self.scale),
-            **self._plot_kwargs(),
+        coords = [(ra * 15, dec) for ra, dec in ecliptic.RA_DECS]
+
+        self.line(
+            style=style,
+            label=label.upper(),
+            num_labels=num_labels,
+            collision_handler=collision_handler,
+            coordinates=coords,
         )
 
-        if label and len(inbounds) > 4:
-            label_spacing = int(len(inbounds) / 4)
-
-            for ra, dec in [inbounds[label_spacing], inbounds[label_spacing * 2]]:
-                self.text(
-                    label,
-                    ra,
-                    dec,
-                    style.label,
-                    collision_handler=collision_handler or self.collision_handler,
-                    gid="ecliptic-label",
-                )
-
+    @profile
     @use_style(PathStyle, "celestial_equator")
     def celestial_equator(
         self,
         style: PathStyle = None,
         label: str = "CELESTIAL EQUATOR",
+        num_labels: int = 1,
         collision_handler: CollisionHandler = None,
     ):
         """
@@ -958,37 +937,87 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
         Args:
             style: Styling of the celestial equator. If None, then the plot's style will be used
             label: How the celestial equator will be labeled on the plot
-            collision_handler: An instance of [CollisionHandler][starplot.CollisionHandler] that describes what to do on label collisions with other labels, markers, etc. If `None`, then the collision handler of the plot will be used.
+            num_labels: Max number of labels to plot along the line
+            collision_handler: An instance of [CollisionHandler][starplot.CollisionHandler] that describes what to do on label collisions with other labels, markers, etc. If `None`, then the plot's `path_label_handler` will be used.
         """
-        x = []
-        y = []
-
-        # TODO : handle wrapping
-
         label = translate(label, self.language)
+        coords = [(ra, 0) for ra in range(0, 361)]
+        self.line(
+            style=style,
+            label=label.upper(),
+            num_labels=num_labels,
+            collision_handler=collision_handler,
+            coordinates=coords,
+            gid="celestial-equator",
+        )
 
-        for ra in range(25):
-            x0, y0 = self._prepare_coords(ra * 15, 0)
-            x.append(x0)
-            y.append(y0)
+    @use_style(PathStyle)
+    def line(
+        self,
+        coordinates: list[tuple[float, float]] = None,
+        geometry: LineString = None,
+        style: PathStyle = None,
+        label: str = None,
+        num_labels: int = 2,
+        collision_handler: CollisionHandler = None,
+        **kwargs,
+    ):
+        """Plots a line, with optional labels. Either coordinates OR geometry must be specified.
+
+        Args:
+
+            coordinates: List of coordinates, e.g. `[(ra, dec), (ra, dec)]`
+            geometry: A shapely LineString. If this value is passed, then the `coordinates` kwarg will be ignored.
+            style: Style of the line
+            label: Label for the line
+            num_labels: Number of labels to plot along the line
+            collision_handler: An instance of [CollisionHandler][starplot.CollisionHandler] that describes what to do on label collisions with other labels, markers, etc. If `None`, then the plot's `path_label_handler` will be used.
+
+        """
+
+        if coordinates is None and geometry is None:
+            raise ValueError("Must pass coordinates or geometry when plotting lines.")
+
+        coords = geometry.coords if geometry is not None else coordinates
+        prepared_coords = [self._prepare_coords(*p) for p in coords]
+        x, y = zip(*prepared_coords)
+
+        gid = kwargs.get("gid") or "line"
 
         self.ax.plot(
             x,
             y,
+            clip_on=True,
             clip_path=self._background_clip_path,
-            gid="celestial-equator-line",
+            dash_capstyle=style.line.dash_capstyle,
+            gid=gid,
             **style.line.matplot_kwargs(self.scale),
             **self._plot_kwargs(),
         )
 
-        if label:
-            label_spacing = (self.ra_max - self.ra_min) / 3
-            for ra in np.arange(self.ra_min, self.ra_max, label_spacing):
-                self.text(
-                    label,
-                    ra,
-                    0.25,
-                    style.label,
-                    collision_handler=collision_handler or self.collision_handler,
-                    gid="celestial-equator-label",
-                )
+        if not label:
+            return
+
+        prepared_coords = [
+            (x, y) for x, y in prepared_coords if self._in_bounds_xy(x, y)
+        ]
+
+        if not prepared_coords:
+            return
+
+        x, y = zip(*prepared_coords)
+
+        collision_handler = collision_handler or self.path_label_handler
+
+        self._text_line(
+            x,
+            y,
+            label,
+            num_labels=num_labels,
+            collision_handler=collision_handler,
+            min_spacing=0.65,
+            **style.label.matplot_kwargs(self.scale),
+            **self._plot_kwargs(),
+            clip_path=self._background_clip_path,
+            gid=gid,
+        )

@@ -1,4 +1,22 @@
+## v0.20.x
+
+- Adds a `GalaxyPlot` for plotting in galactic coordinates
+- Adds label support to lines with automatic angle adjustment
+- Plots the Moon's precise phase / illumination when `show_phase=True`
+- Separate collision handlers for points, areas, and paths
+- Refactored some models to expect an observer instance instead of lat/lon/dt
+- Adds the PlateCarree projection
+- Adds effect of atmospheric refraction to horizon and optic plots
+- Fixes a bug with calculating apparent positions of solar system objects in horizon/optic plots
+- [**v0.20.1**]
+    - Optimizes coordinate conversions
+    - Makes constellation lines straight
+- [**v0.20.2**] Restricts Pandas to version `2.2.3` or lower
+- [**v0.20.3**] Fixes bugs with styling and class variables
+- [**v0.20.4**] Makes deserializing star data more reliable across environments
+
 ## v0.19.x
+[Documentation](https://archives.starplot.dev/0.19.6/)
 
 - Adds a `CollisionHandler` for defining what to do when labels collide with something
 - Introduces catalogs for the Milky Way and constellation borders

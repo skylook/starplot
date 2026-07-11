@@ -1,6 +1,8 @@
 # scratchpad for local development
 scripts/scratchpad.py
 
+.claude/
+
 # astronomy data
 *.bsp
 CometEls.txt
@@ -20,6 +22,7 @@ gaia*/
 # Data Folder
 data/build/*
 !data/build/.keep
+data/fonts/*
 
 # Big Sky Catalog
 # we ignore this because of its size (50+ MB)
@@ -29,6 +32,7 @@ bigsky*.parquet
 hash_checks/data/*.png
 hash_checks/results.html
 
+.tmp/
 temp*
 temp.py
 temp/
@@ -147,6 +151,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+uv.lock
 
 # Spyder project settings
 .spyderproject
