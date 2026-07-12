@@ -89,3 +89,34 @@ def test_plot_metadata_has_final_clip_and_axes_geometry(plot_factory, expected_k
     assert clip.kind == expected_kind
     assert len(clip.points) >= (4 if expected_kind == "rect" else 64)
     assert all(math.isfinite(v) for point in clip.points for v in point)
+
+
+# ------------------------------------------------------------------
+# Task 3: Final-artist geometry parity
+# ------------------------------------------------------------------
+
+@pytest.mark.parametrize("plot_factory", [
+    make_map_plot, make_horizon_plot, make_zenith_plot, make_optic_plot,
+])
+def test_recorded_marker_matches_matplotlib_artist_data_coordinate(plot_factory):
+    plot = plot_factory()
+    plot.marker(ra=90.0, dec=10.0, label="probe",
+                skip_bounds_check=True, style__marker__symbol="circle")
+    command = next(c for c in plot._recorder.commands if c.gid == "marker")
+    # Extract the artist's final DATA coordinates by transforming its
+    # offsets through the collection transform and inverse transData.
+    coll = plot.ax.collections[-1]
+    raw_offsets = coll.get_offsets()
+    display = coll.get_transform().transform(raw_offsets)
+    data_coords = plot.ax.transData.inverted().transform(display)
+    expected = data_coords[0]
+    assert command.space.value == "data"
+    assert command.data["x"] == pytest.approx([expected[0]])
+    assert command.data["y"] == pytest.approx([expected[1]])
+
+
+def test_renderer_contains_no_coordinate_transform_calls():
+    from pathlib import Path
+    source = Path("src/starplot/interactive/plotly_renderer.py").read_text()
+    assert "transform_point(" not in source
+    assert "_prepare_coords(" not in source

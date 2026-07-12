@@ -49,25 +49,59 @@ class RecordingMixin:
         # produce matplotlib side effects (e.g., drawing).
 
     # ------------------------------------------------------------------
-    # Coordinate projection helper
+    # Coordinate projection helper — sole conversion boundary
     # ------------------------------------------------------------------
+
+    def _to_final_data(self, x, y, source_space):
+        """Convert coordinates to final DATA-space values.
+
+        This is the sole conversion boundary between source coordinate
+        systems and the final projected DATA space that PlotlyRenderer
+        consumes.  Raw RA/DEC/AZ/ALT must never bypass this method.
+
+        Args:
+            x, y: coordinates in the source space.
+            source_space: "radec" for public RA/DEC arguments;
+                          "prepared" for values already passed through
+                          _prepare_coords (AZ/ALT or camera coords).
+        Returns:
+            (x, y) tuple in final projected DATA coordinates.
+        """
+        if source_space == "prepared":
+            return tuple(map(float, self._proj.transform_point(x, y, self._crs)))
+        if source_space == "radec":
+            if self._coordinate_system == CoordinateSystem.AZ_ALT:
+                az, alt = self._prepare_coords(x, y)
+                return tuple(map(float, self._proj.transform_point(az, alt, self._crs)))
+            return tuple(map(float, self._proj.transform_point(x, y, self._crs)))
+        raise ValueError(f"Unknown interactive source space: {source_space}")
+
+    def _artist_offsets_to_final_data(self, collection):
+        """Extract a Collection's offsets and transform to final DATA coords.
+
+        Uses the collection's own transform (which may be identity for
+        Cartopy GeoAxes) composed with ax.transData.inverted() to get
+        the final projected coordinates that Matplotlib actually displays.
+        """
+        import numpy as np
+        raw = collection.get_offsets()
+        if len(raw) == 0:
+            return [], []
+        display = collection.get_transform().transform(raw)
+        data = self.ax.transData.inverted().transform(display)
+        xs = [float(v) for v in data[:, 0]]
+        ys = [float(v) for v in data[:, 1]]
+        return xs, ys
 
     def _project_coords(self, ra, dec):
         """Transform RA/DEC to the plot's projected coordinate space.
 
-        For MapPlot/ZenithPlot (Cartopy-based): applies the Cartopy projection
-        via self._proj.transform_point(), matching how ax.scatter/plot works
-        internally with transform=self._crs.
-
-        For HorizonPlot/OpticPlot: delegates to _prepare_coords which handles
-        AZ/ALT or camera coordinate conversion.
-
-        Returns (x, y) in the plot's native coordinate system.
+        .. deprecated:: Use _to_final_data(ra, dec, 'radec') instead.
+        Kept temporarily for callers not yet migrated.
         """
         if hasattr(self, '_proj') and hasattr(self, '_crs'):
             try:
                 if self._coordinate_system == CoordinateSystem.AZ_ALT:
-                    # Inputs are RA/DEC; convert to AZ/ALT then project
                     az, alt = self._prepare_coords(ra, dec)
                     x, y = self._proj.transform_point(az, alt, self._crs)
                 else:
@@ -79,7 +113,6 @@ class RecordingMixin:
                 LOGGER.debug("Projection failed for (%s, %s): %s", ra, dec, e)
                 return float('nan'), float('nan')
         else:
-            # Fallback for plot types without a projection
             return self._prepare_coords(ra, dec)
 
     # ------------------------------------------------------------------
@@ -249,6 +282,7 @@ class RecordingMixin:
 
     def _scatter_stars(self, ras, decs, sizes, alphas, colors, style=None, **kwargs):
         legend_label = kwargs.pop("legend_label", "Star")
+        collections_before = len(self.ax.collections)
         result = super()._scatter_stars(ras, decs, sizes, alphas, colors, style, **kwargs)
 
         ras_list = list(ras)
@@ -274,24 +308,22 @@ class RecordingMixin:
                 "type": "star",
             })
 
-        # Project to the plot's native coordinate space so Plotly can render
-        # directly as Cartesian coordinates without a separate projection step.
-        # For OpticPlot/HorizonPlot, ras/decs are already az/alt in self._crs,
-        # whereas _project_coords would re-convert them as RA/Dec, so use the
-        # same Cartopy transform path that matplotlib's ax.scatter uses.
-        decs_list = list(decs)
-        projected = []
-        for ra, dec in zip(ras_list, decs_list):
-            try:
-                x, y = self._proj.transform_point(ra, dec, self._crs)
-            except Exception:
-                x, y = float("nan"), float("nan")
-            if math.isfinite(x) and math.isfinite(y):
-                projected.append((x, y))
-            else:
-                projected.append((float("nan"), float("nan")))
-        xs = [p[0] for p in projected]
-        ys = [p[1] for p in projected]
+        # Extract final DATA coordinates from the newly created Matplotlib
+        # artist, matching what Matplotlib actually displays.
+        xs, ys = [], []
+        if len(self.ax.collections) > collections_before:
+            coll = self.ax.collections[collections_before]
+            xs, ys = self._artist_offsets_to_final_data(coll)
+        if not xs:
+            # Fallback: project coordinates directly
+            decs_list = list(decs)
+            for ra, dec in zip(ras_list, decs_list):
+                try:
+                    x, y = self._proj.transform_point(ra, dec, self._crs)
+                except Exception:
+                    x, y = float("nan"), float("nan")
+                xs.append(float(x) if math.isfinite(x) else float("nan"))
+                ys.append(float(y) if math.isfinite(y) else float("nan"))
 
         resolved_style = style or self.style.star
         symbol = kwargs.get("symbol", getattr(resolved_style.marker, "symbol", "circle"))
@@ -321,7 +353,7 @@ class RecordingMixin:
     # ------------------------------------------------------------------
 
     def _polygon(self, points, style, **kwargs):
-        projected_points = [self._project_coords(ra, dec) for ra, dec in points]
+        projected_points = [self._to_final_data(ra, dec, source_space="radec") for ra, dec in points]
         super()._polygon(points, style, **kwargs)
         try:
             style_dict = {
@@ -351,9 +383,9 @@ class RecordingMixin:
         result = super()._text(x, y, text, **kwargs)
         if result is not None:
             # _text_point() has already called _prepare_coords(). For Horizon
-            # and Optic plots this means x/y are AZ/ALT, so passing them back
-            # through _project_coords() would incorrectly treat them as RA/Dec.
-            px, py = self._proj.transform_point(x, y, self._crs)
+            # and Optic plots this means x/y are AZ/ALT (prepared coordinates),
+            # so use the "prepared" source space to avoid double-conversion.
+            px, py = self._to_final_data(x, y, source_space="prepared")
 
             from starplot.interactive.commands import DrawingCommand, CoordinateSpace
             cmd = DrawingCommand(
@@ -399,7 +431,7 @@ class RecordingMixin:
         super().line(style=style, coordinates=coordinates, geometry=geometry, **kwargs)
         try:
             coords_iter = geometry.coords if geometry is not None else coordinates
-            processed = [self._project_coords(*p) for p in coords_iter]
+            processed = [self._to_final_data(*p, source_space="radec") for p in coords_iter]
             if processed:
                 xs, ys = zip(*processed)
                 self._recorder.record_line(
@@ -433,7 +465,13 @@ class RecordingMixin:
         collision_handler=None,
         **kwargs,
     ) -> None:
-        """Record a scatter command for every marker call."""
+        """Record a scatter command for every marker call.
+
+        Extracts the final DATA-space position from the Matplotlib artist
+        created by super().marker(), ensuring the recorded coordinate
+        matches what Matplotlib actually displays.
+        """
+        collections_before = len(self.ax.collections)
         super().marker(
             ra=ra,
             dec=dec,
@@ -448,7 +486,14 @@ class RecordingMixin:
         if not skip_bounds_check and not self.in_bounds(ra, dec):
             return
 
-        x, y = self._project_coords(ra, dec)
+        # Extract final DATA coordinates from the newly created artist
+        if len(self.ax.collections) <= collections_before:
+            return
+        coll = self.ax.collections[collections_before]
+        xs, ys = self._artist_offsets_to_final_data(coll)
+        if not xs:
+            return
+        x, y = xs[0], ys[0]
         if not (math.isfinite(x) and math.isfinite(y)):
             return
 
@@ -541,7 +586,7 @@ class RecordingMixin:
                 # RA meridians (constant RA, dec varies)
                 for ra_val in ra_locations:
                     decs = [dec_min + (dec_max - dec_min) * i / 60 for i in range(61)]
-                    points = [self._project_coords(ra_val, d) for d in decs]
+                    points = [self._to_final_data(ra_val, d, source_space="radec") for d in decs]
                     segs = _split_points(points)
                     for seg in segs:
                         lines.append(seg)
@@ -553,7 +598,7 @@ class RecordingMixin:
                 # DEC parallels (constant dec, ra varies)
                 for dec_val in dec_locations:
                     ras = [ra_min + (ra_max - ra_min) * i / 60 for i in range(61)]
-                    points = [self._project_coords(r, dec_val) for r in ras]
+                    points = [self._to_final_data(r, dec_val, source_space="radec") for r in ras]
                     segs = _split_points(points)
                     for seg in segs:
                         lines.append(seg)
@@ -674,14 +719,14 @@ class RecordingMixin:
                 s1_ra, s1_dec = constars[s1_hip]
                 s2_ra, s2_dec = constars[s2_hip]
                 # _prepare_constellation_stars() already returns AZ/ALT for
-                # HorizonPlot and OpticPlot. Re-running _project_coords()
-                # would incorrectly interpret that pair as RA/Dec.
+                # HorizonPlot and OpticPlot. Use "prepared" source space
+                # to avoid double-conversion.
                 if self._coordinate_system == CoordinateSystem.AZ_ALT:
-                    x1, y1 = self._proj.transform_point(s1_ra, s1_dec, self._geodetic)
-                    x2, y2 = self._proj.transform_point(s2_ra, s2_dec, self._geodetic)
+                    x1, y1 = self._to_final_data(s1_ra, s1_dec, source_space="prepared")
+                    x2, y2 = self._to_final_data(s2_ra, s2_dec, source_space="prepared")
                 else:
-                    x1, y1 = self._project_coords(s1_ra, s1_dec)
-                    x2, y2 = self._project_coords(s2_ra, s2_dec)
+                    x1, y1 = self._to_final_data(s1_ra, s1_dec, source_space="radec")
+                    x2, y2 = self._to_final_data(s2_ra, s2_dec, source_space="radec")
                 # Skip segments that project to infinity (e.g. wrap-around seams)
                 if not (math.isfinite(x1) and math.isfinite(y1) and
                         math.isfinite(x2) and math.isfinite(y2)):
@@ -745,9 +790,9 @@ class RecordingMixin:
                 xy = [c for c in ls.coords]
 
                 if self._coordinate_system == CoordinateSystem.RA_DEC:
-                    coords = [self._project_coords(*p) for p in xy]
+                    coords = [self._to_final_data(*p, source_space="radec") for p in xy]
                 elif self._coordinate_system == CoordinateSystem.AZ_ALT:
-                    coords = [self._proj.transform_point(*p, self._crs) for p in xy]
+                    coords = [self._to_final_data(*p, source_space="prepared") for p in xy]
                 else:
                     continue
 
@@ -781,7 +826,7 @@ class RecordingMixin:
             resolved_style = style or self.style.ecliptic
             xs, ys = [], []
             for ra_h, dec in ecliptic_data.RA_DECS:
-                x, y = self._project_coords(ra_h * 15, dec)
+                x, y = self._to_final_data(ra_h * 15, dec, source_space="radec")
                 xs.append(x)
                 ys.append(y)
             if xs:
@@ -810,7 +855,7 @@ class RecordingMixin:
             # Celestial equator is dec=0 across all RA values
             xs = list(range(0, 361, 2))
             ys = [0.0] * len(xs)
-            processed = [self._project_coords(ra, 0) for ra in xs]
+            processed = [self._to_final_data(ra, 0, source_space="radec") for ra in xs]
             px, py = zip(*processed)
             self._recorder.record_line(
                 x=list(px), y=list(py),
@@ -923,7 +968,7 @@ class RecordingMixin:
                     width_degrees=180,
                     num_pts=100,
                 )
-                projected = [self._project_coords(ra, dec) for ra, dec in points]
+                projected = [self._to_final_data(ra, dec, source_space="radec") for ra, dec in points]
                 xs = [p[0] for p in projected if math.isfinite(p[0]) and math.isfinite(p[1])]
                 ys = [p[1] for p in projected if math.isfinite(p[0]) and math.isfinite(p[1])]
 
@@ -951,7 +996,7 @@ class RecordingMixin:
                     ]
                     for label, position in zip(labels, cardinal_directions):
                         ra, dec, _ = position.radec()
-                        x, y = self._project_coords(ra.hours * 15, dec.degrees)
+                        x, y = self._to_final_data(ra.hours * 15, dec.degrees, source_space="radec")
                         if not math.isfinite(x) or not math.isfinite(y):
                             continue
                         self._recorder.record_text(
