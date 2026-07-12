@@ -15,6 +15,7 @@ import math
 from typing import Optional
 
 from starplot.interactive.recorder import DrawingRecorder
+from starplot.interactive.commands import CoordinateSpace
 from starplot.coordinates import CoordinateSystem
 from starplot.styles import ObjectStyle, PathStyle, LineStyle, LabelStyle, LegendStyle, ArrowStyle
 from starplot.styles.helpers import use_style
@@ -132,6 +133,8 @@ class RecordingMixin:
             "background_color": bg,
             "figure_background_color": fig_bg,
             "resolution": getattr(self, "resolution", 2048),
+            "dpi": getattr(self, "dpi", 100),
+            "plot_scale": getattr(self, "scale", 1.0),
             "show_legend": self._legend is not None,
             "legend_title": (
                 self._legend.get_title().get_text()
@@ -139,6 +142,13 @@ class RecordingMixin:
                 else None
             ),
         }
+        try:
+            self.fig.draw_without_rendering()
+            self._recorder.style_info["source_axes_width"] = float(
+                self.ax.get_window_extent().width
+            )
+        except Exception as e:
+            LOGGER.debug("Could not extract axes width: %s", e)
 
     # ------------------------------------------------------------------
     # Method 1: Stars scatter
@@ -173,8 +183,20 @@ class RecordingMixin:
 
         # Project to the plot's native coordinate space so Plotly can render
         # directly as Cartesian coordinates without a separate projection step.
+        # For OpticPlot/HorizonPlot, ras/decs are already az/alt in self._crs,
+        # whereas _project_coords would re-convert them as RA/Dec, so use the
+        # same Cartopy transform path that matplotlib's ax.scatter uses.
         decs_list = list(decs)
-        projected = [self._project_coords(ra, dec) for ra, dec in zip(ras_list, decs_list)]
+        projected = []
+        for ra, dec in zip(ras_list, decs_list):
+            try:
+                x, y = self._proj.transform_point(ra, dec, self._crs)
+            except Exception:
+                x, y = float("nan"), float("nan")
+            if math.isfinite(x) and math.isfinite(y):
+                projected.append((x, y))
+            else:
+                projected.append((float("nan"), float("nan")))
         xs = [p[0] for p in projected]
         ys = [p[1] for p in projected]
 
@@ -235,11 +257,12 @@ class RecordingMixin:
     def _text(self, x, y, text, **kwargs):
         result = super()._text(x, y, text, **kwargs)
         if result is not None:
-            # x, y come from _prepare_coords(ra, dec) which returns raw RA/DEC
-            # for MapPlot/ZenithPlot. Project to the plot's coordinate space.
-            px, py = self._project_coords(x, y)
+            # _text_point() has already called _prepare_coords(). For Horizon
+            # and Optic plots this means x/y are AZ/ALT, so passing them back
+            # through _project_coords() would incorrectly treat them as RA/Dec.
+            px, py = self._proj.transform_point(x, y, self._crs)
 
-            from starplot.interactive.commands import DrawingCommand
+            from starplot.interactive.commands import DrawingCommand, CoordinateSpace
             cmd = DrawingCommand(
                 kind="text",
                 data={"text": str(text), "x": px, "y": py},
@@ -254,6 +277,8 @@ class RecordingMixin:
                 },
                 gid=kwargs.get("gid", "text"),
                 zorder=kwargs.get("zorder", 0),
+                space=CoordinateSpace.DATA,
+                clip_id=None,
             )
             self._recorder.commands.append(cmd)
 
@@ -367,15 +392,17 @@ class RecordingMixin:
         try:
             style = kwargs.get("style") or self.style.gridlines
 
-            # Determine if labels should be drawn
-            labels_enabled = kwargs.get("labels")
-            if labels_enabled is None:
-                labels_enabled = kwargs.get("show_labels")
-            if labels_enabled is None:
-                labels_enabled = True
-
             from starplot.plots.horizon import HorizonPlot
             from starplot.plots.map import MapPlot
+
+            show_labels = kwargs.get("show_labels")
+            if show_labels is None:
+                show_labels = (
+                    ["left", "right", "bottom"]
+                    if isinstance(self, HorizonPlot)
+                    else True
+                )
+            labels_enabled = bool(show_labels)
 
             lines = []
             label_texts = []
@@ -397,10 +424,6 @@ class RecordingMixin:
                     segs = _split_points(points)
                     for seg in segs:
                         lines.append(seg)
-                        if labels_enabled:
-                            label_texts.append(
-                                (seg[0][0], seg[0][1], az_formatter_fn(az_val))
-                            )
 
                 # Altitude lines (constant alt, az varies)
                 for alt_val in alt_locations:
@@ -411,10 +434,6 @@ class RecordingMixin:
                     segs = _split_points(points)
                     for seg in segs:
                         lines.append(seg)
-                        if labels_enabled:
-                            label_texts.append(
-                                (seg[0][0], seg[0][1], alt_formatter_fn(alt_val))
-                            )
 
             elif isinstance(self, MapPlot):
                 ra_min = self.ra_min
@@ -465,6 +484,51 @@ class RecordingMixin:
                 )
 
             if labels_enabled:
+                if isinstance(self, HorizonPlot):
+                    label_style = {
+                        "font_size": style.label.font_size,
+                        "font_color": style.label.font_color.as_hex(),
+                        "font_alpha": style.label.font_alpha,
+                        "font_weight": style.label.font_weight,
+                        "font_style": style.label.font_style,
+                        "font_name": style.label.font_name,
+                        "xref": "paper",
+                        "yref": "paper",
+                    }
+                    for alt_val in alt_locations:
+                        if not (alt[0] <= alt_val <= alt[1]):
+                            continue
+                        _, y = self._to_ax(az[0], alt_val)
+                        if not math.isfinite(y):
+                            continue
+                        text = str(alt_formatter_fn(alt_val))
+                        if "left" in show_labels:
+                            self._recorder.record_text(
+                                text=text, x=0, y=y,
+                                style_dict={**label_style, "ha": "right", "va": "center", "xshift": -12},
+                                gid="gridlines-label", zorder=int(style.label.zorder or 0),
+                                space=CoordinateSpace.PAPER,
+                            )
+                        if "right" in show_labels:
+                            self._recorder.record_text(
+                                text=text, x=1, y=y,
+                                style_dict={**label_style, "ha": "left", "va": "center", "xshift": 12},
+                                gid="gridlines-label", zorder=int(style.label.zorder or 0),
+                                space=CoordinateSpace.PAPER,
+                            )
+                    if "bottom" in show_labels:
+                        for az_val in az_locations:
+                            if not (az[0] <= az_val <= az[1] or az[0] <= az_val + 360 <= az[1]):
+                                continue
+                            x, _ = self._to_ax(az_val, alt[0])
+                            if not math.isfinite(x):
+                                continue
+                            self._recorder.record_text(
+                                text=str(az_formatter_fn(az_val)), x=x, y=-0.02 * self.scale,
+                                style_dict={**label_style, "ha": "center", "va": "center", "footer": True},
+                                gid="gridlines-label", zorder=int(style.label.zorder or 0),
+                                space=CoordinateSpace.PAPER,
+                            )
                 for x, y, text in label_texts:
                     if not math.isfinite(x) or not math.isfinite(y) or not text:
                         continue
@@ -482,6 +546,7 @@ class RecordingMixin:
                         },
                         gid="gridlines-label",
                         zorder=int(style.label.zorder or 0),
+                        space=CoordinateSpace.DATA,
                     )
         except Exception as e:
             LOGGER.warning("Failed to record gridlines: %s", e)
@@ -515,9 +580,15 @@ class RecordingMixin:
                     continue
                 s1_ra, s1_dec = constars[s1_hip]
                 s2_ra, s2_dec = constars[s2_hip]
-                # Project both endpoints to the plot's coordinate space
-                x1, y1 = self._project_coords(s1_ra, s1_dec)
-                x2, y2 = self._project_coords(s2_ra, s2_dec)
+                # _prepare_constellation_stars() already returns AZ/ALT for
+                # HorizonPlot and OpticPlot. Re-running _project_coords()
+                # would incorrectly interpret that pair as RA/Dec.
+                if self._coordinate_system == CoordinateSystem.AZ_ALT:
+                    x1, y1 = self._proj.transform_point(s1_ra, s1_dec, self._geodetic)
+                    x2, y2 = self._proj.transform_point(s2_ra, s2_dec, self._geodetic)
+                else:
+                    x1, y1 = self._project_coords(s1_ra, s1_dec)
+                    x2, y2 = self._project_coords(s2_ra, s2_dec)
                 # Skip segments that project to infinity (e.g. wrap-around seams)
                 if not (math.isfinite(x1) and math.isfinite(y1) and
                         math.isfinite(x2) and math.isfinite(y2)):
@@ -736,6 +807,7 @@ class RecordingMixin:
                             },
                             gid="horizon-label",
                             zorder=int(resolved_style.label.zorder or 0),
+                            space=CoordinateSpace.PAPER,
                         )
 
             elif isinstance(self, MapPlot):
@@ -805,6 +877,7 @@ class RecordingMixin:
                             },
                             gid="horizon-label",
                             zorder=int(resolved_style.label.zorder or 0),
+                            space=CoordinateSpace.DATA,
                         )
 
             elif isinstance(self, ZenithPlot):
@@ -861,6 +934,7 @@ class RecordingMixin:
                             },
                             gid="horizon-label",
                             zorder=int(resolved_style.label.zorder or 0),
+                            space=CoordinateSpace.DATA,
                         )
         except Exception as e:
             LOGGER.debug("Could not record horizon: %s", e)
@@ -945,6 +1019,7 @@ class RecordingMixin:
                 },
                 gid="title",
                 zorder=int(style.zorder or 0),
+                space=CoordinateSpace.PAPER,
             )
         except Exception as e:
             LOGGER.debug("Could not record title: %s", e)

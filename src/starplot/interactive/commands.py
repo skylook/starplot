@@ -1,4 +1,17 @@
 from dataclasses import dataclass, field
+from enum import StrEnum
+
+
+class CoordinateSpace(StrEnum):
+    DATA = "data"      # final x/y in x_min/x_max/y_min/y_max
+    AXES = "axes"      # normalized [0, 1] in Matplotlib axes
+    PAPER = "paper"    # normalized [0, 1] in full figure
+
+
+@dataclass(frozen=True)
+class ClipGeometry:
+    kind: str  # "none", "rect", "polygon"
+    points: tuple[tuple[float, float], ...] = ()
 
 
 @dataclass
@@ -24,6 +37,8 @@ class DrawingCommand:
             - constellation: {name, iau_id, type:"constellation"}
         zorder: Layer ordering (higher = on top)
         gid: Element group ID (matches matplotlib gid)
+        space: Coordinate space of this command's data.
+        clip_id: Identifier of the clip geometry to apply, or None for no clip.
     """
 
     kind: str
@@ -32,3 +47,11 @@ class DrawingCommand:
     metadata: list = field(default_factory=list)
     zorder: int = 0
     gid: str = ""
+    space: CoordinateSpace = CoordinateSpace.DATA
+    clip_id: str | None = "plot"
+
+    def __post_init__(self):
+        try:
+            self.space = CoordinateSpace(self.space)
+        except ValueError as error:
+            raise ValueError(f"Unknown coordinate space: {self.space}") from error

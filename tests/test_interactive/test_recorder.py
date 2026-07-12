@@ -88,6 +88,7 @@ def test_recorder_records_text():
         style_dict={"font_size": 12, "font_color": "#ffffff"},
         gid="stars-label",
         zorder=10,
+        space="data",
     )
     assert len(rec.commands) == 1
     cmd = rec.commands[0]
@@ -127,7 +128,7 @@ def test_recorder_records_gradient():
 def test_recorder_clear():
     rec = DrawingRecorder()
     rec.record_line(x=[1], y=[2], style_dict={}, gid="line", zorder=0)
-    rec.record_text(text="A", x=1, y=2, style_dict={}, gid="text", zorder=0)
+    rec.record_text(text="A", x=1, y=2, style_dict={}, gid="text", zorder=0, space="data")
     assert len(rec.commands) == 2
     rec.clear()
     assert len(rec.commands) == 0
@@ -138,6 +139,6 @@ def test_recorder_multiple_commands():
     rec.record_scatter(x=[1], y=[2], sizes=[10], colors=["#fff"], alphas=[1.0],
                        metadata=[], gid="stars", zorder=1)
     rec.record_line(x=[0, 1], y=[0, 0], style_dict={}, gid="equator", zorder=2)
-    rec.record_text(text="A", x=1, y=1, style_dict={}, gid="label", zorder=3)
+    rec.record_text(text="A", x=1, y=1, style_dict={}, gid="label", zorder=3, space="data")
     assert len(rec.commands) == 3
     assert [c.kind for c in rec.commands] == ["scatter", "line", "text"]
