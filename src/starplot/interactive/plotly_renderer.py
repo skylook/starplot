@@ -11,8 +11,9 @@ except ImportError as e:
 import logging
 
 import numpy as np
+from matplotlib.colors import to_rgba
 
-from starplot.interactive.commands import DrawingCommand
+from starplot.interactive.commands import CoordinateSpace, DrawingCommand
 from starplot.interactive.style_converter import (
     MARKER_SYMBOL_MAP,
     LINE_STYLE_MAP,
@@ -67,6 +68,45 @@ def _sanitize_colors(colors):
         return "rgba(0,0,0,0)"
 
 
+def _font_family(value):
+    """Ensure recorded font names retain a browser-safe sans-serif fallback."""
+    family = str(value or "Inter")
+    return family if "," in family else f"{family}, Arial, sans-serif"
+
+
+def _colors_with_alphas(colors, alphas, count):
+    """Return Plotly colors that preserve Matplotlib's per-point alpha."""
+    if isinstance(colors, (list, tuple)):
+        color_values = list(colors)
+    else:
+        color_values = [colors] * count
+
+    if isinstance(alphas, (list, tuple)):
+        alpha_values = list(alphas)
+    else:
+        alpha_values = [alphas] * count
+
+    if len(color_values) < count:
+        color_values.extend([color_values[-1]] * (count - len(color_values)))
+    if len(alpha_values) < count:
+        alpha_values.extend([alpha_values[-1]] * (count - len(alpha_values)))
+
+    result = []
+    for color, alpha in zip(color_values[:count], alpha_values[:count]):
+        if _is_transparent_color(color):
+            result.append("rgba(0,0,0,0)")
+            continue
+        try:
+            red, green, blue, base_alpha = to_rgba(color)
+            opacity = base_alpha * float(alpha)
+            result.append(
+                f"rgba({round(red * 255)},{round(green * 255)},{round(blue * 255)},{opacity:g})"
+            )
+        except (TypeError, ValueError):
+            result.append(_sanitize_color(color))
+    return result
+
+
 _KNOWN_LEGEND_GIDS = frozenset({
     "stars", "constellations-line", "constellations-border",
     "constellations-label-name", "ecliptic-line", "celestial-equator-line",
@@ -75,19 +115,274 @@ _KNOWN_LEGEND_GIDS = frozenset({
 })
 
 
+def _is_finite(x, y):
+    """Check if both coordinates are finite numbers."""
+    import math
+    try:
+        return math.isfinite(float(x)) and math.isfinite(float(y))
+    except (TypeError, ValueError):
+        return False
+
+
+def _append_geom_coords(xs, ys, geom):
+    """Append coordinates from a Shapely geometry to xs/ys lists.
+
+    Handles LineString, MultiLineString, and Point geometries.
+    Inserts None separators between disjoint segments for Plotly.
+    """
+    from shapely.geometry import LineString, MultiLineString, Point, MultiPoint
+
+    if isinstance(geom, Point):
+        xs.append(geom.x)
+        ys.append(geom.y)
+    elif isinstance(geom, LineString):
+        coords = list(geom.coords)
+        for x, y in coords:
+            xs.append(x)
+            ys.append(y)
+        xs.append(None)
+        ys.append(None)
+    elif isinstance(geom, MultiLineString):
+        for line in geom.geoms:
+            for x, y in line.coords:
+                xs.append(x)
+                ys.append(y)
+            xs.append(None)
+            ys.append(None)
+    elif isinstance(geom, MultiPoint):
+        for pt in geom.geoms:
+            xs.append(pt.x)
+            ys.append(pt.y)
+        xs.append(None)
+        ys.append(None)
+
+
+def _append_geom_as_segments(lines_list, geom):
+    """Append segments from a Shapely geometry to a list of line segments."""
+    from shapely.geometry import LineString, MultiLineString, Point
+
+    if isinstance(geom, Point):
+        pass  # A single point can't form a line segment
+    elif isinstance(geom, LineString):
+        lines_list.append(list(geom.coords))
+    elif isinstance(geom, MultiLineString):
+        for line in geom.geoms:
+            lines_list.append(list(line.coords))
+
+
 class PlotlyRenderer:
     """Renders a list of DrawingCommands into a Plotly Figure."""
 
-    def __init__(self, projection_info: dict, style_info: dict):
+    def __init__(self, projection_info: dict, style_info: dict,
+                 width: float = None, height: float = None,
+                 transparent: bool = False):
         self.projection_info = projection_info
         self.style_info = style_info
+        self.width = width
+        self.height = height
+        self._marker_viewport_width = width or 1000.0
+        self._horizon_footer_offset = 0.0
+        self._side_margin = 10
+        self.transparent = transparent
         self._trace_groups: dict[str, list[int]] = {}
         self.fig = go.Figure()
+        self._clip_polygons = self._build_clip_polygons()
         self._setup_layout()
+
+    def _build_clip_polygons(self):
+        """Build Shapely polygons from clip_geometries for intersection tests."""
+        from shapely.geometry import Polygon
+        clips = self.projection_info.get("clip_geometries", {})
+        polygons = {}
+        for clip_id, geom in clips.items():
+            if geom is None or geom.kind == "none" or len(geom.points) < 3:
+                continue
+            try:
+                polygons[clip_id] = Polygon(list(geom.points))
+            except Exception:
+                pass
+        return polygons
+
+    def _clip_command(self, cmd: DrawingCommand) -> DrawingCommand | None:
+        """Clip a spatial DATA-space command against its clip polygon.
+
+        Returns a new DrawingCommand with clipped geometry, or None if
+        the command is entirely outside the clip region.
+        """
+        if cmd.space != CoordinateSpace.DATA:
+            return cmd
+        clip_id = cmd.clip_id
+        if clip_id is None or clip_id not in self._clip_polygons:
+            return cmd
+
+        clip_poly = self._clip_polygons[clip_id]
+
+        if cmd.kind == "scatter":
+            return self._clip_scatter(cmd, clip_poly)
+        elif cmd.kind == "line":
+            return self._clip_line(cmd, clip_poly)
+        elif cmd.kind == "line_collection":
+            return self._clip_line_collection(cmd, clip_poly)
+        elif cmd.kind == "polygon":
+            return self._clip_polygon(cmd, clip_poly)
+        elif cmd.kind == "gradient":
+            return self._clip_gradient(cmd, clip_poly)
+        return cmd
+
+    def _clip_scatter(self, cmd, clip_poly):
+        """Filter scatter points to those inside the clip polygon."""
+        from shapely.geometry import Point
+        xs = cmd.data.get("x", [])
+        ys = cmd.data.get("y", [])
+        sizes = cmd.data.get("sizes", [])
+        colors = cmd.data.get("colors", [])
+        alphas = cmd.data.get("alphas", [])
+        metadata = cmd.metadata
+
+        mask = []
+        for x, y in zip(xs, ys):
+            if x is None or y is None:
+                mask.append(False)
+            else:
+                mask.append(clip_poly.contains(Point(x, y)))
+
+        if not any(mask):
+            return None
+
+        new_data = {
+            "x": [x for x, m in zip(xs, mask) if m],
+            "y": [y for y, m in zip(ys, mask) if m],
+            "sizes": [s for s, m in zip(sizes, mask) if m] if sizes else [],
+            "colors": [c for c, m in zip(colors, mask) if m] if isinstance(colors, list) else colors,
+            "alphas": [a for a, m in zip(alphas, mask) if m] if isinstance(alphas, list) else alphas,
+        }
+        new_metadata = [m for m, keep in zip(metadata, mask) if keep] if metadata else []
+        return DrawingCommand(
+            kind=cmd.kind, data=new_data, style=cmd.style,
+            metadata=new_metadata, zorder=cmd.zorder, gid=cmd.gid,
+            space=cmd.space, clip_id=cmd.clip_id,
+        )
+
+    def _clip_line(self, cmd, clip_poly):
+        """Clip a line against the clip polygon, preserving segments."""
+        from shapely.geometry import LineString
+        xs = cmd.data.get("x", [])
+        ys = cmd.data.get("y", [])
+        if not xs:
+            return cmd
+
+        # Split into segments at non-finite points
+        segments = []
+        current_x, current_y = [], []
+        for x, y in zip(xs, ys):
+            if x is None or y is None or not _is_finite(x, y):
+                if len(current_x) > 1:
+                    segments.append((current_x, current_y))
+                current_x, current_y = [], []
+            else:
+                current_x.append(float(x))
+                current_y.append(float(y))
+        if len(current_x) > 1:
+            segments.append((current_x, current_y))
+
+        new_x, new_y = [], []
+        for seg_x, seg_y in segments:
+            try:
+                line = LineString(list(zip(seg_x, seg_y)))
+                clipped = line.intersection(clip_poly)
+                if clipped.is_empty:
+                    continue
+                _append_geom_coords(new_x, new_y, clipped)
+            except Exception:
+                # If clipping fails, keep original segment
+                new_x.extend(seg_x)
+                new_y.extend(seg_y)
+                new_x.append(None)
+                new_y.append(None)
+
+        if not new_x:
+            return None
+
+        return DrawingCommand(
+            kind=cmd.kind, data={"x": new_x, "y": new_y}, style=cmd.style,
+            metadata=cmd.metadata, zorder=cmd.zorder, gid=cmd.gid,
+            space=cmd.space, clip_id=cmd.clip_id,
+        )
+
+    def _clip_line_collection(self, cmd, clip_poly):
+        """Clip a line collection against the clip polygon."""
+        from shapely.geometry import LineString
+        lines = cmd.data.get("lines", [])
+        new_lines = []
+        new_metadata = []
+        for i, seg in enumerate(lines):
+            if len(seg) < 2:
+                continue
+            try:
+                line = LineString(seg)
+                clipped = line.intersection(clip_poly)
+                if clipped.is_empty:
+                    continue
+                _append_geom_as_segments(new_lines, clipped)
+                meta = cmd.metadata[i] if i < len(cmd.metadata) else {}
+                new_metadata.append(meta)
+            except Exception:
+                new_lines.append(seg)
+                meta = cmd.metadata[i] if i < len(cmd.metadata) else {}
+                new_metadata.append(meta)
+
+        if not new_lines:
+            return None
+
+        return DrawingCommand(
+            kind=cmd.kind, data={"lines": new_lines}, style=cmd.style,
+            metadata=new_metadata, zorder=cmd.zorder, gid=cmd.gid,
+            space=cmd.space, clip_id=cmd.clip_id,
+        )
+
+    def _clip_polygon(self, cmd, clip_poly):
+        """Clip a polygon against the clip polygon."""
+        from shapely.geometry import Polygon as ShapelyPolygon
+        points = cmd.data.get("points", [])
+        if len(points) < 3:
+            return cmd
+        try:
+            poly = ShapelyPolygon(points)
+            clipped = poly.intersection(clip_poly)
+            if clipped.is_empty:
+                return None
+            # Extract exterior coordinates
+            if hasattr(clipped, 'exterior'):
+                new_points = list(clipped.exterior.coords)
+            elif hasattr(clipped, 'geoms'):
+                # MultiPolygon — use the largest
+                largest = max(clipped.geoms, key=lambda g: g.area)
+                new_points = list(largest.exterior.coords)
+            else:
+                return cmd
+            # Remove closing point if present
+            if len(new_points) > 1 and new_points[0] == new_points[-1]:
+                new_points = new_points[:-1]
+            return DrawingCommand(
+                kind=cmd.kind, data={"points": new_points}, style=cmd.style,
+                metadata=cmd.metadata, zorder=cmd.zorder, gid=cmd.gid,
+                space=cmd.space, clip_id=cmd.clip_id,
+            )
+        except Exception:
+            return cmd
+
+    def _clip_gradient(self, cmd, clip_poly):
+        """Gradient clipping is handled in the renderer via nan masking."""
+        return cmd
 
     def render(self, commands: list[DrawingCommand]) -> go.Figure:
         """Render all commands sorted by zorder."""
+        self._reserve_horizon_footer(commands)
         for cmd in sorted(commands, key=lambda c: c.zorder if c.zorder is not None else 0):
+            # Clip spatial commands before dispatch
+            clipped = self._clip_command(cmd)
+            if clipped is None:
+                continue
             handler = {
                 "scatter": self._render_scatter,
                 "line": self._render_line,
@@ -96,17 +391,58 @@ class PlotlyRenderer:
                 "line_collection": self._render_line_collection,
                 "gradient": self._render_gradient,
                 "info_table": self._render_info_table,
-            }.get(cmd.kind)
+            }.get(clipped.kind)
             if handler:
                 try:
-                    handler(cmd)
+                    handler(clipped)
                 except Exception as e:
                     LOGGER.warning(
                         "Failed to render %s command (gid=%s): %s: %s",
-                        cmd.kind, cmd.gid, type(e).__name__, e,
+                        clipped.kind, clipped.gid, type(e).__name__, e,
                     )
         self._add_interactive_features()
         return self.fig
+
+    def _reserve_horizon_footer(self, commands: list[DrawingCommand]):
+        """Keep HorizonPlot's negative axes-coordinate footer inside Plotly paper."""
+        footer_y_values = []
+        for cmd in commands:
+            if cmd.gid != "horizon-bottom":
+                continue
+            footer_y_values.extend(point[1] for point in cmd.data.get("points", []))
+
+        if not footer_y_values:
+            return
+
+        self._horizon_footer_offset = max(0.0, -min(footer_y_values))
+        if self._horizon_footer_offset:
+            self.fig.update_yaxes(domain=[self._horizon_footer_offset, 1.0])
+        if any(command.gid == "gridlines-label" for command in commands):
+            self._side_margin = 50
+            self.fig.update_layout(margin=dict(l=50, r=50, t=30, b=10))
+
+    def _paper_y(self, value, gid, style=None):
+        """Translate the HorizonPlot footer from negative axes space into paper."""
+        if gid in {"horizon-bottom", "horizon-label"} or (style or {}).get("footer"):
+            return value + self._horizon_footer_offset
+        return value
+
+    def _target_axes_width(self):
+        """Return the drawable Plotly width after the fixed side margins."""
+        return max(1.0, self._marker_viewport_width - 2.0 * self._side_margin)
+
+    def _style_pixel_scale(self):
+        """Convert recorded Matplotlib point-based style units into Plotly pixels."""
+        source_width = self.style_info.get("source_axes_width")
+        if not source_width:
+            return 0.5
+        return (
+            float(self.style_info.get("plot_scale", 1.0))
+            * float(self.style_info.get("dpi", 100.0))
+            / 72.0
+            * self._target_axes_width()
+            / float(source_width)
+        )
 
     # ------------------------------------------------------------------
     # Layout
@@ -115,6 +451,14 @@ class PlotlyRenderer:
     def _setup_layout(self):
         bg = self.style_info.get("background_color", "#ffffff")
         fig_bg = self.style_info.get("figure_background_color", "#ffffff")
+
+        # When transparent=True, match matplotlib's transparent=True export:
+        # only the paper (figure) background becomes transparent, while the
+        # plot (axes) background keeps its color.  This matches matplotlib's
+        # behavior where transparent=True affects the figure facecolor but
+        # not the axes facecolor.
+        if self.transparent:
+            fig_bg = "rgba(255,255,255,0)"
 
         # Use matplotlib's projected axis limits so Plotly renders in the same
         # coordinate space (Cartopy projection units for MapPlot/ZenithPlot,
@@ -166,7 +510,10 @@ class PlotlyRenderer:
             showlegend=show_legend,
             legend=legend_cfg,
             margin=dict(l=10, r=10, t=30, b=10),
+            autosize=False,
         )
+        if self.width is not None or self.height is not None:
+            self.fig.update_layout(width=self.width, height=self.height)
 
     # ------------------------------------------------------------------
     # Scatter (stars, markers, DSOs)
@@ -178,11 +525,16 @@ class PlotlyRenderer:
         alphas = cmd.data.get("alphas", [1.0])
         sizes_raw = cmd.data.get("sizes", [])
         resolution = self.style_info.get("resolution", 4096)
-        sizes = [calibrate_marker_size(s, resolution=resolution) for s in sizes_raw]
-
-        # Per-point alpha via rgba string if needed
-        # For simplicity use the first alpha value for the whole trace
-        alpha = alphas[0] if isinstance(alphas, (list, tuple)) and alphas else alphas if isinstance(alphas, (int, float)) else 1.0
+        sizes = [
+            calibrate_marker_size(
+                s,
+                resolution=resolution,
+                width=self._target_axes_width(),
+                dpi=self.style_info.get("dpi", 100.0),
+                source_axes_width=self.style_info.get("source_axes_width"),
+            )
+            for s in sizes_raw
+        ]
 
         edge_color = _sanitize_color(cmd.style.get("edge_color", "rgba(0,0,0,0)"))
         edge_width = cmd.style.get("edge_width", 0) or 0
@@ -193,7 +545,7 @@ class PlotlyRenderer:
         if fill == "none" or _is_transparent_color(colors):
             marker_color = "rgba(0,0,0,0)"
         else:
-            marker_color = colors
+            marker_color = _colors_with_alphas(colors, alphas, len(cmd.data.get("x", [])))
 
         legend_label = cmd.style.get("legend_label")
         name = legend_label if legend_label is not None else self._gid_to_legend_name(cmd.gid)
@@ -211,11 +563,11 @@ class PlotlyRenderer:
             marker=dict(
                 size=sizes,
                 color=marker_color,
-                opacity=float(alpha),
+                opacity=1.0,
                 symbol=MARKER_SYMBOL_MAP.get(cmd.style.get("symbol", "circle"), "circle"),
                 line=dict(
                     color=edge_color,
-                    width=edge_width * 0.3,
+                    width=edge_width * self._style_pixel_scale(),
                 ),
             ),
             text=hover_texts,
@@ -255,7 +607,7 @@ class PlotlyRenderer:
             mode="lines",
             line=dict(
                 color=_sanitize_color(cmd.style.get("color", "#aaaaaa")),
-                width=max(0.5, cmd.style.get("width", 1) * 0.3),
+                width=max(0.5, cmd.style.get("width", 1) * self._style_pixel_scale()),
                 dash=dash,
             ),
             opacity=cmd.style.get("alpha", 1.0),
@@ -293,9 +645,9 @@ class PlotlyRenderer:
             def _build_path(pts):
                 if not pts:
                     return ""
-                path = f"M {pts[0][0]},{pts[0][1]}"
+                path = f"M {pts[0][0]},{self._paper_y(pts[0][1], cmd.gid, cmd.style)}"
                 for x, y in pts[1:]:
-                    path += f" L {x},{y}"
+                    path += f" L {x},{self._paper_y(y, cmd.gid, cmd.style)}"
                 path += " Z"
                 return path
 
@@ -308,7 +660,7 @@ class PlotlyRenderer:
                 fillcolor=fill_color if has_fill else "rgba(0,0,0,0)",
                 line=dict(
                     color=edge_color,
-                    width=edge_width * 0.3,
+                    width=edge_width * self._style_pixel_scale(),
                 ),
                 opacity=alpha,
             )
@@ -323,7 +675,7 @@ class PlotlyRenderer:
                 fillcolor=fill_color,
                 line=dict(
                     color=edge_color,
-                    width=max(0, edge_width * 0.3),
+                    width=max(0, edge_width * self._style_pixel_scale()),
                 ),
                 opacity=alpha,
                 hoverinfo="none",
@@ -343,16 +695,22 @@ class PlotlyRenderer:
         yref = cmd.style.get("yref", "y")
         self.fig.add_annotation(
             x=cmd.data.get("x"),
-            y=cmd.data.get("y"),
+            y=(
+                self._paper_y(cmd.data.get("y"), cmd.gid, cmd.style)
+                if yref == "paper"
+                else cmd.data.get("y")
+            ),
             text=cmd.data.get("text", ""),
             showarrow=False,
             font=dict(
-                size=max(8, cmd.style.get("font_size", 12) * 0.5),
+                size=max(8, cmd.style.get("font_size", 12) * self._style_pixel_scale()),
                 color=_sanitize_color(cmd.style.get("font_color", "#ffffff")),
-                family=cmd.style.get("font_name", "Inter, Arial, sans-serif"),
+                family=_font_family(cmd.style.get("font_name")),
             ),
             xanchor=xanchor,
             yanchor=yanchor,
+            xshift=cmd.style.get("xshift", 0),
+            yshift=cmd.style.get("yshift", 0),
             xref=xref,
             yref=yref,
             opacity=cmd.style.get("font_alpha", cmd.style.get("alpha", 1.0)),
@@ -375,7 +733,7 @@ class PlotlyRenderer:
             mode="lines",
             line=dict(
                 color=_sanitize_color(style.get("color", "#777777")),
-                width=max(0.5, style.get("width", 1) * 0.3),
+                width=max(0.5, style.get("width", 1) * self._style_pixel_scale()),
                 dash=dash,
             ),
             opacity=style.get("alpha", 1.0),
@@ -391,7 +749,10 @@ class PlotlyRenderer:
     # ------------------------------------------------------------------
 
     def _render_gradient(self, cmd: DrawingCommand):
-        color_stops = self._normalize_color_stops(cmd.data.get("color_stops", []))
+        color_stops = [
+            [float(s[0]), str(s[1])]
+            for s in self._normalize_color_stops(cmd.data.get("color_stops", []))
+        ]
         if len(color_stops) < 2:
             return
 
@@ -421,19 +782,24 @@ class PlotlyRenderer:
             z = np.flipud(z)
         else:
             # Linear gradients in starplot go from stop=0 at the bottom to stop=1 at the top.
-            steps = 600
+            # Use a two-column heatmap so zsmooth works in both directions, matching
+            # matplotlib's gouraud shading. y values are cell centers for 2000 rows and
+            # x values are cell centers for 2 columns; zsmooth fills the axis range.
+            steps = 2000
             ys = np.linspace(float(y_min), float(y_max), steps)
             z = np.linspace(0.0, 1.0, steps, dtype=float).reshape(-1, 1)
             z = np.repeat(z, 2, axis=1)
 
         self.fig.add_trace(go.Heatmap(
-            x=[float(x_min), float(x_max)],
-            y=ys,
-            z=z,
+            x=xs if direction == "radial" else [float(x_min), float(x_max)],
+            y=ys.tolist(),
+            z=z.tolist(),
             colorscale=color_stops,
             showscale=False,
             hoverinfo="skip",
-            zsmooth="best",
+            zsmooth=False,
+            zmin=0.0,
+            zmax=1.0,
             showlegend=False,
             name="",
         ))
@@ -467,7 +833,7 @@ class PlotlyRenderer:
 
         style = cmd.style
         font_color = style.get("font_color", "#111111")
-        font_name = style.get("font_name", "Inter, Arial, sans-serif")
+        font_name = _font_family(style.get("font_name"))
         font_alpha = float(style.get("font_alpha", 1.0))
         base_size = float(style.get("font_size", 12))
         header_size = max(11, base_size * 0.55)
