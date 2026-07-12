@@ -120,3 +120,16 @@ def test_renderer_contains_no_coordinate_transform_calls():
     source = Path("src/starplot/interactive/plotly_renderer.py").read_text()
     assert "transform_point(" not in source
     assert "_prepare_coords(" not in source
+
+
+# ------------------------------------------------------------------
+# Task 5: Final label placement and style
+# ------------------------------------------------------------------
+
+def test_text_command_preserves_offset_and_rotation():
+    plot = make_horizon_plot()
+    plot._text(380.0, 30.0, "Probe", xytext=(12, -8), rotation=15, gid="probe")
+    command = next(c for c in plot._recorder.commands if c.gid == "probe")
+    assert command.data["offset_points"] == (12.0, -8.0)
+    assert command.style["rotation"] == 15.0
+    assert command.space.value == "data"

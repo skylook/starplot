@@ -693,6 +693,19 @@ class PlotlyRenderer:
         yanchor, xanchor = ANCHOR_MAP.get((va, ha), ("middle", "center"))
         xref = cmd.style.get("xref", "x")
         yref = cmd.style.get("yref", "y")
+
+        # Convert offset_points (Matplotlib points) to pixels
+        offset_points = cmd.data.get("offset_points", (0.0, 0.0))
+        dpi = self.style_info.get("dpi", 100)
+        xshift = offset_points[0] / 72.0 * dpi
+        yshift = offset_points[1] / 72.0 * dpi
+
+        # Apply any explicit xshift/yshift from style (overrides offset)
+        xshift = cmd.style.get("xshift", xshift)
+        yshift = cmd.style.get("yshift", yshift)
+
+        rotation = cmd.style.get("rotation", 0.0)
+
         self.fig.add_annotation(
             x=cmd.data.get("x"),
             y=(
@@ -709,8 +722,9 @@ class PlotlyRenderer:
             ),
             xanchor=xanchor,
             yanchor=yanchor,
-            xshift=cmd.style.get("xshift", 0),
-            yshift=cmd.style.get("yshift", 0),
+            xshift=xshift,
+            yshift=yshift,
+            textangle=rotation,
             xref=xref,
             yref=yref,
             opacity=cmd.style.get("font_alpha", cmd.style.get("alpha", 1.0)),

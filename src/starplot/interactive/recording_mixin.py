@@ -387,10 +387,25 @@ class RecordingMixin:
             # so use the "prepared" source space to avoid double-conversion.
             px, py = self._to_final_data(x, y, source_space="prepared")
 
+            # Extract final placement properties from the Annotation
+            xytext = kwargs.get("xytext", (0, 0))
+            rotation = kwargs.get("rotation", 0.0)
+            # Read actual values from the annotation if available
+            if hasattr(result, "get_rotation"):
+                try:
+                    rotation = float(result.get_rotation())
+                except Exception:
+                    pass
+
             from starplot.interactive.commands import DrawingCommand, CoordinateSpace
             cmd = DrawingCommand(
                 kind="text",
-                data={"text": str(text), "x": px, "y": py},
+                data={
+                    "text": str(text),
+                    "x": px,
+                    "y": py,
+                    "offset_points": (float(xytext[0]), float(xytext[1])),
+                },
                 style={
                     "font_size": kwargs.get("fontsize", 12),
                     "font_color": kwargs.get("color", "#ffffff"),
@@ -399,6 +414,7 @@ class RecordingMixin:
                     "ha": kwargs.get("ha", "center"),
                     "va": kwargs.get("va", "center"),
                     "alpha": kwargs.get("alpha", 1.0),
+                    "rotation": float(rotation),
                 },
                 gid=kwargs.get("gid", "text"),
                 zorder=kwargs.get("zorder", 0),

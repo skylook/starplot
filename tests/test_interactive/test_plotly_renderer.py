@@ -412,3 +412,44 @@ def test_line_crossing_circle_is_trimmed_to_boundary():
     assert len(xs) >= 2
     assert xs[0] == pytest.approx(-1.0, abs=0.05)
     assert xs[-1] == pytest.approx(1.0, abs=0.05)
+
+
+# ------------------------------------------------------------------
+# Task 5: Label placement tests
+# ------------------------------------------------------------------
+
+def text_command(offset_points=(0.0, 0.0), rotation=0.0):
+    return DrawingCommand(
+        kind="text",
+        data={"text": "Probe", "x": 0.0, "y": 0.0,
+              "offset_points": offset_points},
+        style={"font_size": 12, "font_color": "#ffffff",
+               "rotation": rotation, "ha": "center", "va": "center"},
+        gid="test-text",
+        zorder=0,
+        space=CoordinateSpace.DATA,
+    )
+
+
+def renderer_with_known_axes_pixels():
+    """Renderer with known axes pixel dimensions for offset conversion."""
+    proj = {
+        "x_min": -1.5, "x_max": 1.5, "y_min": -1.5, "y_max": 1.5,
+        "axes_pixels": (500.0, 500.0),
+        "axes_bbox": (0.1, 0.1, 0.8, 0.8),
+        "clip_geometries": {},
+        "plot_kind": "map",
+    }
+    style = {"background_color": "#000", "figure_background_color": "#000",
+             "resolution": 512, "dpi": 100, "plot_scale": 1.0,
+             "source_axes_width": 500.0}
+    return PlotlyRenderer(proj, style, width=500, height=500)
+
+
+def test_renderer_converts_offset_points_to_pixels():
+    renderer = renderer_with_known_axes_pixels()
+    figure = renderer.render([text_command(offset_points=(7.2, -3.6))])
+    annotation = figure.layout.annotations[0]
+    # 7.2 points at 100 dpi → 7.2 / 72 * 100 = 10 pixels
+    assert annotation.xshift == pytest.approx(10.0, abs=0.5)
+    assert annotation.yshift == pytest.approx(-5.0, abs=0.5)
