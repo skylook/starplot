@@ -88,6 +88,23 @@ class RecordingMixin:
 
     def _record_plot_info(self):
         """Capture projection and style info after the plot is initialized."""
+        # Determine plot kind through explicit isinstance checks
+        from starplot.plots.map import MapPlot
+        from starplot.plots.horizon import HorizonPlot
+        from starplot.plots.zenith import ZenithPlot
+        from starplot.plots.optic import OpticPlot
+
+        if isinstance(self, OpticPlot):
+            plot_kind = "optic"
+        elif isinstance(self, ZenithPlot):
+            plot_kind = "zenith"
+        elif isinstance(self, HorizonPlot):
+            plot_kind = "horizon"
+        elif isinstance(self, MapPlot):
+            plot_kind = "map"
+        else:
+            plot_kind = "unknown"
+
         proj_info = {
             "type": getattr(self, "projection", None).__class__.__name__
             if hasattr(self, "projection") and getattr(self, "projection") is not None
@@ -96,6 +113,7 @@ class RecordingMixin:
             "ra_max": getattr(self, "ra_max", 360),
             "dec_min": getattr(self, "dec_min", -90),
             "dec_max": getattr(self, "dec_max", 90),
+            "plot_kind": plot_kind,
         }
 
         # Compute projected axis extents from matplotlib axes limits
@@ -110,6 +128,31 @@ class RecordingMixin:
             })
         except Exception as e:
             LOGGER.debug("Could not extract axis limits: %s", e)
+
+        # Force a draw so axes position and window extent are final
+        try:
+            self.fig.draw_without_rendering()
+        except Exception as e:
+            LOGGER.debug("Could not draw without rendering: %s", e)
+
+        # Record axes bbox and pixel dimensions
+        try:
+            ax_pos = self.ax.get_position()
+            proj_info["axes_bbox"] = (
+                float(ax_pos.x0), float(ax_pos.y0),
+                float(ax_pos.width), float(ax_pos.height),
+            )
+            extent = self.ax.get_window_extent()
+            proj_info["axes_pixels"] = (
+                float(extent.width), float(extent.height),
+            )
+        except Exception as e:
+            LOGGER.debug("Could not extract axes geometry: %s", e)
+            proj_info["axes_bbox"] = (0.0, 0.0, 1.0, 1.0)
+            proj_info["axes_pixels"] = (0.0, 0.0)
+
+        # Record clip geometry
+        proj_info["clip_geometries"] = {"plot": self._record_final_clip_geometry()}
 
         self._recorder.projection_info = proj_info
 
@@ -143,12 +186,62 @@ class RecordingMixin:
             ),
         }
         try:
-            self.fig.draw_without_rendering()
             self._recorder.style_info["source_axes_width"] = float(
                 self.ax.get_window_extent().width
             )
         except Exception as e:
             LOGGER.debug("Could not extract axes width: %s", e)
+
+    def _record_final_clip_geometry(self):
+        """Extract the final clip polygon from Matplotlib's background patch.
+
+        Transforms the patch path through the patch transform and then through
+        the inverse data transform to get final DATA-space coordinates.
+        Returns a ClipGeometry with kind "rect" or "polygon".
+        """
+        from starplot.interactive.commands import ClipGeometry
+
+        patch = getattr(self, "_background_clip_path", None)
+        if patch is None:
+            return ClipGeometry(kind="none")
+
+        try:
+            path_obj = patch.get_path()
+            # Interpolate curved paths (Circle uses CURVE3/CURVE4 codes)
+            # to get enough vertices for an accurate polygon approximation.
+            codes = path_obj.codes
+            has_curves = codes is not None and any(c in (3, 4) for c in codes)
+            if has_curves and len(path_obj.vertices) < 64:
+                path_obj = path_obj.interpolated(8)
+
+            # Transform: path coords → display → data
+            trans = patch.get_transform() + self.ax.transData.inverted()
+            raw_verts = trans.transform(path_obj.vertices)
+
+            # Filter finite vertices
+            finite = [
+                (float(x), float(y))
+                for x, y in raw_verts
+                if math.isfinite(x) and math.isfinite(y)
+            ]
+            if len(finite) < 3:
+                return ClipGeometry(kind="none")
+
+            # Remove duplicate closing point if present
+            if len(finite) > 1 and finite[0] == finite[-1]:
+                finite = finite[:-1]
+
+            # Classify: rect if exactly 4 unique vertices, otherwise polygon
+            unique = set(finite)
+            if len(unique) == 4:
+                kind = "rect"
+            else:
+                kind = "polygon"
+
+            return ClipGeometry(kind=kind, points=tuple(finite))
+        except Exception as e:
+            LOGGER.warning("Failed to extract clip geometry: %s", e)
+            return ClipGeometry(kind="none")
 
     # ------------------------------------------------------------------
     # Method 1: Stars scatter
