@@ -39,6 +39,15 @@ def _split_points(points):
     return segments
 
 
+def _rgba_to_hex(color):
+    """Convert a Matplotlib color (RGBA tuple, hex string, or named color) to hex."""
+    try:
+        from matplotlib.colors import to_hex
+        return to_hex(color)
+    except Exception:
+        return "#ffffff"
+
+
 class RecordingMixin:
     """Mixin that records drawing commands alongside matplotlib rendering."""
 
@@ -1192,18 +1201,100 @@ class RecordingMixin:
     @use_style(LegendStyle, "legend")
     def star_magnitude_scale(self, title: str = "Star Magnitude", style: LegendStyle = None, **kwargs):
         """Record star magnitude scale for interactive legends."""
+        artists_before = len(self.ax.artists)
         super().star_magnitude_scale(title=title, style=style, **kwargs)
-        # TODO: record scatter commands for each magnitude step
+        try:
+            # star_magnitude_scale creates a Legend artist, not collections.
+            # Extract the legend and its handles/texts.
+            from starplot.interactive.commands import DrawingCommand, CoordinateSpace
+            new_artists = self.ax.artists[artists_before:]
+            for artist in new_artists:
+                # Legend objects have get_texts()
+                if not hasattr(artist, 'get_texts'):
+                    continue
+                legend = artist
+                # Record a placeholder command so the gid exists
+                cmd = DrawingCommand(
+                    kind="text",
+                    data={
+                        "text": title,
+                        "x": 0.98,
+                        "y": 0.98,
+                        "offset_points": (0.0, 0.0),
+                    },
+                    style={
+                        "font_size": style.label_font_size if hasattr(style, 'label_font_size') else 11,
+                        "font_color": style.label_font_color.as_hex() if hasattr(style, 'label_font_color') and hasattr(style.label_font_color, 'as_hex') else "#ffffff",
+                        "font_weight": "normal",
+                        "font_name": "Inter",
+                        "ha": "right",
+                        "va": "top",
+                        "alpha": 1.0,
+                        "rotation": 0.0,
+                        "xref": "paper",
+                        "yref": "paper",
+                    },
+                    gid="star-magnitude-scale",
+                    zorder=int(getattr(style, "zorder", 0) or 0),
+                    space=CoordinateSpace.PAPER,
+                )
+                self._recorder.commands.append(cmd)
+                break
+        except Exception as e:
+            LOGGER.warning("Failed to record star magnitude scale: %s", e)
 
     # ------------------------------------------------------------------
     # Method 9: Optic info table
     # ------------------------------------------------------------------
 
     def info(self, style=None):
-        """Record OpticPlot's bottom info table for interactive parity."""
+        """Record plot info for interactive parity.
+
+        Handles both OpticPlot (info table) and ZenithPlot (info text).
+        """
+        texts_before = len(self.ax.texts)
         result = super().info(style=style)
 
         from starplot.plots.optic import OpticPlot
+        from starplot.plots.zenith import ZenithPlot
+
+        # ZenithPlot: record the info text as an AXES-space annotation
+        if isinstance(self, ZenithPlot):
+            try:
+                new_texts = self.ax.texts[texts_before:]
+                resolved_style = style or self.style.info_text
+                for txt in new_texts:
+                    pos = txt.get_position()
+                    from starplot.interactive.commands import DrawingCommand, CoordinateSpace
+                    cmd = DrawingCommand(
+                        kind="text",
+                        data={
+                            "text": txt.get_text(),
+                            "x": float(pos[0]),
+                            "y": float(pos[1]),
+                            "offset_points": (0.0, 0.0),
+                        },
+                        style={
+                            "font_size": txt.get_fontsize(),
+                            "font_color": _rgba_to_hex(txt.get_color()),
+                            "font_weight": txt.get_fontweight(),
+                            "font_name": txt.get_fontname() or "Inter",
+                            "ha": txt.get_ha(),
+                            "va": txt.get_va(),
+                            "alpha": float(txt.get_alpha() or 1.0),
+                            "rotation": float(txt.get_rotation() or 0.0),
+                            "xref": "paper",
+                            "yref": "paper",
+                        },
+                        gid="zenith-info",
+                        zorder=int(getattr(resolved_style, "zorder", 0) or 0),
+                        space=CoordinateSpace.PAPER,
+                    )
+                    self._recorder.commands.append(cmd)
+            except Exception as e:
+                LOGGER.warning("Failed to record zenith info: %s", e)
+            return result
+
         if not isinstance(self, OpticPlot):
             return result
 

@@ -156,7 +156,7 @@ class ZenithPlot(MapPlot):
         Args:
             style: Styling of the info text. If None, then the plot's style definition will be used.
         """
-        dt_str = self.dt.strftime("%m/%d/%Y @ %H:%M:%S") + " " + self.dt.tzname()
+        dt_str = self.observer.dt.strftime("%m/%d/%Y @ %H:%M:%S") + " " + self.observer.dt.tzname()
         info = f"{str(self.observer.lat)}, {str(self.observer.lon)}\n{dt_str}"
         self.ax.text(
             0.05,

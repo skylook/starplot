@@ -133,3 +133,15 @@ def test_text_command_preserves_offset_and_rotation():
     assert command.data["offset_points"] == (12.0, -8.0)
     assert command.style["rotation"] == 15.0
     assert command.space.value == "data"
+
+
+# ------------------------------------------------------------------
+# Task 6: Magnitude scale and info recording
+# ------------------------------------------------------------------
+
+def test_magnitude_scale_and_zenith_info_are_recorded():
+    plot = make_zenith_plot()
+    plot.star_magnitude_scale()
+    plot.info()
+    assert any(c.gid == "star-magnitude-scale" for c in plot._recorder.commands)
+    assert any(c.gid == "zenith-info" for c in plot._recorder.commands)

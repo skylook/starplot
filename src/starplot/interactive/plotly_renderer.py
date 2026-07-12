@@ -452,13 +452,12 @@ class PlotlyRenderer:
         bg = self.style_info.get("background_color", "#ffffff")
         fig_bg = self.style_info.get("figure_background_color", "#ffffff")
 
-        # When transparent=True, match matplotlib's transparent=True export:
-        # only the paper (figure) background becomes transparent, while the
-        # plot (axes) background keeps its color.  This matches matplotlib's
-        # behavior where transparent=True affects the figure facecolor but
-        # not the axes facecolor.
+        # When transparent=True, both the paper (figure) and plot (axes)
+        # backgrounds become fully transparent, matching matplotlib's
+        # transparent=True export behavior.
         if self.transparent:
-            fig_bg = "rgba(255,255,255,0)"
+            fig_bg = "rgba(0,0,0,0)"
+            bg = "rgba(0,0,0,0)"
 
         # Use matplotlib's projected axis limits so Plotly renders in the same
         # coordinate space (Cartopy projection units for MapPlot/ZenithPlot,
@@ -782,18 +781,33 @@ class PlotlyRenderer:
         # Plotly has no native gradient plot background. We render one as a low-z
         # heatmap in the chart coordinate system so it aligns with axis bounds.
         if direction == "radial":
+            # Mirror GradientBackgroundMixin: radial stop positions divide by
+            # two with final position one; colors reverse; value is radius^2.
+            # Center (r=0) → z=1.0 (last color stop), edge (r=1) → z=0.0.
             steps = 220
             xs = np.linspace(float(x_min), float(x_max), steps)
             ys = np.linspace(float(y_min), float(y_max), steps)
             xx, yy = np.meshgrid(xs, ys)
-            cx = (float(x_min) + float(x_max)) / 2.0
-            cy = (float(y_min) + float(y_max)) / 2.0
-            rx = max(abs(float(x_max) - cx), 1e-9)
-            ry = max(abs(float(y_max) - cy), 1e-9)
+            # Use the recorded center and radius if available
+            center = cmd.data.get("center")
+            if center is not None:
+                cx, cy = float(center[0]), float(center[1])
+            else:
+                cx = (float(x_min) + float(x_max)) / 2.0
+                cy = (float(y_min) + float(y_max)) / 2.0
+            radius = cmd.data.get("radius")
+            if radius is not None:
+                r = float(radius)
+            else:
+                r = max(abs(float(x_max) - cx), abs(float(y_max) - cy))
+            rx = max(r, 1e-9)
+            ry = max(r, 1e-9)
 
-            rr = np.sqrt(((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2)
+            rr = ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2
             z = np.clip(1.0 - rr, 0.0, 1.0)
             z = np.flipud(z)
+            # Reverse color stops to match matplotlib's radial gradient
+            color_stops = [[1.0 - s[0], s[1]] for s in reversed(color_stops)]
         else:
             # Linear gradients in starplot go from stop=0 at the bottom to stop=1 at the top.
             # Use a two-column heatmap so zsmooth works in both directions, matching

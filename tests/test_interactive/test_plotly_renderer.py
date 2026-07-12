@@ -453,3 +453,50 @@ def test_renderer_converts_offset_points_to_pixels():
     # 7.2 points at 100 dpi → 7.2 / 72 * 100 = 10 pixels
     assert annotation.xshift == pytest.approx(10.0, abs=0.5)
     assert annotation.yshift == pytest.approx(-5.0, abs=0.5)
+
+
+# ------------------------------------------------------------------
+# Task 6: Layout, gradients, transparency
+# ------------------------------------------------------------------
+
+def test_transparent_export_clears_paper_and_plot_backgrounds():
+    """Transparent export should set both backgrounds to fully transparent."""
+    from starplot.interactive import InteractiveMapPlot
+    from starplot import Miller
+    plot = InteractiveMapPlot(
+        projection=Miller(), ra_min=60, ra_max=120,
+        dec_min=-10, dec_max=30, resolution=256,
+    )
+    fig = plot.to_plotly(transparent=True)
+    assert fig.layout.paper_bgcolor == "rgba(0,0,0,0)"
+    assert fig.layout.plot_bgcolor == "rgba(0,0,0,0)"
+
+
+def radial_gradient_command():
+    return DrawingCommand(
+        kind="gradient",
+        data={
+            "direction": "radial",
+            "color_stops": [[0.0, "#000022"], [0.5, "#000011"], [1.0, "#000000"]],
+            "center": (0.0, 0.0),
+            "radius": 1.0,
+        },
+        style={},
+        gid="gradient",
+        zorder=-2000,
+        space=CoordinateSpace.DATA,
+        clip_id="plot",
+    )
+
+
+def test_radial_gradient_uses_source_radius_squared_and_reversal():
+    """Radial gradient values should be radius^2 with reversed colors."""
+    renderer = renderer_with_circle_clip()
+    figure = renderer.render([radial_gradient_command()])
+    heatmap = next(trace for trace in figure.data if trace.type == "heatmap")
+    z = np.array(heatmap.z)
+    # Center value (radius=0) should be ~1.0 (reversed: last color stop)
+    center = z.shape[0] // 2, z.shape[1] // 2
+    assert z[center] == pytest.approx(1.0, abs=0.05)
+    # Corner value (radius=1) should be ~0.0
+    assert z[0][0] == pytest.approx(0.0, abs=0.1)
