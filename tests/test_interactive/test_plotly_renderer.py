@@ -390,7 +390,7 @@ def test_renderer_gradient_no_traces_without_proj_info():
     """Gradient without projected axis bounds should not add traces."""
     cmd = DrawingCommand(
         kind="gradient",
-        data={"direction": "vertical", "color_stops": [(0.0, "#000"), (1.0, "#001")]},
+        data={"direction": "linear", "color_stops": [(0.0, "#000"), (1.0, "#001")]},
         zorder=-1,
     )
     renderer = make_renderer()
@@ -406,7 +406,7 @@ def test_renderer_gradient_renders_heatmap_with_proj_info():
     }
     cmd = DrawingCommand(
         kind="gradient",
-        data={"direction": "vertical", "color_stops": [(0.0, "#000"), (1.0, "#001")]},
+        data={"direction": "linear", "color_stops": [(0.0, "#000"), (1.0, "#001")]},
         zorder=-1,
     )
     renderer = PlotlyRenderer(proj_info, STYLE_INFO)
@@ -861,3 +861,37 @@ def test_radial_gradient_masks_actual_scene_clip_geometry(clip, inside, outside)
 
     assert np.isfinite(_heatmap_value_at(heatmap, *inside))
     assert np.isnan(_heatmap_value_at(heatmap, *outside))
+
+
+@pytest.mark.parametrize("direction", ["linear", "mollweide"])
+def test_nonradial_gradient_masks_actual_scene_clip_geometry(direction):
+    clip = ClipGeometry(
+        "polygon",
+        ((-1.0, -1.0), (1.0, -1.0), (0.0, 1.0)),
+    )
+    projection = {
+        "x_min": -1.5,
+        "x_max": 1.5,
+        "y_min": -1.5,
+        "y_max": 1.5,
+        "clip_geometries": {"plot": clip},
+    }
+    command = DrawingCommand(
+        kind="gradient",
+        data={
+            "direction": direction,
+            "color_stops": [(0.0, "#000022"), (1.0, "#000000")],
+        },
+        clip_id="plot",
+    )
+
+    heatmap = PlotlyRenderer(
+        projection, STYLE_INFO, width=500, height=500
+    ).render([command]).data[0]
+
+    assert np.isfinite(_heatmap_value_at(heatmap, 0.0, 0.0))
+    assert np.isnan(_heatmap_value_at(heatmap, 0.9, 0.9))
+    if direction == "mollweide":
+        middle_row = np.asarray(heatmap.z)[len(heatmap.y) // 2]
+        finite = middle_row[np.isfinite(middle_row)]
+        assert np.ptp(finite) > 0.01

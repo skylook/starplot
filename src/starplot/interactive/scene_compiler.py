@@ -39,6 +39,7 @@ COMMAND_COMPILERS = {
 }
 
 _METADATA_SUPPRESSION_THRESHOLD = 100_000
+_GRADIENT_DIRECTIONS = frozenset({"linear", "radial", "mollweide"})
 
 
 def _validated_opacity_values(
@@ -504,6 +505,7 @@ class SceneCompiler:
             target_width=context.target_axes_width,
             source_axes_width=source_width,
             min_size=0.0,
+            kaleido_scale=1.0,
         )
         columns = {
             "x": x,
@@ -632,7 +634,10 @@ class SceneCompiler:
         direction = command.data.get("direction")
         if not isinstance(direction, str) or not direction.strip():
             raise ValueError("gradient direction must be a non-empty string")
-        style["direction"] = direction.strip().lower()
+        direction = direction.strip().lower()
+        if direction not in _GRADIENT_DIRECTIONS:
+            raise ValueError(f"unsupported gradient direction: {direction}")
+        style["direction"] = direction
         stops = []
         for stop in command.data.get("color_stops", ()):
             if not isinstance(stop, (list, tuple)) or len(stop) != 2:

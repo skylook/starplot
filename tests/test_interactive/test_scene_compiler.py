@@ -92,7 +92,7 @@ def _primitive_commands():
         ),
         DrawingCommand(
             kind="gradient",
-            data={"direction": "vertical", "color_stops": [(0, "#000"), (1, "#fff")]},
+            data={"direction": "linear", "color_stops": [(0, "#000"), (1, "#fff")]},
             zorder=-100,
         ),
         DrawingCommand(
@@ -200,6 +200,7 @@ def test_gradient_compiler_preserves_validated_resolved_geometry():
     ("data", "message"),
     [
         ({"direction": 1, "color_stops": []}, "direction"),
+        ({"direction": "vertical", "color_stops": []}, "direction"),
         ({"direction": "radial", "color_stops": [(np.nan, "#fff")]}, "position"),
         ({"direction": "radial", "color_stops": [(0, 1)]}, "color"),
         ({"direction": "radial", "color_stops": [], "center": (0,)}, "center"),
@@ -318,7 +319,7 @@ def test_constructor_context_must_be_complete_when_any_value_is_supplied():
         DrawingCommand(kind="polygon", data={"points": [(0, 0), (1, 0), (0, 1)]}),
         DrawingCommand(kind="text", data={"x": 0, "y": 0, "text": "x"}),
         DrawingCommand(kind="line_collection", data={"lines": [[(0, 0), (1, 1)]]}),
-        DrawingCommand(kind="gradient", data={"direction": "vertical", "color_stops": []}),
+        DrawingCommand(kind="gradient", data={"direction": "linear", "color_stops": []}),
     ],
 )
 def test_unconfigured_compile_command_rejects_any_clip_reference(command):
@@ -366,7 +367,7 @@ def test_target_axes_width_controls_marker_calibration_and_viewport_contract():
         width=600.0,
         dpi=100.0,
         source_axes_width=1200.0,
-    ) * 1.15
+    )
     assert scene.viewport["target_axes_width"] == pytest.approx(600.0)
     assert scene.layers[0].data["size"].tolist() == pytest.approx([expected])
 
@@ -389,7 +390,14 @@ def test_scene_scatter_is_backend_neutral_before_adapter_policy():
 
     assert not hasattr(compiler_module, "_MAX_INTERACTIVE_HOVER_POINTS")
     assert not hasattr(compiler_module, "_WEBGL_SUBPIXEL_COVERAGE_SCALE")
-    assert np.all(layer.data["size"] < 1.0)
+    expected = calibrate_marker_size(
+        0.02,
+        width=1200.0,
+        dpi=100.0,
+        source_axes_width=STYLE["resolution"],
+        min_size=0.0,
+    )
+    assert layer.data["size"].tolist() == pytest.approx([expected, expected])
     np.testing.assert_array_equal(layer.data["opacity"], [0.25, 0.75])
     assert layer.style["edge_width"] == 2.0
     assert layer.data["size"].dtype == np.float32
@@ -785,7 +793,7 @@ def test_gradient_is_declarative_and_has_no_rows():
     layer = _configured_compiler().compile_command(_primitive_commands()[5], 0)
 
     assert layer.data.row_count == 0
-    assert layer.style["direction"] == "vertical"
+    assert layer.style["direction"] == "linear"
     assert layer.style["color_stops"] == ((0, "#000"), (1, "#fff"))
 
 

@@ -139,6 +139,32 @@ class _PlotlyRenderContext:
         self._paper_y_bounds = (0.0, 1.0)
         self._horizon_footer_offset = 0.0
         self._side_margin = 10.0
+        self._force_svg_trace_plane = self._requires_svg_trace_plane(scene)
+
+    @staticmethod
+    def _requires_svg_trace_plane(scene: ScenePackage) -> bool:
+        """Return whether hole topology requires one z-orderable trace plane."""
+        for layer in scene.layers:
+            if (
+                layer.kind is not SceneKind.POLYGON
+                or layer.space is not CoordinateSpace.DATA
+            ):
+                continue
+            if (layer.style.get("xref"), layer.style.get("yref")) == (
+                "paper",
+                "paper",
+            ):
+                continue
+            polygon_ids = layer.data.columns.get("polygon_id")
+            ring_ids = layer.data.columns.get("ring_id")
+            if polygon_ids is None or ring_ids is None:
+                continue
+            if any(
+                len(np.unique(ring_ids[polygon_ids == polygon_id])) > 1
+                for polygon_id in np.unique(polygon_ids)
+            ):
+                return True
+        return False
 
     def render(self) -> go.Figure:
         self._setup_layout()
@@ -436,18 +462,23 @@ class _PlotlyRenderContext:
             cmax = max(0.5, len(palette) - 0.5)
 
         name, showlegend = self._legend(layer)
-        use_webgl = layer.group_id == "stars" or layer.data.row_count > 1000
+        use_webgl = not self._force_svg_trace_plane and (
+            layer.group_id == "stars" or layer.data.row_count > 1000
+        )
         trace_type = go.Scattergl if use_webgl else go.Scatter
         hover_text = self._hover_text(layer)
         customdata = self._customdata(layer)
-        source_size = layer.data["size"]
+        plotly_size = np.asarray(
+            layer.data["size"] * np.float32(_KALEIDO_MARKER_SCALE),
+            dtype=np.float32,
+        )
         if use_webgl:
             coverage = np.minimum(
                 np.float32(1.0),
-                source_size * source_size * _SCATTERGL_SUBPIXEL_COVERAGE_SCALE,
+                plotly_size * plotly_size * _SCATTERGL_SUBPIXEL_COVERAGE_SCALE,
             )
             marker_size = np.maximum(
-                source_size, _SCATTERGL_MIN_MARKER_DIAMETER
+                plotly_size, _SCATTERGL_MIN_MARKER_DIAMETER
             ).astype(np.float32, copy=False)
             marker_opacity = np.asarray(
                 layer.data["opacity"] * coverage,
@@ -455,7 +486,7 @@ class _PlotlyRenderContext:
             )
             edge_width = 0.0
         else:
-            marker_size = np.maximum(source_size, _PLOTLY_MIN_MARKER_DIAMETER).astype(
+            marker_size = np.maximum(plotly_size, _PLOTLY_MIN_MARKER_DIAMETER).astype(
                 np.float32, copy=False
             )
             marker_opacity = layer.data["opacity"]
@@ -606,7 +637,8 @@ class _PlotlyRenderContext:
             hover = [None if row < 0 else str(names[row]) for row in source_rows]
         trace_type = (
             go.Scattergl
-            if layer.data.row_count > 1000 or layer.kind is SceneKind.LINE_COLLECTION
+            if not self._force_svg_trace_plane
+            and (layer.data.row_count > 1000 or layer.kind is SceneKind.LINE_COLLECTION)
             else go.Scatter
         )
         trace_kwargs = {}
@@ -907,7 +939,7 @@ class _PlotlyRenderContext:
                 (yy - float(center[1])) / radius
             ) ** 2
             if clip is not None:
-                mask = scatter_clip_mask(xx.ravel(), yy.ravel(), clip).reshape(xx.shape)
+                mask = self._gradient_clip_mask(layer, xx, yy)
             else:
                 mask = rr <= 1.0
             z = np.where(mask, np.minimum(rr, 1.0), np.nan)
@@ -918,16 +950,73 @@ class _PlotlyRenderContext:
                 for index in reversed(range(len(stops)))
             ]
             zsmooth: Any = "best"
-        else:
-            steps = 2000
-            x = np.asarray([float(x_min), float(x_max)], dtype=np.float64)
+        elif direction == "linear":
+            clip = self.scene.clips.get(layer.clip_id) if layer.clip_id else None
+            steps = 220 if clip is not None else 2000
+            x = np.linspace(float(x_min), float(x_max), 220 if clip is not None else 2)
             y = np.linspace(float(y_min), float(y_max), steps)
+            xx, yy = np.meshgrid(x, y)
             z = np.repeat(
                 np.linspace(0.0, 1.0, steps, dtype=np.float64).reshape(-1, 1),
-                2,
+                len(x),
                 axis=1,
             )
+            if clip is not None:
+                z = np.where(self._gradient_clip_mask(layer, xx, yy), z, np.nan)
             zsmooth = False
+        elif direction == "mollweide":
+            steps = 250
+            x = np.linspace(float(x_min), float(x_max), steps)
+            y = np.linspace(float(y_min), float(y_max), steps)
+            xx, yy = np.meshgrid(x, y)
+            x_mid = (float(x_min) + float(x_max)) / 2.0
+            y_mid = (float(y_min) + float(y_max)) / 2.0
+            x_radius = max((float(x_max) - float(x_min)) / 2.0, 1e-12)
+            y_radius = max((float(y_max) - float(y_min)) / 2.0, 1e-12)
+            x_normalized = (xx - x_mid) / x_radius
+            y_normalized = (yy - y_mid) / y_radius
+            theta = np.arcsin(np.clip(y_normalized, -1.0, 1.0))
+            cos_theta = np.cos(theta)
+            longitude = np.zeros_like(xx)
+            np.divide(
+                np.pi * x_normalized,
+                cos_theta,
+                out=longitude,
+                where=np.abs(cos_theta) > 1e-12,
+            )
+            latitude = np.arcsin(
+                np.clip((2.0 * theta + np.sin(2.0 * theta)) / np.pi, -1.0, 1.0)
+            )
+            cos_latitude = np.cos(latitude)
+            equatorial = np.stack(
+                [
+                    cos_latitude * np.cos(longitude),
+                    -cos_latitude * np.sin(longitude),
+                    -np.sin(latitude),
+                ],
+                axis=-1,
+            )
+            rotation = np.asarray(
+                [
+                    [-0.0548755604162154, -0.8734370902348850, -0.4838350155487132],
+                    [0.4941094278755837, -0.4448296299600112, 0.7469822444972189],
+                    [-0.8676661490190047, -0.1980763734312015, 0.4559837761750669],
+                ],
+                dtype=np.float64,
+            )
+            galactic = equatorial @ rotation.T
+            z = (np.arcsin(np.clip(galactic[..., 2], -1.0, 1.0)) + np.pi / 2) / np.pi
+            mask = (
+                (np.abs(y_normalized) <= 1.0)
+                & (np.abs(longitude) <= np.pi)
+                & (np.abs(cos_theta) > 1e-12)
+            )
+            if layer.clip_id and layer.clip_id in self.scene.clips:
+                mask &= self._gradient_clip_mask(layer, xx, yy)
+            z = np.where(mask, z, np.nan)
+            zsmooth = "best"
+        else:
+            raise ValueError(f"unsupported gradient direction: {direction}")
         self.fig.add_trace(
             go.Heatmap(
                 x=x,
@@ -943,6 +1032,14 @@ class _PlotlyRenderContext:
                 name="",
             )
         )
+
+    def _gradient_clip_mask(
+        self, layer: SceneLayer, xx: np.ndarray, yy: np.ndarray
+    ) -> np.ndarray:
+        clip = self.scene.clips.get(layer.clip_id) if layer.clip_id else None
+        if clip is None:
+            return np.ones(xx.shape, dtype=np.bool_)
+        return scatter_clip_mask(xx.ravel(), yy.ravel(), clip).reshape(xx.shape)
 
     def _add_info_table(self, layer: SceneLayer) -> None:
         columns = [str(value) for value in layer.data["column"]]

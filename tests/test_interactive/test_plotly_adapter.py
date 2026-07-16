@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -123,7 +124,7 @@ def primitive_commands():
         "gradient": DrawingCommand(
             kind="gradient",
             data={
-                "direction": "vertical",
+                "direction": "linear",
                 "color_stops": [(0.0, "#000022"), (1.0, "#000000")],
             },
             gid="gradient",
@@ -515,6 +516,37 @@ def test_svg_scatter_applies_plotly_minimum_without_changing_scene_values():
     assert trace.marker.line.width > 0
 
 
+def test_plotly_marker_calibration_is_applied_only_after_scene_compilation():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+    from starplot.interactive.style_converter import calibrate_marker_size
+
+    command = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": [0.0],
+            "y": [0.0],
+            "sizes": [9.0],
+            "colors": ["#ffffff"],
+            "alphas": [1.0],
+        },
+        gid="stars",
+        clip_id=None,
+    )
+    scene = _compile(command)
+    neutral_size = calibrate_marker_size(
+        9.0,
+        width=scene.viewport["target_axes_width"],
+        dpi=STYLE["dpi"],
+        source_axes_width=STYLE["source_axes_width"],
+        min_size=0.0,
+    )
+
+    trace = PlotlySceneAdapter().render(scene).data[0]
+
+    assert scene.layers[0].data["size"][0] == pytest.approx(neutral_size)
+    assert trace.marker.size[0] == pytest.approx(neutral_size * 1.15)
+
+
 def test_relative_identity_coordinates_stay_float32_typed_arrays():
     from starplot.interactive.plotly_adapter import PlotlySceneAdapter
 
@@ -628,6 +660,23 @@ def test_paths_insert_nan_only_between_distinct_path_ids():
     assert values.tolist()[3:] == [0.5, 1.0]
 
 
+def test_adapter_rejects_unknown_gradient_direction_fail_closed():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    scene = _compile(primitive_commands()["gradient"])
+    invalid_layer = replace(
+        scene.layers[0],
+        style={**dict(scene.layers[0].style), "direction": "diagonal"},
+    )
+    invalid_scene = replace(scene, layers=(invalid_layer,))
+
+    with pytest.raises(RuntimeError) as error:
+        PlotlySceneAdapter().render(invalid_scene)
+
+    assert isinstance(error.value.__cause__, ValueError)
+    assert "unsupported gradient direction" in str(error.value.__cause__)
+
+
 def _split_finite_paths(x, y):
     paths = []
     current = []
@@ -643,10 +692,8 @@ def _split_finite_paths(x, y):
     return paths
 
 
-def test_data_polygon_hole_is_tessellated_on_trace_plane_with_stable_zorder():
-    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
-
-    polygon = DrawingCommand(
+def _polygon_with_hole(*, zorder):
+    return DrawingCommand(
         kind="polygon",
         data={
             "polygons": [
@@ -661,10 +708,16 @@ def test_data_polygon_hole_is_tessellated_on_trace_plane_with_stable_zorder():
             "edge_color": "#ffffff",
             "edge_width": 1,
         },
-        zorder=2,
+        zorder=zorder,
         gid="hole",
         clip_id=None,
     )
+
+
+def test_data_polygon_hole_is_tessellated_on_trace_plane_with_stable_zorder():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    polygon = _polygon_with_hole(zorder=2)
     foreground = DrawingCommand(
         kind="line",
         data={"x": [0, 4], "y": [2, 2]},
@@ -691,6 +744,92 @@ def test_data_polygon_hole_is_tessellated_on_trace_plane_with_stable_zorder():
     triangles = [Polygon(path) for path in _split_finite_paths(fill.x, fill.y)]
     assert sum(triangle.area for triangle in triangles) == pytest.approx(12.0)
     assert not any(triangle.covers(Point(2, 2)) for triangle in triangles)
+
+
+@pytest.mark.parametrize("hole_zorder", [1, 5, 12])
+def test_polygon_holes_and_scattergl_candidates_share_one_ordered_trace_plane(
+    hole_zorder,
+):
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    scatter = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": [0.5, 3.5],
+            "y": [0.5, 3.5],
+            "sizes": [4.0, 4.0],
+            "colors": ["#ff0000", "#ff0000"],
+            "alphas": [1.0, 1.0],
+        },
+        zorder=2,
+        gid="stars",
+        clip_id=None,
+    )
+    lines = DrawingCommand(
+        kind="line_collection",
+        data={"lines": [[(0, 2), (4, 2)]]},
+        style={"color": "#00ff00", "width": 1},
+        zorder=8,
+        gid="gl-lines",
+        clip_id=None,
+    )
+    adapter = PlotlySceneAdapter()
+    assert adapter.render(_compile(scatter)).data[0].type == "scattergl"
+    assert adapter.render(_compile(lines)).data[0].type == "scattergl"
+
+    scene = SceneCompiler().compile(
+        [lines, _polygon_with_hole(zorder=hole_zorder), scatter],
+        PROJECTION, STYLE, 500, 500, False,
+    )
+    figure = adapter.render(scene)
+
+    assert {trace.type for trace in figure.data} == {"scatter"}
+    star_trace = next(trace for trace in figure.data if trace.legendgroup == "stars")
+    line_trace = next(trace for trace in figure.data if trace.legendgroup == "gl-lines")
+    hole_traces = [trace for trace in figure.data if trace.legendgroup == "hole"]
+    assert star_trace.zorder == 2
+    assert line_trace.zorder == 8
+    assert {trace.zorder for trace in hole_traces} == {hole_zorder}
+    if hole_zorder < 2:
+        assert hole_traces[0].zorder < star_trace.zorder < line_trace.zorder
+    elif hole_zorder < 8:
+        assert star_trace.zorder < hole_traces[0].zorder < line_trace.zorder
+    else:
+        assert star_trace.zorder < line_trace.zorder < hole_traces[0].zorder
+
+
+def test_independent_single_ring_polygons_do_not_disable_scattergl():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    polygons = DrawingCommand(
+        kind="polygon",
+        data={"polygons": [
+            [[(0, 0), (1, 0), (0, 1)]],
+            [[(2, 2), (3, 2), (2, 3)]],
+        ]},
+        style={"fill_color": "#223344"},
+        zorder=1,
+        gid="polygons",
+        clip_id=None,
+    )
+    stars = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": [0.5], "y": [0.5], "sizes": [4.0],
+            "colors": ["#ffffff"], "alphas": [1.0],
+        },
+        zorder=2,
+        gid="stars",
+        clip_id=None,
+    )
+    scene = SceneCompiler().compile(
+        [polygons, stars], PROJECTION, STYLE, 500, 500, False
+    )
+
+    figure = PlotlySceneAdapter().render(scene)
+
+    star_trace = next(trace for trace in figure.data if trace.legendgroup == "stars")
+    assert star_trace.type == "scattergl"
 
 
 def test_public_adapter_is_stateless_across_parallel_and_sequential_renders():
