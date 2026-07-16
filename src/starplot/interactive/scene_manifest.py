@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 import hashlib
 import json
 import re
+from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from starplot.interactive.commands import CoordinateSpace
 from starplot.interactive.scene import (
@@ -38,20 +47,25 @@ _COORDINATE_KINDS = frozenset(
 )
 
 
-class _FrozenDict(dict):
-    """Owned dictionary storage whose retained contents cannot be mutated."""
+class _FrozenMapping(Mapping[str, Any]):
+    """Owned, recursively frozen mapping that is never a mutable ``dict``."""
 
-    def _immutable(self, *_args, **_kwargs):
+    __slots__ = ("_data",)
+
+    def __init__(self, value: Mapping[str, Any]):
+        object.__setattr__(self, "_data", MappingProxyType(dict(value)))
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __setitem__(self, _key, _value) -> None:
         raise TypeError("wire manifest mappings are immutable")
-
-    __setitem__ = _immutable
-    __delitem__ = _immutable
-    __ior__ = _immutable
-    clear = _immutable
-    pop = _immutable
-    popitem = _immutable
-    setdefault = _immutable
-    update = _immutable
 
     def __copy__(self):
         return self
@@ -59,11 +73,28 @@ class _FrozenDict(dict):
     def __deepcopy__(self, _memo):
         return self
 
+    def __repr__(self) -> str:
+        return repr(dict(self._data))
+
 
 class _WireModel(BaseModel):
     """Frozen wire models: unrecognized fields never affect decoded output."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @classmethod
+    def model_construct(cls, _fields_set=None, **values):
+        raise TypeError(
+            "model_construct bypasses wire validation; use model_validate instead"
+        )
+
+    def model_copy(self, *, update=None, deep: bool = False):
+        if update:
+            raise TypeError(
+                "model_copy(update=...) bypasses wire validation; use model_dump "
+                "and model_validate instead"
+            )
+        return super().model_copy(deep=deep)
 
 
 class CoordinateEncodingModel(_WireModel):
@@ -123,6 +154,10 @@ class StyleAssetModel(_WireModel):
     def _freeze_style_value(cls, value):
         return _deep_freeze(value)
 
+    @field_serializer("value")
+    def _serialize_style_value(self, value, info):
+        return _serialize_wire_value(value, info.mode)
+
 
 class PaletteAssetModel(_WireModel):
     id: str = Field(min_length=1)
@@ -157,6 +192,10 @@ class LayerManifestModel(_WireModel):
     @classmethod
     def _freeze_coordinate_encoding(cls, value):
         return _deep_freeze(value)
+
+    @field_serializer("coordinate_encoding")
+    def _serialize_coordinate_encoding(self, value, info):
+        return _serialize_wire_value(value, info.mode)
 
     @model_validator(mode="after")
     def _layer_contract(self) -> "LayerManifestModel":
@@ -255,6 +294,10 @@ class SceneManifestModel(_WireModel):
     @classmethod
     def _freeze_clip_assets(cls, value):
         return tuple(_deep_freeze(item) for item in value)
+
+    @field_serializer("viewport", "coordinate_spaces", "clips", "extensions")
+    def _serialize_nested_assets(self, value, info):
+        return _serialize_wire_value(value, info.mode)
 
     @field_validator("schema_version")
     @classmethod
@@ -387,38 +430,41 @@ def build_scene_manifest(
             )
         )
 
-    placeholder = SceneManifestModel.model_construct(
-        schema_version=SCENE_SCHEMA_VERSION,
-        scene_id=scene_id,
-        content_hash="sha256:" + "0" * 64,
-        minimum_loader_version=minimum_loader_version,
-        viewport=viewport,
-        coordinate_spaces=coordinate_spaces,
-        clips=tuple(clips),
-        styles=tuple(style_assets),
-        palettes=tuple(
-            PaletteAssetModel(id=palette_id, colors=colors)
+    raw_values = {
+        "schema_version": SCENE_SCHEMA_VERSION,
+        "scene_id": scene_id,
+        "content_hash": "sha256:" + "0" * 64,
+        "minimum_loader_version": minimum_loader_version,
+        "viewport": _plain_json_value(viewport),
+        "coordinate_spaces": _plain_json_value(coordinate_spaces),
+        "clips": _plain_json_value(tuple(clips)),
+        "styles": [asset.model_dump(mode="python") for asset in style_assets],
+        "palettes": [
+            PaletteAssetModel(id=palette_id, colors=colors).model_dump(mode="python")
             for palette_id, colors in sorted(palette_assets.items())
-        ),
-        layers=tuple(manifest_layers),
-        capabilities=capabilities,
-        extensions={},
-    )
+        ],
+        "layers": [layer.model_dump(mode="python") for layer in manifest_layers],
+        "capabilities": capabilities.model_dump(mode="python"),
+        "extensions": {},
+    }
+    ordered_hashes = tuple(layer.content_hash for layer in manifest_layers)
+    raw_values["content_hash"] = _declared_scene_hash(raw_values, ordered_hashes)
+    manifest = SceneManifestModel.model_validate(raw_values)
     # A final manifest must never bless opaque or cross-wired payload bytes.
     # The local import avoids an import cycle while keeping validation shared.
     from starplot.interactive.arrow_transport import decode_layer_stream
 
     for layer in layers:
         decoded_layer = decode_layer_stream(
-            layer_bytes[layer.id], placeholder.resolve_layer(layer.id)
+            layer_bytes[layer.id], manifest.resolve_layer(layer.id)
         )
         if not _scene_layers_equal(layer, decoded_layer):
             raise ValueError(
                 f"Arrow payload data does not match supplied SceneLayer {layer.id!r}"
             )
-    final_values = placeholder.model_dump(mode="python")
-    final_values["content_hash"] = scene_content_hash(placeholder, layer_bytes)
-    return SceneManifestModel.model_validate(final_values)
+    if scene_content_hash(manifest, layer_bytes) != manifest.content_hash:
+        raise ValueError("scene content hash does not match canonical manifest")
+    return manifest
 
 
 def canonical_manifest_bytes(
@@ -478,9 +524,12 @@ def scene_content_hash(
 
 
 def _declared_scene_hash(
-    manifest: SceneManifestModel, ordered_hashes: Sequence[str] | None = None
+    manifest: SceneManifestModel | Mapping[str, Any],
+    ordered_hashes: Sequence[str] | None = None,
 ) -> str:
     if ordered_hashes is None:
+        if not isinstance(manifest, SceneManifestModel):
+            raise TypeError("raw manifest hashing requires ordered layer hashes")
         ordered_hashes = tuple(layer.content_hash for layer in manifest.layers)
     digest = hashlib.sha256()
     digest.update(canonical_manifest_bytes(manifest, exclude_content_hash=True))
@@ -522,13 +571,26 @@ def _freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def _deep_freeze(value):
     if isinstance(value, Mapping):
-        return _FrozenDict({key: _deep_freeze(item) for key, item in value.items()})
+        return _FrozenMapping({key: _deep_freeze(item) for key, item in value.items()})
     if isinstance(value, (list, tuple)):
         return tuple(_deep_freeze(item) for item in value)
     return value
 
 
+def _serialize_wire_value(value, mode: str):
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode=mode)
+    if isinstance(value, Mapping):
+        return {key: _serialize_wire_value(item, mode) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        items = [_serialize_wire_value(item, mode) for item in value]
+        return tuple(items) if mode == "python" else items
+    return value
+
+
 def _plain_json_value(value):
+    if isinstance(value, BaseModel):
+        return _plain_json_value(value.model_dump(mode="python"))
     if isinstance(value, Mapping):
         return {key: _plain_json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):

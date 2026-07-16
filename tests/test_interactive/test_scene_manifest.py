@@ -74,6 +74,7 @@ def _manifest(**overrides) -> SceneManifestModel:
             catalog_detail=False,
             max_batch_rows=250_000,
         ),
+        "extensions": {},
     }
     values.update(overrides)
     values["clips"] = tuple(values["clips"])
@@ -94,9 +95,11 @@ def _manifest(**overrides) -> SceneManifestModel:
         for value in values["palettes"]
     )
     values["layers"] = tuple(values["layers"])
-    draft = SceneManifestModel.model_construct(**values)
-    layer_hashes = {layer.id: layer.content_hash for layer in values["layers"]}
-    values["content_hash"] = scene_content_hash(draft, layer_hashes)
+    digest = hashlib.sha256()
+    digest.update(canonical_manifest_bytes(values, exclude_content_hash=True))
+    for layer in values["layers"]:
+        digest.update(layer.content_hash.encode("ascii"))
+    values["content_hash"] = "sha256:" + digest.hexdigest()
     return SceneManifestModel.model_validate(values)
 
 
@@ -349,6 +352,9 @@ def test_nested_wire_assets_are_recursively_immutable_after_validation():
         with pytest.raises(TypeError):
             mutate()
 
+    with pytest.raises(TypeError):
+        dict.__setitem__(manifest.styles[0].value["marker"], "line_width", 777)
+
     assert canonical_manifest_bytes(manifest) == before
     assert manifest.resolve_layer("stars").style["marker"]["line_width"] == 0
 
@@ -386,10 +392,31 @@ def test_deeply_frozen_wire_assets_remain_json_serializable():
         extensions={"attribution": {"authors": ["A", "B"]}},
     )
 
+    python_dumped = manifest.model_dump(mode="python")
     dumped = manifest.model_dump(mode="json")
     reparsed = SceneManifestModel.model_validate_json(
         canonical_manifest_bytes(manifest)
     )
 
+    assert python_dumped["viewport"]["nested"]["values"] == (1, 2)
     assert dumped["viewport"]["nested"]["values"] == [1, 2]
     assert canonical_manifest_bytes(reparsed) == canonical_manifest_bytes(manifest)
+
+
+def test_wire_model_copy_rejects_unvalidated_updates():
+    manifest = _manifest()
+
+    with pytest.raises(TypeError, match="model_dump.*model_validate"):
+        manifest.model_copy(update={"content_hash": "sha256:" + "0" * 64})
+
+    copied = manifest.model_copy()
+    assert copied == manifest
+    assert copied is not manifest
+
+
+def test_wire_model_construct_cannot_bypass_validation():
+    with pytest.raises(TypeError, match="model_validate"):
+        SceneManifestModel.model_construct(
+            scene_id="unvalidated",
+            styles=[{"id": "mutable", "value": {"nested": []}}],
+        )

@@ -227,26 +227,31 @@ def _unchecked_manifest_for(layer: SceneLayer, payload: bytes):
         data_source={"format": "arrow-ipc-stream", "uri": f"{layer.id}.arrow"},
         style_id=style_id,
     )
-    manifest = SceneManifestModel.model_construct(
-        schema_version="1.0",
-        scene_id="malformed-transport-test",
-        content_hash="sha256:" + "0" * 64,
-        minimum_loader_version="1.0",
-        viewport={},
-        coordinate_spaces={},
-        clips=(),
-        styles=styles,
-        palettes=palettes,
-        layers=(wire,),
-        capabilities=CapabilitiesModel(
+    values = {
+        "schema_version": "1.0",
+        "scene_id": "malformed-transport-test",
+        "content_hash": "sha256:" + "0" * 64,
+        "minimum_loader_version": "1.0",
+        "viewport": {},
+        "coordinate_spaces": {},
+        "clips": (),
+        "styles": styles,
+        "palettes": palettes,
+        "layers": (wire,),
+        "capabilities": CapabilitiesModel(
             viewport_query=False,
             lod=False,
             magnitude_filter=False,
             catalog_detail=False,
             max_batch_rows=250_000,
         ),
-        extensions={},
-    )
+        "extensions": {},
+    }
+    digest = hashlib.sha256()
+    digest.update(canonical_manifest_bytes(values, exclude_content_hash=True))
+    digest.update(wire.content_hash.encode("ascii"))
+    values["content_hash"] = "sha256:" + digest.hexdigest()
+    manifest = SceneManifestModel.model_validate(values)
     return manifest.resolve_layer(layer.id)
 
 
