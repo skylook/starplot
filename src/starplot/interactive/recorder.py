@@ -1,5 +1,19 @@
+import numpy as np
+
 from starplot.interactive.commands import CoordinateSpace, DrawingCommand
+from starplot.interactive.scene import readonly_array
 from starplot.styles import ZOrderEnum
+
+
+def _materialize_column(value, *, iterator_dtype):
+    """Materialize an array-like or one-shot iterable exactly once."""
+    if isinstance(value, np.ndarray):
+        return readonly_array(value)
+
+    array = np.asarray(value)
+    if array.ndim == 0 and not np.isscalar(value):
+        array = np.fromiter(value, dtype=iterator_dtype)
+    return readonly_array(array)
 
 
 class DrawingRecorder:
@@ -18,13 +32,33 @@ class DrawingRecorder:
         gid="scatter", zorder=0, *,
         space=CoordinateSpace.DATA, clip_id="plot",
     ):
+        x = _materialize_column(x, iterator_dtype=np.float64)
+        y = _materialize_column(y, iterator_dtype=np.float64)
+        sizes = _materialize_column(sizes, iterator_dtype=np.float64)
+        row_count = len(x)
+        if isinstance(colors, str):
+            colors = readonly_array(np.full(row_count, colors))
+        else:
+            colors = _materialize_column(colors, iterator_dtype=object)
+        if np.isscalar(alphas):
+            alphas = readonly_array(np.full(row_count, alphas))
+        else:
+            alphas = _materialize_column(alphas, iterator_dtype=np.float64)
+
+        if len({len(x), len(y), len(sizes), len(colors), len(alphas)}) > 1:
+            raise ValueError("Scatter columns must have the same row count")
+
         self.commands.append(DrawingCommand(
             kind="scatter",
-            data={"x": list(x), "y": list(y), "sizes": list(sizes),
-                  "colors": list(colors) if not isinstance(colors, str) else [colors] * len(list(x)),
-                  "alphas": list(alphas) if not isinstance(alphas, (int, float)) else [alphas] * len(list(x))},
+            data={
+                "x": x,
+                "y": y,
+                "sizes": sizes,
+                "colors": colors,
+                "alphas": alphas,
+            },
             style=dict(style_dict) if style_dict else {},
-            metadata=list(metadata),
+            metadata=tuple(metadata),
             gid=gid,
             zorder=zorder,
             space=space,

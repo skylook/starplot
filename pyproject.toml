@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-interactive = ["plotly>=5.0", "kaleido>=0.2"]
+interactive = ["plotly>=6.0", "kaleido>=0.2"]
 
 [project.urls]
 Home = "https://starplot.dev"

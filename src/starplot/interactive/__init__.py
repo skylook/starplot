@@ -26,6 +26,15 @@ from starplot.interactive.plots import (
 )
 from starplot.interactive.commands import DrawingCommand
 from starplot.interactive.recorder import DrawingRecorder
+from starplot.interactive.scene import (
+    ColumnarData,
+    InteractionPolicy,
+    SceneCapabilities,
+    SceneKind,
+    SceneLayer,
+    ScenePackage,
+    readonly_array,
+)
 from starplot.interactive.recording_mixin import RecordingMixin
 from starplot.interactive.plotly_renderer import PlotlyRenderer
 
@@ -36,6 +45,13 @@ __all__ = [
     "InteractiveOpticPlot",
     "DrawingCommand",
     "DrawingRecorder",
+    "readonly_array",
+    "ColumnarData",
+    "InteractionPolicy",
+    "SceneCapabilities",
+    "SceneKind",
+    "SceneLayer",
+    "ScenePackage",
     "RecordingMixin",
     "PlotlyRenderer",
 ]

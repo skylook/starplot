@@ -20,7 +20,8 @@ class DrawingCommand:
 
     Attributes:
         kind: One of "scatter", "line", "polygon", "text", "line_collection", "gradient"
-        data: Coordinate data dict:
+        data: Coordinate data dict. Large scatter columns remain contiguous,
+            read-only NumPy arrays:
             - scatter: {x, y, sizes, colors, alphas}
             - line: {x, y}
             - polygon: {points, rings?}  # one or more independent paths
@@ -30,7 +31,8 @@ class DrawingCommand:
         style: Backend-agnostic style dict:
             color, edge_color, line_width, line_style, alpha, fill_color,
             font_size, font_weight, font_color, font_name, anchor_point, etc.
-        metadata: Per-object metadata for tooltips:
+        metadata: Per-object metadata for tooltips. The recorder retains this
+            as a tuple until metadata becomes columnar:
             - star: {name, magnitude, hip, bayer, constellation, ra, dec, type:"star"}
             - dso: {name, dso_type, magnitude, size, m, ngc, ra, dec, type:"dso"}
             - planet: {name, magnitude, ra, dec, type:"planet"}

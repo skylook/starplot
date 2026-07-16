@@ -1,5 +1,6 @@
 """Unit tests for DrawingRecorder."""
 
+import numpy as np
 import pytest
 from starplot.interactive.recorder import DrawingRecorder
 from starplot.interactive.commands import DrawingCommand
@@ -28,8 +29,9 @@ def test_recorder_records_scatter():
     assert cmd.kind == "scatter"
     assert cmd.gid == "stars"
     assert cmd.zorder == 1
-    assert cmd.data["x"] == [1, 2, 3]
-    assert cmd.data["sizes"] == [10, 20, 30]
+    np.testing.assert_array_equal(cmd.data["x"], [1, 2, 3])
+    np.testing.assert_array_equal(cmd.data["sizes"], [10, 20, 30])
+    assert not cmd.data["x"].flags.writeable
 
 
 def test_recorder_records_scatter_with_single_color():
@@ -45,8 +47,69 @@ def test_recorder_records_scatter_with_single_color():
         zorder=0,
     )
     cmd = rec.commands[0]
-    assert isinstance(cmd.data["colors"], list)
+    assert isinstance(cmd.data["colors"], np.ndarray)
     assert len(cmd.data["colors"]) == 2
+
+
+def test_record_scatter_preserves_numpy_columns():
+    recorder = DrawingRecorder()
+    recorder.record_scatter(
+        x=np.array([1, 2], dtype=np.float32),
+        y=np.array([3, 4], dtype=np.float32),
+        sizes=np.array([5, 6], dtype=np.float32),
+        colors=np.array(["#fff", "#000"]),
+        alphas=np.array([1, 0.5], dtype=np.float32),
+        metadata=[],
+    )
+
+    command = recorder.commands[0]
+    assert isinstance(command.data["x"], np.ndarray)
+    assert command.data["x"].dtype == np.float32
+    assert command.data["x"].flags.c_contiguous
+    assert not command.data["x"].flags.writeable
+    assert command.metadata == ()
+
+
+def test_record_scatter_materializes_each_iterable_once():
+    class SinglePass:
+        def __init__(self, values):
+            self.values = values
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            if self.iterations > 1:
+                raise AssertionError("iterable materialized more than once")
+            return iter(self.values)
+
+    x = SinglePass([1.0, 2.0])
+    recorder = DrawingRecorder()
+
+    recorder.record_scatter(
+        x=x,
+        y=[3.0, 4.0],
+        sizes=[5.0, 6.0],
+        colors=["#fff", "#000"],
+        alphas=[1.0, 0.5],
+        metadata=[],
+    )
+
+    assert x.iterations == 1
+    np.testing.assert_array_equal(recorder.commands[0].data["x"], [1.0, 2.0])
+
+
+def test_record_scatter_rejects_misaligned_inputs():
+    recorder = DrawingRecorder()
+
+    with pytest.raises(ValueError, match="same row count"):
+        recorder.record_scatter(
+            x=[1.0, 2.0],
+            y=[3.0],
+            sizes=[5.0, 6.0],
+            colors=["#fff", "#000"],
+            alphas=[1.0, 0.5],
+            metadata=[],
+        )
 
 
 def test_recorder_records_line():
