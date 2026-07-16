@@ -73,6 +73,47 @@ def test_scatter_clip_mask_rejects_misaligned_inputs(x, y, message):
         scatter_clip_mask(x, y, clip)
 
 
+@pytest.mark.parametrize(
+    "points",
+    [
+        ((0, 0), (0, 1)),
+        ((0, 0), (1, 0)),
+        ((0, 0), (0, 0)),
+    ],
+)
+def test_rectangle_clip_rejects_zero_width_or_height(points):
+    clip = ClipGeometry(kind="rect", points=points)
+
+    with pytest.raises(ValueError, match="positive width and height"):
+        scatter_clip_mask(np.array([0.0]), np.array([0.0]), clip)
+
+
+@pytest.mark.parametrize(
+    "points",
+    [
+        ((0, 0), (1, 1), (2, 2)),
+        ((0, 0), (1, 0), (0, 0)),
+        ((0, 0), (2, 2), (0, 2), (2, 0)),
+    ],
+)
+def test_polygon_clip_rejects_degenerate_or_invalid_geometry(
+    points, monkeypatch
+):
+    clip = ClipGeometry(kind="polygon", points=points)
+
+    def forbidden_contains_xy(*args, **kwargs):
+        raise AssertionError("invalid polygon must fail before contains_xy")
+
+    monkeypatch.setattr(
+        compiler_module.shapely,
+        "contains_xy",
+        forbidden_contains_xy,
+    )
+
+    with pytest.raises(ValueError, match="non-empty, valid, positive-area"):
+        scatter_clip_mask(np.array([0.0]), np.array([0.0]), clip)
+
+
 def test_filter_columns_retains_each_boolean_selection_without_second_copy(
     monkeypatch,
 ):
@@ -209,6 +250,64 @@ def test_palette_encoding_rejects_invalid_opacity(opacity, message):
         encode_palette(np.array(["red", "blue"]), opacity)
 
 
+@pytest.mark.parametrize(
+    "opacity",
+    [
+        np.nextafter(np.float32(0.0), np.float32(-1.0)),
+        np.nextafter(np.float32(1.0), np.float32(2.0)),
+    ],
+)
+def test_encode_palette_rejects_opacity_outside_unit_interval(opacity):
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        encode_palette(np.array(["red"]), opacity)
+
+
+def test_encode_palette_accepts_opacity_boundaries_and_color_alpha_product():
+    encoded = encode_palette(
+        np.array(["#ff000000", "#ffffff80", "#0000ff"]),
+        np.array([0.0, 1.0, 1.0], dtype=np.float32),
+    )
+
+    assert encoded.opacity.tolist() == pytest.approx([0.0, 128 / 255, 1.0])
+    assert np.all((encoded.opacity >= 0.0) & (encoded.opacity <= 1.0))
+
+
+def test_encode_palette_accepts_homogeneous_string_specs_only():
+    encoded = encode_palette(["red", np.str_("blue"), "red"], 1.0)
+
+    assert encoded.palette == ("#0000ff", "#ff0000")
+    assert encoded.color_index.tolist() == [1, 0, 1]
+
+
+@pytest.mark.parametrize(
+    "colors",
+    [
+        np.array(["red", (1.0, 0.0, 0.0)], dtype=object),
+        np.array([object(), object()], dtype=object),
+        np.array([1.0, 0.0], dtype=np.float32),
+    ],
+)
+def test_encode_palette_rejects_unsupported_color_forms_clearly(colors):
+    with pytest.raises(ValueError, match="one-dimensional string"):
+        encode_palette(colors, 1.0)
+
+
+def test_encode_palette_wraps_invalid_matplotlib_string(monkeypatch):
+    real_to_rgba = compiler_module.to_rgba
+    calls = []
+
+    def to_rgba_spy(color):
+        calls.append(color)
+        return real_to_rgba(color)
+
+    monkeypatch.setattr(compiler_module, "to_rgba", to_rgba_spy)
+
+    with pytest.raises(ValueError, match="Invalid Matplotlib color spec.*bad-color"):
+        encode_palette(np.array(["red", "bad-color", "red"]), 1.0)
+
+    assert calls == ["bad-color"]
+
+
 def test_palette_encoding_arrays_are_independent_contiguous_read_only_aligned():
     colors = np.array(["red", "blue"])
     opacity = np.array([0.25, 0.75], dtype=np.float32)
@@ -250,3 +349,87 @@ def test_palette_encoding_constructor_rejects_index_before_narrowing():
             np.array([256], dtype=np.int64),
             np.array([1.0], dtype=np.float32),
         )
+
+
+@pytest.mark.parametrize(
+    "color_index",
+    [
+        np.array([0.5], dtype=np.float64),
+        np.array([np.nan], dtype=np.float64),
+        np.array([np.inf], dtype=np.float64),
+        np.array([-1], dtype=np.int64),
+        np.array([2], dtype=np.int64),
+        np.array([True], dtype=np.bool_),
+        np.array([0], dtype=object),
+        [0],
+    ],
+)
+def test_palette_encoding_constructor_rejects_non_integer_or_invalid_indices(
+    color_index,
+):
+    with pytest.raises(ValueError, match="one-dimensional integer ndarray|outside"):
+        PaletteEncoding(
+            ("#000000", "#ffffff"),
+            color_index,
+            np.array([1.0], dtype=np.float32),
+        )
+
+
+@pytest.mark.parametrize(
+    ("palette_size", "index", "expected_dtype"),
+    [
+        (256, 255, np.uint8),
+        (257, 256, np.uint16),
+        (65_536, 65_535, np.uint16),
+    ],
+)
+def test_palette_encoding_constructor_preserves_index_boundaries(
+    palette_size, index, expected_dtype
+):
+    encoded = PaletteEncoding(
+        ("#000000",) * palette_size,
+        np.array([index], dtype=np.int64),
+        np.array([1.0], dtype=np.float32),
+    )
+
+    assert encoded.color_index.dtype == expected_dtype
+    assert encoded.color_index.tolist() == [index]
+
+
+def test_palette_encoding_constructor_allows_empty_palette_for_empty_indices():
+    encoded = PaletteEncoding(
+        (),
+        np.array([], dtype=np.int64),
+        np.array([], dtype=np.float32),
+    )
+
+    assert encoded.color_index.dtype == np.uint8
+    assert encoded.color_index.size == 0
+
+
+@pytest.mark.parametrize(
+    "opacity",
+    [
+        np.array([-np.finfo(np.float32).eps], dtype=np.float32),
+        np.array([1.0 + np.finfo(np.float32).eps], dtype=np.float32),
+    ],
+)
+def test_palette_encoding_constructor_rejects_opacity_outside_unit_interval(
+    opacity,
+):
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        PaletteEncoding(
+            ("#000000",),
+            np.array([0], dtype=np.int64),
+            opacity,
+        )
+
+
+def test_palette_encoding_constructor_accepts_opacity_boundaries():
+    encoded = PaletteEncoding(
+        ("#000000", "#ffffff"),
+        np.array([0, 1], dtype=np.int64),
+        np.array([0.0, 1.0], dtype=np.float32),
+    )
+
+    assert encoded.opacity.tolist() == [0.0, 1.0]

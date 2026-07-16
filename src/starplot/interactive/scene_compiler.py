@@ -18,6 +18,35 @@ from starplot.interactive.scene import (
 )
 
 
+def _validated_opacity_values(
+    opacity,
+    row_count: int,
+    *,
+    allow_scalar: bool,
+) -> np.ndarray:
+    raw_values = np.asarray(opacity)
+    if raw_values.ndim == 0 and allow_scalar:
+        raw_values = np.full(row_count, raw_values.item())
+    elif raw_values.ndim != 1:
+        shape_contract = (
+            "scalar or one-dimensional" if allow_scalar else "one-dimensional"
+        )
+        raise ValueError(f"opacity must be {shape_contract}")
+    if len(raw_values) != row_count:
+        raise ValueError("opacity must have the same length as colors")
+
+    try:
+        finite = np.isfinite(raw_values)
+        in_range = (raw_values >= 0.0) & (raw_values <= 1.0)
+    except TypeError as error:
+        raise ValueError("opacity values must be finite numbers") from error
+    if not np.all(finite):
+        raise ValueError("opacity values must be finite")
+    if not np.all(in_range):
+        raise ValueError("opacity values must be between 0 and 1")
+    return np.asarray(raw_values, dtype=np.float32)
+
+
 @dataclass(frozen=True)
 class PaletteEncoding:
     """Compact per-point color references with separate numeric opacity."""
@@ -31,28 +60,30 @@ class PaletteEncoding:
         palette_size = len(palette)
         if palette_size > 65_536:
             raise ValueError("palette cannot contain more than 65,536 colors")
+        if not all(isinstance(color, str) for color in palette):
+            raise ValueError("palette must contain only RGB strings")
 
-        raw_color_index = np.asarray(self.color_index)
-        raw_opacity = np.asarray(self.opacity)
-        if raw_color_index.ndim != 1 or raw_opacity.ndim != 1:
-            raise ValueError("palette arrays must be one-dimensional")
-        try:
-            invalid_index = (raw_color_index < 0) | (
-                raw_color_index >= palette_size
-            )
-        except TypeError as error:
-            raise ValueError("color_index must contain numeric indices") from error
+        raw_color_index = self.color_index
+        if (
+            not isinstance(raw_color_index, np.ndarray)
+            or raw_color_index.ndim != 1
+            or raw_color_index.dtype.kind not in {"i", "u"}
+        ):
+            raise ValueError("color_index must be a one-dimensional integer ndarray")
+        invalid_index = (raw_color_index < 0) | (
+            raw_color_index >= palette_size
+        )
         if np.any(invalid_index):
             raise ValueError("color_index contains an entry outside the palette")
 
+        opacity_values = _validated_opacity_values(
+            self.opacity,
+            len(raw_color_index),
+            allow_scalar=False,
+        )
         index_dtype = np.uint8 if palette_size <= 256 else np.uint16
         color_index = readonly_array(raw_color_index, dtype=index_dtype)
-        opacity = readonly_array(raw_opacity, dtype=np.float32)
-
-        if len(color_index) != len(opacity):
-            raise ValueError("color_index and opacity must have the same length")
-        if not np.all(np.isfinite(opacity)):
-            raise ValueError("opacity values must be finite")
+        opacity = readonly_array(opacity_values, dtype=np.float32)
 
         object.__setattr__(self, "palette", palette)
         object.__setattr__(self, "color_index", color_index)
@@ -86,6 +117,8 @@ def scatter_clip_mask(x, y, clip: ClipGeometry) -> np.ndarray:
         x_max = np.max(points[:, 0])
         y_min = np.min(points[:, 1])
         y_max = np.max(points[:, 1])
+        if x_min >= x_max or y_min >= y_max:
+            raise ValueError("rectangle clip must have positive width and height")
         inside = (
             (x_array >= x_min)
             & (x_array <= x_max)
@@ -93,7 +126,12 @@ def scatter_clip_mask(x, y, clip: ClipGeometry) -> np.ndarray:
             & (y_array <= y_max)
         )
     else:
-        inside = shapely.contains_xy(Polygon(clip.points), x_array, y_array)
+        polygon = Polygon(clip.points)
+        if polygon.is_empty or not polygon.is_valid or polygon.area <= 0:
+            raise ValueError(
+                "polygon clip must be non-empty, valid, positive-area geometry"
+            )
+        inside = shapely.contains_xy(polygon, x_array, y_array)
 
     return np.asarray(inside & finite, dtype=np.bool_)
 
@@ -122,24 +160,19 @@ def filter_columns(data: ColumnarData, mask) -> ColumnarData:
     return instance
 
 
-def _opacity_values(opacity, row_count: int) -> np.ndarray:
-    values = np.asarray(opacity, dtype=np.float32)
-    if values.ndim == 0:
-        values = np.full(row_count, values.item(), dtype=np.float32)
-    elif values.ndim != 1:
-        raise ValueError("opacity must be scalar or one-dimensional")
-    elif len(values) != row_count:
-        raise ValueError("opacity must have the same length as colors")
-    if not np.all(np.isfinite(values)):
-        raise ValueError("opacity values must be finite")
-    return values
-
-
 def encode_palette(colors, opacity) -> PaletteEncoding:
     """Encode colors once per unique value and retain numeric per-point alpha."""
     color_values = np.asarray(colors)
-    if color_values.ndim != 1:
-        raise ValueError("colors must be one-dimensional")
+    if color_values.ndim != 1 or color_values.dtype.kind != "U":
+        raise ValueError(
+            "colors must be a one-dimensional string array of Matplotlib specs"
+        )
+
+    opacity_values = _validated_opacity_values(
+        opacity,
+        len(color_values),
+        allow_scalar=True,
+    )
 
     unique_colors, inverse = np.unique(color_values, return_inverse=True)
     palette_size = len(unique_colors)
@@ -149,11 +182,15 @@ def encode_palette(colors, opacity) -> PaletteEncoding:
     palette = []
     source_alpha = np.empty(palette_size, dtype=np.float32)
     for index, color in enumerate(unique_colors):
-        red, green, blue, alpha = to_rgba(color)
+        try:
+            red, green, blue, alpha = to_rgba(color)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Invalid Matplotlib color spec {str(color)!r}"
+            ) from error
         palette.append(to_hex((red, green, blue), keep_alpha=False))
         source_alpha[index] = alpha
 
-    opacity_values = _opacity_values(opacity, len(color_values))
     combined_opacity = opacity_values * source_alpha[inverse]
     index_dtype = np.uint8 if palette_size <= 256 else np.uint16
     color_index = inverse.astype(index_dtype, copy=True)
