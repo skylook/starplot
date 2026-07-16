@@ -371,6 +371,33 @@ def test_target_axes_width_controls_marker_calibration_and_viewport_contract():
     assert scene.layers[0].data["size"].tolist() == pytest.approx([expected])
 
 
+def test_scene_scatter_is_backend_neutral_before_adapter_policy():
+    command = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": np.array([1.0, 2.0]),
+            "y": np.array([1.0, 2.0]),
+            "sizes": np.array([0.02, 0.02]),
+            "colors": np.array(["#ffffff", "#ffffff"]),
+            "alphas": np.array([0.25, 0.75]),
+        },
+        style={"edge_color": "#ffffff", "edge_width": 2.0},
+        clip_id=None,
+    )
+
+    layer = _configured_compiler().compile_command(command, 0)
+
+    assert not hasattr(compiler_module, "_MAX_INTERACTIVE_HOVER_POINTS")
+    assert not hasattr(compiler_module, "_WEBGL_SUBPIXEL_COVERAGE_SCALE")
+    assert np.all(layer.data["size"] < 1.0)
+    np.testing.assert_array_equal(layer.data["opacity"], [0.25, 0.75])
+    assert layer.style["edge_width"] == 2.0
+    assert layer.data["size"].dtype == np.float32
+    assert layer.data["opacity"].dtype == np.float32
+    assert layer.data["size"].flags.c_contiguous
+    assert layer.data["opacity"].flags.c_contiguous
+
+
 @pytest.mark.parametrize("width_fraction", [0.0, -0.1, 1.01, np.nan, np.inf])
 def test_context_rejects_invalid_axes_bbox_width_fraction(width_fraction):
     projection = {**PROJECTION, "axes_bbox": (0.0, 0.0, width_fraction, 1.0)}

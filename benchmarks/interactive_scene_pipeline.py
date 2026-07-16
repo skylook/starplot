@@ -522,7 +522,7 @@ def run_python_benchmark(
     legacy_total = _summarize_worker_results(
         measured, "legacy_renderer_total_seconds"
     )
-    scene_compile = {**legacy_total, "semantics": _SCENE_COMPILE_SEMANTICS}
+    scene_compile = {**preparation, "semantics": _SCENE_COMPILE_SEMANTICS}
 
     browser = run_browser_benchmark(repeats)
     result = {

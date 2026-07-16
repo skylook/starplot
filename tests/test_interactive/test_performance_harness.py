@@ -153,7 +153,7 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch, capsys)
 
     benchmark.validate_benchmark_artifact(result)
     assert calls == [(10, 2.0), (10, 2.0)]
-    assert result["scene_compile"]["median_seconds"] == 1.5
+    assert result["scene_compile"]["median_seconds"] == 0.25
     assert result["legacy_renderer_total"]["median_seconds"] == 1.5
     assert result["legacy_renderer_preparation"]["median_seconds"] == 0.25
     assert result["plotly_construction"]["median_seconds"] == 1.25

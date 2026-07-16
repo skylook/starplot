@@ -10042,7 +10042,7 @@
         "borderwidth": 1,
         "font": {
           "color": "#ffffff",
-          "size": 14.666666666666666
+          "size": 19.8
         }
       },
       "margin": {
@@ -10946,7 +10946,7 @@
         "borderwidth": 1,
         "font": {
           "color": "#ffffff",
-          "size": 14.666666666666666
+          "size": 19.8
         }
       },
       "margin": {
@@ -11844,7 +11844,7 @@
         "borderwidth": 1,
         "font": {
           "color": "#ffffff",
-          "size": 14.666666666666666
+          "size": 19.8
         }
       },
       "margin": {
@@ -12721,7 +12721,7 @@
         "borderwidth": 1,
         "font": {
           "color": "#ffffff",
-          "size": 14.666666666666666
+          "size": 19.8
         }
       },
       "margin": {
@@ -13586,7 +13586,7 @@
         "borderwidth": 1,
         "font": {
           "color": "#ffffff",
-          "size": 14.666666666666666
+          "size": 19.8
         }
       },
       "margin": {
@@ -14439,14 +14439,14 @@
           "<b>B</b>"
         ],
         "type": "scattergl",
-        "x": [
-          -1,
-          1
-        ],
-        "y": [
-          1,
-          -1
-        ]
+        "x": {
+          "bdata": "AAAAAAAA8L8AAAAAAADwPw==",
+          "dtype": "f8"
+        },
+        "y": {
+          "bdata": "AAAAAAAA8D8AAAAAAADwvw==",
+          "dtype": "f8"
+        }
       }
     ],
     "layout": {
@@ -14461,7 +14461,7 @@
         "borderwidth": 1,
         "font": {
           "color": "#ffffff",
-          "size": 14.666666666666666
+          "size": 19.8
         }
       },
       "margin": {
@@ -15293,7 +15293,7 @@
           "font": {
             "color": "#ffffff",
             "family": "Inter, Arial, sans-serif",
-            "size": 16,
+            "size": 21.6,
             "weight": 400
           },
           "opacity": 1,
@@ -15321,7 +15321,7 @@
         "borderwidth": 1,
         "font": {
           "color": "#ffffff",
-          "size": 14.666666666666666
+          "size": 19.8
         }
       },
       "margin": {
@@ -16146,4 +16146,3 @@
     }
   }
 }
-

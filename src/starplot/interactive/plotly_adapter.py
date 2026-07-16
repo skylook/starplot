@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+from shapely.geometry import Polygon
+from shapely.ops import polygonize, triangulate, unary_union
 
 try:
     import plotly.graph_objects as go
@@ -22,6 +24,7 @@ from starplot.interactive.scene import (
     SceneLayer,
     ScenePackage,
 )
+from starplot.interactive.scene_compiler import scatter_clip_mask
 from starplot.interactive.style_converter import (
     ANCHOR_MAP,
     LINE_STYLE_MAP,
@@ -31,7 +34,10 @@ from starplot.interactive.style_converter import (
 
 _KALEIDO_MARKER_SCALE = 1.15
 _KALEIDO_STROKE_SCALE = 2.0
-_MAX_INTERACTIVE_HOVER_POINTS = 50_000
+_MAX_INTERACTIVE_HOVER_POINTS = 100_000
+_PLOTLY_MIN_MARKER_DIAMETER = np.float32(1.5)
+_SCATTERGL_MIN_MARKER_DIAMETER = np.float32(1.0)
+_SCATTERGL_SUBPIXEL_COVERAGE_SCALE = np.float32(6.0)
 _MATPLOTLIB_NONE_COLORS = frozenset({"none", "None", "NONE", ""})
 _KNOWN_LEGEND_GROUPS = frozenset(
     {
@@ -115,6 +121,13 @@ class PlotlySceneAdapter:
     def render(self, scene: ScenePackage) -> go.Figure:
         if not isinstance(scene, ScenePackage):
             raise TypeError("scene must be a ScenePackage")
+        return _PlotlyRenderContext(scene).render()
+
+
+class _PlotlyRenderContext:
+    """Private one-shot state for one Scene-to-Plotly render."""
+
+    def __init__(self, scene: ScenePackage):
         self.scene = scene
         self.projection_info = scene.projection_info
         self.style_info = scene.style_info
@@ -127,9 +140,10 @@ class PlotlySceneAdapter:
         self._horizon_footer_offset = 0.0
         self._side_margin = 10.0
 
+    def render(self) -> go.Figure:
         self._setup_layout()
         self._reserve_scene_space()
-        for layer in scene.layers:
+        for layer in self.scene.layers:
             self._add_layer(layer)
         self._add_interactive_features()
         return self.fig
@@ -276,9 +290,9 @@ class PlotlySceneAdapter:
             width=self.viewport.get("reference_width"),
             height=self.viewport.get("reference_height"),
         )
-        self._add_clipped_plot_background(background, transparent)
+        self._add_clipped_plot_background(background)
 
-    def _add_clipped_plot_background(self, background: str, transparent: bool) -> None:
+    def _add_clipped_plot_background(self, background: str) -> None:
         clip = self.scene.clips.get("plot")
         if clip is None:
             return
@@ -289,8 +303,7 @@ class PlotlySceneAdapter:
         if len(points) < 3:
             return
         path = self._ring_path(points, lambda value: value, lambda value: value)
-        if not transparent:
-            self.fig.update_layout(plot_bgcolor="rgba(0,0,0,0)")
+        self.fig.update_layout(plot_bgcolor="rgba(0,0,0,0)")
         self.fig.add_shape(
             type="path",
             path=path,
@@ -423,26 +436,47 @@ class PlotlySceneAdapter:
             cmax = max(0.5, len(palette) - 0.5)
 
         name, showlegend = self._legend(layer)
-        trace_type = (
-            go.Scattergl
-            if layer.group_id == "stars" or layer.data.row_count > 1000
-            else go.Scatter
-        )
+        use_webgl = layer.group_id == "stars" or layer.data.row_count > 1000
+        trace_type = go.Scattergl if use_webgl else go.Scatter
         hover_text = self._hover_text(layer)
         customdata = self._customdata(layer)
+        source_size = layer.data["size"]
+        if use_webgl:
+            coverage = np.minimum(
+                np.float32(1.0),
+                source_size * source_size * _SCATTERGL_SUBPIXEL_COVERAGE_SCALE,
+            )
+            marker_size = np.maximum(
+                source_size, _SCATTERGL_MIN_MARKER_DIAMETER
+            ).astype(np.float32, copy=False)
+            marker_opacity = np.asarray(
+                layer.data["opacity"] * coverage,
+                dtype=np.float32,
+            )
+            edge_width = 0.0
+        else:
+            marker_size = np.maximum(source_size, _PLOTLY_MIN_MARKER_DIAMETER).astype(
+                np.float32, copy=False
+            )
+            marker_opacity = layer.data["opacity"]
+            edge_width = (layer.style.get("edge_width", 0) or 0) * (
+                self._stroke_pixel_scale()
+            )
         marker = dict(
-            size=layer.data["size"],
+            size=marker_size,
             color=color,
-            opacity=layer.data["opacity"],
+            opacity=marker_opacity,
             symbol=MARKER_SYMBOL_MAP.get(layer.style.get("symbol", "circle"), "circle"),
             line=dict(
                 color=_sanitize_color(layer.style.get("edge_color")),
-                width=(layer.style.get("edge_width", 0) or 0)
-                * self._stroke_pixel_scale(),
+                width=edge_width,
             ),
         )
         if colorscale is not None:
             marker.update(colorscale=colorscale, cmin=cmin, cmax=cmax, showscale=False)
+        trace_kwargs = {}
+        if not use_webgl:
+            trace_kwargs.update(self._svg_zorder(layer))
         self.fig.add_trace(
             trace_type(
                 x=self._coordinate(layer, "x"),
@@ -455,6 +489,7 @@ class PlotlySceneAdapter:
                 name=name,
                 legendgroup=layer.group_id,
                 showlegend=showlegend,
+                **trace_kwargs,
             )
         )
         self._record_group(layer)
@@ -515,6 +550,11 @@ class PlotlySceneAdapter:
             dash=dash,
         )
 
+    @staticmethod
+    def _svg_zorder(layer: SceneLayer) -> dict[str, int]:
+        value = int(layer.zorder)
+        return {"zorder": value} if value else {}
+
     def _add_line(self, layer: SceneLayer) -> None:
         x, y, _ = self._path_coordinates(layer)
         name, showlegend = self._legend(layer)
@@ -549,6 +589,7 @@ class PlotlySceneAdapter:
                 name=name,
                 legendgroup=layer.group_id,
                 showlegend=showlegend,
+                **self._svg_zorder(layer),
             )
         )
         self._record_group(layer)
@@ -568,6 +609,9 @@ class PlotlySceneAdapter:
             if layer.data.row_count > 1000 or layer.kind is SceneKind.LINE_COLLECTION
             else go.Scatter
         )
+        trace_kwargs = {}
+        if trace_type is go.Scatter:
+            trace_kwargs.update(self._svg_zorder(layer))
         self.fig.add_trace(
             trace_type(
                 x=x,
@@ -580,6 +624,7 @@ class PlotlySceneAdapter:
                 name=name,
                 legendgroup=layer.group_id,
                 showlegend=showlegend,
+                **trace_kwargs,
             )
         )
         self._record_group(layer)
@@ -591,6 +636,96 @@ class PlotlySceneAdapter:
         path = f"M {x_map(points[0][0])},{y_map(points[0][1])}"
         path += "".join(f" L {x_map(x)},{y_map(y)}" for x, y in points[1:])
         return path + " Z"
+
+    @staticmethod
+    def _append_closed_trace_path(x_values, y_values, points) -> None:
+        if not points:
+            return
+        for x, y in (*points, points[0]):
+            x_values.append(float(x))
+            y_values.append(float(y))
+        x_values.append(np.nan)
+        y_values.append(np.nan)
+
+    def _add_data_polygon_holes(
+        self,
+        layer: SceneLayer,
+        polygons,
+        *,
+        has_fill: bool,
+        fill_color: str,
+        edge_color: str,
+        edge_width: float,
+    ) -> None:
+        fill_x: list[float] = []
+        fill_y: list[float] = []
+        outline_x: list[float] = []
+        outline_y: list[float] = []
+        for rings in polygons:
+            polygon = Polygon(rings[0], holes=rings[1:])
+            if polygon.is_empty or not polygon.is_valid or polygon.area <= 0:
+                raise ValueError("DATA polygon must be valid and have positive area")
+            if has_fill:
+                edges = triangulate(polygon, tolerance=0.0, edges=True)
+                faces = [
+                    face
+                    for face in polygonize(unary_union([polygon.boundary, *edges]))
+                    if face.area > 0 and polygon.covers(face.representative_point())
+                ]
+                if not faces or not polygon.equals(unary_union(faces)):
+                    raise ValueError("DATA polygon tessellation must cover the polygon")
+                for face in faces:
+                    if face.interiors or not face.equals(face.convex_hull):
+                        raise ValueError(
+                            "DATA polygon tessellation cells must be convex and hole-free"
+                        )
+                    triangles = triangulate(face, tolerance=0.0, edges=False)
+                    if not triangles or not face.equals(unary_union(triangles)):
+                        raise ValueError(
+                            "DATA polygon tessellation cells must be fully triangulated"
+                        )
+                    for triangle in triangles:
+                        points = list(triangle.exterior.coords)[:-1]
+                        if (
+                            triangle.area <= 0
+                            or len(set(points)) != 3
+                            or not face.covers(triangle)
+                        ):
+                            raise ValueError(
+                                "DATA polygon tessellation emitted an invalid triangle"
+                            )
+                        self._append_closed_trace_path(fill_x, fill_y, points)
+            for ring in rings:
+                self._append_closed_trace_path(outline_x, outline_y, ring)
+
+        common = dict(
+            mode="lines",
+            opacity=layer.style.get("alpha", 1.0),
+            hoverinfo="none",
+            legendgroup=layer.group_id,
+            showlegend=False,
+            **self._svg_zorder(layer),
+        )
+        if fill_x:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=np.asarray(fill_x, dtype=np.float64),
+                    y=np.asarray(fill_y, dtype=np.float64),
+                    fill="toself",
+                    fillcolor=fill_color,
+                    line=dict(color=fill_color, width=0),
+                    **common,
+                )
+            )
+        if outline_x:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=np.asarray(outline_x, dtype=np.float64),
+                    y=np.asarray(outline_y, dtype=np.float64),
+                    line=dict(color=edge_color, width=max(0, edge_width)),
+                    **common,
+                )
+            )
 
     def _add_polygon(self, layer: SceneLayer) -> None:
         x = self._coordinate(layer, "x")
@@ -605,18 +740,34 @@ class PlotlySceneAdapter:
             layer.style.get("edge_width", 0) or 0
         ) * self._stroke_pixel_scale()
         xref, yref = self._coordinate_refs(layer)
-        use_shapes = (xref, yref) != ("x", "y") or np.any(ring_ids > 0)
+        use_shapes = (xref, yref) != ("x", "y")
 
+        polygons = []
         for polygon_id in np.unique(polygon_ids):
             polygon_mask = polygon_ids == polygon_id
-            path = ""
             rings = []
             for ring_id in np.unique(ring_ids[polygon_mask]):
                 mask = polygon_mask & (ring_ids == ring_id)
                 points = list(zip(x[mask].tolist(), y[mask].tolist()))
-                if len(points) < 3:
-                    continue
-                rings.append(points)
+                if len(points) >= 3:
+                    rings.append(points)
+            if rings:
+                polygons.append(rings)
+
+        if not use_shapes and any(len(rings) > 1 for rings in polygons):
+            self._add_data_polygon_holes(
+                layer,
+                polygons,
+                has_fill=has_fill,
+                fill_color=fill_color,
+                edge_color=edge_color,
+                edge_width=edge_width,
+            )
+            return
+
+        for rings in polygons:
+            path = ""
+            for points in rings:
                 path += " " + self._ring_path(
                     points,
                     self._paper_x if xref == "paper" else lambda value: value,
@@ -655,6 +806,7 @@ class PlotlySceneAdapter:
                         hoverinfo="none",
                         legendgroup=layer.group_id,
                         showlegend=False,
+                        **self._svg_zorder(layer),
                     )
                 )
 
@@ -727,28 +879,38 @@ class PlotlySceneAdapter:
             xx, yy = np.meshgrid(x, y)
             center = layer.style.get("center")
             radius = layer.style.get("radius")
-            if center is None or radius is None:
-                clip = self.scene.clips.get(layer.clip_id) if layer.clip_id else None
-                if clip is not None:
-                    points = np.asarray(clip.points, dtype=np.float64)
-                    clip_x0, clip_y0 = np.min(points, axis=0)
-                    clip_x1, clip_y1 = np.max(points, axis=0)
-                    center = ((clip_x0 + clip_x1) / 2, (clip_y0 + clip_y1) / 2)
-                    radius = min(clip_x1 - clip_x0, clip_y1 - clip_y0) / 2
-                else:
-                    center = (
-                        (float(x_min) + float(x_max)) / 2,
-                        (float(y_min) + float(y_max)) / 2,
-                    )
-                    radius = max(
-                        abs(float(x_max) - center[0]),
-                        abs(float(y_max) - center[1]),
-                    )
+            clip = self.scene.clips.get(layer.clip_id) if layer.clip_id else None
+            if clip is not None:
+                points = np.asarray(clip.points, dtype=np.float64)
+                clip_x0, clip_y0 = np.min(points, axis=0)
+                clip_x1, clip_y1 = np.max(points, axis=0)
+                default_center = (
+                    (clip_x0 + clip_x1) / 2,
+                    (clip_y0 + clip_y1) / 2,
+                )
+                default_radius = min(clip_x1 - clip_x0, clip_y1 - clip_y0) / 2
+            else:
+                default_center = (
+                    (float(x_min) + float(x_max)) / 2,
+                    (float(y_min) + float(y_max)) / 2,
+                )
+                default_radius = max(
+                    abs(float(x_max) - default_center[0]),
+                    abs(float(y_max) - default_center[1]),
+                )
+            if center is None:
+                center = default_center
+            if radius is None:
+                radius = default_radius
             radius = max(float(radius), 1e-9)
             rr = ((xx - float(center[0])) / radius) ** 2 + (
                 (yy - float(center[1])) / radius
             ) ** 2
-            z = np.minimum(rr, 1.0)
+            if clip is not None:
+                mask = scatter_clip_mask(xx.ravel(), yy.ravel(), clip).reshape(xx.shape)
+            else:
+                mask = rr <= 1.0
+            z = np.where(mask, np.minimum(rr, 1.0), np.nan)
             radial_positions = [float(stop[0]) / 2.0 for stop in stops]
             radial_positions[-1] = 1.0
             stops = [

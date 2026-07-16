@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 from matplotlib.colors import to_rgba
+from shapely.geometry import Point, Polygon
 
 from starplot.interactive.commands import CoordinateSpace, DrawingCommand
 from starplot.interactive.scene import (
@@ -58,7 +61,10 @@ def primitive_commands():
                 "alphas": np.array([0.25, 0.75]),
             },
             style={"symbol": "circle", "edge_color": "none", "edge_width": 0},
-            metadata=[{"name": "A", "type": "star"}, {"name": "B", "type": "star"}],
+            metadata=[
+                {"name": "A", "type": "star", "object_id": "star-a"},
+                {"name": "B", "type": "star", "object_id": "star-b"},
+            ],
             gid="stars",
             clip_id=None,
         ),
@@ -168,21 +174,9 @@ def _css_colors(colors, opacity, colorscale):
     return result
 
 
-def _normalize_scalars(value):
-    if isinstance(value, dict):
-        return {key: _normalize_scalars(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_normalize_scalars(item) for item in value]
-    if isinstance(value, float):
-        if not np.isfinite(value):
-            return None
-        return round(value, 5)
-    return value
-
-
-def normalized_figure(figure):
-    """Normalize generated identity and typed-array serialization only."""
-    payload = json.loads(figure.to_json())
+def normalized_payload(payload):
+    """Remove generated identity and normalize Plotly array serialization only."""
+    payload = deepcopy(payload)
     for trace in payload.get("data", []):
         trace.pop("uid", None)
         for key in ("x", "y", "z", "customdata", "text"):
@@ -193,21 +187,152 @@ def normalized_figure(figure):
             for key in ("size", "opacity", "color"):
                 if key in marker:
                     marker[key] = _decoded(marker[key])
-            if isinstance(marker.get("color"), list) and marker.get("colorscale"):
-                marker["color"] = _css_colors(
-                    marker["color"], marker.get("opacity", 1.0), marker["colorscale"]
+        x_values = trace.get("x")
+        y_values = trace.get("y")
+        if isinstance(x_values, list) and isinstance(y_values, list):
+            for index, (x_value, y_value) in enumerate(zip(x_values, y_values)):
+                x_separator = x_value is None or (
+                    isinstance(x_value, float) and not np.isfinite(x_value)
                 )
-                marker["opacity"] = 1.0
-                for key in ("colorscale", "cmin", "cmax", "showscale"):
-                    marker.pop(key, None)
-        # customdata is an adapter transport detail; hover text itself remains frozen.
+                y_separator = y_value is None or (
+                    isinstance(y_value, float) and not np.isfinite(y_value)
+                )
+                if x_separator and y_separator:
+                    x_values[index] = None
+                    y_values[index] = None
+                    text = trace.get("text")
+                    if isinstance(text, list) and index < len(text):
+                        text_value = text[index]
+                        if text_value is None or (
+                            isinstance(text_value, float)
+                            and not np.isfinite(text_value)
+                        ):
+                            text[index] = None
+            while (
+                x_values and y_values and x_values[-1] is None and y_values[-1] is None
+            ):
+                x_values.pop()
+                y_values.pop()
+                text = trace.get("text")
+                if isinstance(text, list) and text and text[-1] is None:
+                    text.pop()
+    return payload
+
+
+def normalized_figure(figure):
+    return normalized_payload(json.loads(figure.to_json()))
+
+
+def legacy_visual_view(payload):
+    """Compare legacy visual/hover output while naming new nonvisual payload."""
+    payload = deepcopy(payload)
+    for trace in payload.get("data", []):
+        marker = trace.get("marker")
+        if (
+            marker
+            and isinstance(marker.get("color"), list)
+            and marker.get("colorscale")
+        ):
+            marker["color"] = _css_colors(
+                marker["color"], marker.get("opacity", 1.0), marker["colorscale"]
+            )
+            marker["opacity"] = 1.0
+            for key in ("colorscale", "cmin", "cmax", "showscale"):
+                marker.pop(key, None)
+        # Scene customdata is asserted exactly before excluding this new,
+        # nonvisual field from the legacy visual/hover snapshot.
         trace.pop("customdata", None)
-        for key in ("x", "y", "text"):
-            values = trace.get(key)
-            if isinstance(values, list):
-                while values and values[-1] is None:
-                    values.pop()
-    return _normalize_scalars(payload)
+    return payload
+
+
+_FLOAT32_MACHINE_EPSILON = float(np.finfo(np.float32).eps)
+
+
+def _coordinate_tolerance(scene, name, path):
+    axis = name[0]
+    pixels = float(scene.viewport[f"reference_{'width' if axis == 'x' else 'height'}"])
+    if path and path[0] == "data":
+        encoding = scene.layers[0].coordinate_encoding.get(axis)
+        bounds = scene.viewport["data_bounds"]
+        span = (
+            abs(float(encoding.scale))
+            if encoding is not None
+            else abs(float(bounds[f"{axis}_max"]) - float(bounds[f"{axis}_min"]))
+        )
+        supported_zoom = float(scene.style_info.get("supported_zoom", 1.0))
+        return span / pixels / supported_zoom * 0.05
+    return 0.05 / pixels
+
+
+def _float32_tolerance(value):
+    return _FLOAT32_MACHINE_EPSILON * max(1.0, abs(float(value)))
+
+
+def assert_semantic_equal(actual, expected, scene, path=(), allowed_diffs=None):
+    allowed_diffs = allowed_diffs or {}
+    if path in allowed_diffs:
+        old_value, new_value = allowed_diffs[path]
+        assert expected == old_value
+        assert actual == new_value
+        return
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict)
+        assert set(actual) == set(expected), path
+        for key in expected:
+            assert_semantic_equal(
+                actual[key], expected[key], scene, path + (key,), allowed_diffs
+            )
+        return
+    if isinstance(expected, list):
+        assert isinstance(actual, list)
+        assert len(actual) == len(expected), path
+        coordinate = path[-1] if path and path[-1] in {"x", "y"} else None
+        for index, expected_value in enumerate(expected):
+            actual_value = actual[index]
+            if coordinate and actual_value is not None and expected_value is not None:
+                assert actual_value == pytest.approx(
+                    expected_value,
+                    abs=_coordinate_tolerance(scene, coordinate, path),
+                )
+            elif (
+                len(path) >= 2
+                and path[-2:] in (("marker", "size"), ("marker", "opacity"))
+                and actual_value is not None
+                and expected_value is not None
+            ):
+                tolerance = _float32_tolerance(expected_value)
+                assert actual_value == pytest.approx(expected_value, abs=tolerance)
+            else:
+                assert_semantic_equal(
+                    actual_value,
+                    expected_value,
+                    scene,
+                    path + (index,),
+                    allowed_diffs,
+                )
+        return
+    coordinate = (
+        path[-1] if path and path[-1] in {"x", "y", "x0", "x1", "y0", "y1"} else None
+    )
+    if (
+        coordinate
+        and isinstance(actual, (int, float))
+        and isinstance(expected, (int, float))
+    ):
+        assert actual == pytest.approx(
+            expected,
+            abs=_coordinate_tolerance(scene, coordinate, path),
+        )
+        return
+    if (
+        path
+        and path[-1] in {"xshift", "yshift"}
+        and isinstance(actual, (int, float))
+        and isinstance(expected, (int, float))
+    ):
+        assert actual == pytest.approx(expected, abs=0.05)
+        return
+    assert actual == expected, path
 
 
 def _compile(command, *, width=500, height=500):
@@ -223,16 +348,34 @@ def test_legacy_primitive_snapshot_fixture_exists_and_covers_every_kind():
 def test_scene_adapter_matches_independently_captured_legacy_primitive_snapshot(name):
     from starplot.interactive.plotly_adapter import PlotlySceneAdapter
 
-    expected = _normalize_scalars(json.loads(GOLDEN_PATH.read_text())[name])
-    for trace in expected.get("data", []):
-        for key in ("x", "y", "text"):
-            values = trace.get(key)
-            if isinstance(values, list):
-                while values and values[-1] is None:
-                    values.pop()
-    figure = PlotlySceneAdapter().render(_compile(primitive_commands()[name]))
+    scene = _compile(primitive_commands()[name])
+    figure = PlotlySceneAdapter().render(scene)
+    actual = normalized_figure(figure)
+    expected = normalized_payload(json.loads(GOLDEN_PATH.read_text())[name])
 
-    assert normalized_figure(figure) == expected
+    if name == "scatter":
+        customdata = actual["data"][0]["customdata"]
+        fields = scene.layers[0].hover_fields
+        expected_customdata = np.column_stack(
+            [scene.layers[0].data[field] for field in fields]
+        ).tolist()
+        assert fields == ("name", "type", "object_id")
+        assert customdata == expected_customdata
+
+    corrected_font_diffs = {
+        ("layout", "legend", "font", "size"): (19.8, 14.666666666666666)
+    }
+    if name == "text":
+        corrected_font_diffs[("layout", "annotations", 0, "font", "size")] = (
+            21.6,
+            16.0,
+        )
+    assert_semantic_equal(
+        legacy_visual_view(actual),
+        legacy_visual_view(expected),
+        scene,
+        allowed_diffs=corrected_font_diffs,
+    )
 
 
 def test_scatter_trace_keeps_plotly6_typed_arrays():
@@ -282,6 +425,94 @@ def test_adapter_never_builds_per_point_css_colors():
 
     assert isinstance(colors, np.ndarray)
     assert colors.dtype.kind == "u"
+
+
+def test_discrete_palette_contract_for_zero_single_and_multiple_colors():
+    from starplot.interactive.plotly_adapter import (
+        PlotlySceneAdapter,
+        _discrete_colorscale,
+    )
+
+    assert _discrete_colorscale(()) == [
+        [0.0, "rgba(0,0,0,0)"],
+        [1.0, "rgba(0,0,0,0)"],
+    ]
+    assert _discrete_colorscale(("#ff0000",)) == [
+        [0.0, "#ff0000"],
+        [1.0, "#ff0000"],
+    ]
+    assert _discrete_colorscale(("#0000ff", "#ff0000")) == [
+        [0.0, "#0000ff"],
+        [0.5, "#0000ff"],
+        [0.5, "#ff0000"],
+        [1.0, "#ff0000"],
+    ]
+
+    single = primitive_commands()["scatter"]
+    single.data["colors"] = np.array(["#ff000080", "#ff000080"])
+    single.data["alphas"] = np.array([0.25, 0.75])
+    single_trace = PlotlySceneAdapter().render(_compile(single)).data[0]
+    assert list(single_trace.marker.color) == [0, 0]
+    np.testing.assert_allclose(
+        single_trace.marker.opacity,
+        np.asarray([0.25, 0.75], dtype=np.float32) * np.float32(128 / 255),
+        rtol=_FLOAT32_MACHINE_EPSILON,
+        atol=_FLOAT32_MACHINE_EPSILON,
+    )
+    assert list(single_trace.marker.colorscale) == [
+        (0.0, "#ff0000"),
+        (1.0, "#ff0000"),
+    ]
+    assert single_trace.marker.cmin == -0.5
+    assert single_trace.marker.cmax == 0.5
+    assert single_trace.marker.showscale is False
+
+    multi_trace = (
+        PlotlySceneAdapter().render(_compile(primitive_commands()["scatter"])).data[0]
+    )
+    assert list(multi_trace.marker.color) == [1, 0]
+    np.testing.assert_allclose(
+        multi_trace.marker.opacity,
+        np.asarray([0.25, 0.75], dtype=np.float32),
+        rtol=_FLOAT32_MACHINE_EPSILON,
+        atol=_FLOAT32_MACHINE_EPSILON,
+    )
+    assert list(multi_trace.marker.colorscale) == [
+        (0.0, "#0000ff"),
+        (0.5, "#0000ff"),
+        (0.5, "#ff0000"),
+        (1.0, "#ff0000"),
+    ]
+    assert multi_trace.marker.cmin == -0.5
+    assert multi_trace.marker.cmax == 1.5
+    assert multi_trace.marker.showscale is False
+
+
+def test_svg_scatter_applies_plotly_minimum_without_changing_scene_values():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    command = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": [0.0],
+            "y": [0.0],
+            "sizes": [0.02],
+            "colors": ["#ffffff"],
+            "alphas": [0.5],
+        },
+        style={"edge_color": "#ffffff", "edge_width": 2.0},
+        gid="marker",
+        clip_id=None,
+    )
+    scene = _compile(command)
+
+    trace = PlotlySceneAdapter().render(scene).data[0]
+
+    assert scene.layers[0].data["size"][0] < 1.0
+    assert trace.type == "scatter"
+    assert trace.marker.size[0] == 1.5
+    assert trace.marker.opacity[0] == pytest.approx(0.5)
+    assert trace.marker.line.width > 0
 
 
 def test_relative_identity_coordinates_stay_float32_typed_arrays():
@@ -395,3 +626,91 @@ def test_paths_insert_nan_only_between_distinct_path_ids():
     assert np.isnan(values[2])
     assert values.tolist()[:2] == [-1.0, 0.0]
     assert values.tolist()[3:] == [0.5, 1.0]
+
+
+def _split_finite_paths(x, y):
+    paths = []
+    current = []
+    for x_value, y_value in zip(x, y):
+        if not np.isfinite(x_value) or not np.isfinite(y_value):
+            if current:
+                paths.append(current)
+                current = []
+        else:
+            current.append((float(x_value), float(y_value)))
+    if current:
+        paths.append(current)
+    return paths
+
+
+def test_data_polygon_hole_is_tessellated_on_trace_plane_with_stable_zorder():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    polygon = DrawingCommand(
+        kind="polygon",
+        data={
+            "polygons": [
+                [
+                    [(0, 0), (4, 0), (4, 4), (0, 4)],
+                    [(1, 1), (1, 3), (3, 3), (3, 1)],
+                ]
+            ]
+        },
+        style={
+            "fill_color": "#223344",
+            "edge_color": "#ffffff",
+            "edge_width": 1,
+        },
+        zorder=2,
+        gid="hole",
+        clip_id=None,
+    )
+    foreground = DrawingCommand(
+        kind="line",
+        data={"x": [0, 4], "y": [2, 2]},
+        style={"color": "#ff0000", "width": 1},
+        zorder=10,
+        gid="foreground",
+        clip_id="plot",
+    )
+    scene = SceneCompiler().compile(
+        [foreground, polygon], PROJECTION, STYLE, 500, 500, False
+    )
+
+    figure = PlotlySceneAdapter().render(scene)
+
+    assert not figure.layout.shapes
+    fill, outline, foreground_trace = figure.data
+    assert fill.type == "scatter"
+    assert outline.type == "scatter"
+    assert fill.fill == "toself"
+    assert fill.line.width == 0
+    assert fill.zorder == 2
+    assert outline.zorder == 2
+    assert foreground_trace.zorder == 10
+    triangles = [Polygon(path) for path in _split_finite_paths(fill.x, fill.y)]
+    assert sum(triangle.area for triangle in triangles) == pytest.approx(12.0)
+    assert not any(triangle.covers(Point(2, 2)) for triangle in triangles)
+
+
+def test_public_adapter_is_stateless_across_parallel_and_sequential_renders():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    adapter = PlotlySceneAdapter()
+    first_scene = _compile(primitive_commands()["line"])
+    second_command = primitive_commands()["line"]
+    second_command.style["color"] = "#123456"
+    second_command.gid = "other-line"
+    second_scene = _compile(second_command)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(adapter.render, first_scene)
+        second_future = pool.submit(adapter.render, second_scene)
+        first = first_future.result()
+        second = second_future.result()
+    third = adapter.render(first_scene)
+
+    assert first.data[0].line.color == "#abcdef"
+    assert second.data[0].line.color == "#123456"
+    assert third.data[0].line.color == "#abcdef"
+    assert vars(adapter) == {}

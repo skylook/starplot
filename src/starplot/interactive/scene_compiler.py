@@ -38,8 +38,7 @@ COMMAND_COMPILERS = {
     CommandType.INFO_TABLE: "_compile_info_table",
 }
 
-_MAX_INTERACTIVE_HOVER_POINTS = 50_000
-_WEBGL_SUBPIXEL_COVERAGE_SCALE = 6.0
+_METADATA_SUPPRESSION_THRESHOLD = 100_000
 
 
 def _validated_opacity_values(
@@ -499,39 +498,28 @@ class SceneCompiler:
             if context.projection_info.get("axes_pixels")
             else context.style_info.get("resolution", 4096),
         )
-        high_volume = row_count > _MAX_INTERACTIVE_HOVER_POINTS
         sizes = calibrate_marker_sizes_array(
             sizes,
             dpi=context.style_info.get("dpi", 100),
             target_width=context.target_axes_width,
             source_axes_width=source_width,
-            min_size=0.0 if high_volume else 1.5,
+            min_size=0.0,
         )
-        opacity = palette.opacity
-        if high_volume:
-            coverage = np.minimum(
-                np.float32(1.0),
-                sizes * sizes * np.float32(_WEBGL_SUBPIXEL_COVERAGE_SCALE),
-            )
-            opacity = np.asarray(palette.opacity * coverage, dtype=np.float32)
-            sizes = np.maximum(sizes, np.float32(1.0)).astype(np.float32, copy=False)
         columns = {
             "x": x,
             "y": y,
             "size": sizes,
             "color_index": palette.color_index,
-            "opacity": opacity,
+            "opacity": palette.opacity,
         }
         interaction, hover_fields, metadata_columns = _metadata_interaction(
             metadata,
             range(row_count),
-            suppress=high_volume,
+            suppress=row_count >= _METADATA_SUPPRESSION_THRESHOLD,
         )
         columns.update(metadata_columns)
         coordinate_encoding = _encode_xy(columns, context)
         style = dict(command.style)
-        if high_volume:
-            style["edge_width"] = 0
         style["palette_id"] = f"palette-{index:04d}"
         return _CompiledParts(
             columns,

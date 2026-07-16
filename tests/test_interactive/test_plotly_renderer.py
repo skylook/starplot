@@ -13,8 +13,12 @@ except ImportError:
 
 pytestmark = pytest.mark.skipif(not PLOTLY_AVAILABLE, reason="plotly not installed")
 
-from starplot.interactive.commands import ClipGeometry, CoordinateSpace, DrawingCommand
-from starplot.interactive.plotly_renderer import PlotlyRenderer
+from starplot.interactive.commands import (  # noqa: E402
+    ClipGeometry,
+    CoordinateSpace,
+    DrawingCommand,
+)
+from starplot.interactive.plotly_renderer import PlotlyRenderer  # noqa: E402
 
 
 PROJ_INFO = {"ra_min": 0, "ra_max": 360, "dec_min": -90, "dec_max": 90}
@@ -430,9 +434,9 @@ def test_renderer_hover_star_text():
 
 
 def test_renderer_disables_hover_payload_for_high_volume_trace(monkeypatch):
-    import starplot.interactive.scene_compiler as compiler_module
+    import starplot.interactive.plotly_adapter as adapter_module
 
-    monkeypatch.setattr(compiler_module, "_MAX_INTERACTIVE_HOVER_POINTS", 1)
+    monkeypatch.setattr(adapter_module, "_MAX_INTERACTIVE_HOVER_POINTS", 1)
     cmd = DrawingCommand(
         kind="scatter",
         data={
@@ -452,10 +456,7 @@ def test_renderer_disables_hover_payload_for_high_volume_trace(monkeypatch):
     assert fig.data[0].text is None
 
 
-def test_renderer_preserves_subpixel_area_for_high_volume_trace(monkeypatch):
-    import starplot.interactive.scene_compiler as compiler_module
-
-    monkeypatch.setattr(compiler_module, "_MAX_INTERACTIVE_HOVER_POINTS", 1)
+def test_renderer_scattergl_preserves_subpixel_area():
     cmd = DrawingCommand(
         kind="scatter",
         data={
@@ -764,7 +765,10 @@ def test_transparent_export_clears_paper_but_preserves_axes_background():
     )
     fig = plot.to_plotly(transparent=True)
     assert fig.layout.paper_bgcolor == "rgba(0,0,0,0)"
-    assert fig.layout.plot_bgcolor != "rgba(0,0,0,0)"
+    assert fig.layout.plot_bgcolor == "rgba(0,0,0,0)"
+    background = fig.layout.shapes[0]
+    assert background.fillcolor != "rgba(0,0,0,0)"
+    assert background.layer == "below"
 
 
 def radial_gradient_command():
@@ -794,6 +798,66 @@ def test_radial_gradient_uses_source_radius_squared_and_reversal():
     # matching Matplotlib's reversed LinearSegmentedColormap.
     center = z.shape[0] // 2, z.shape[1] // 2
     assert z[center] == pytest.approx(0.0, abs=0.05)
-    assert z[0][0] == pytest.approx(1.0, abs=0.1)
+    assert np.isnan(z[0][0])
     assert heatmap.colorscale[0][1] == "#000000"
     assert heatmap.colorscale[-1][1] == "#000022"
+
+
+def _heatmap_value_at(heatmap, x, y):
+    x_index = int(np.argmin(np.abs(np.asarray(heatmap.x) - x)))
+    y_index = int(np.argmin(np.abs(np.asarray(heatmap.y) - y)))
+    return np.asarray(heatmap.z)[y_index, x_index]
+
+
+def test_radial_gradient_without_clip_is_transparent_outside_radius():
+    renderer = PlotlyRenderer(
+        {
+            "x_min": -1.5,
+            "x_max": 1.5,
+            "y_min": -1.5,
+            "y_max": 1.5,
+            "clip_geometries": {},
+        },
+        STYLE_INFO,
+        width=500,
+        height=500,
+    )
+    command = radial_gradient_command()
+    command.clip_id = None
+
+    heatmap = renderer.render([command]).data[0]
+
+    assert np.isfinite(_heatmap_value_at(heatmap, 0, 0))
+    assert np.isnan(_heatmap_value_at(heatmap, 1.4, 1.4))
+
+
+@pytest.mark.parametrize(
+    ("clip", "inside", "outside"),
+    [
+        (
+            ClipGeometry("rect", ((-1.0, -0.5), (1.0, 0.5))),
+            (0.0, 0.0),
+            (0.0, 0.75),
+        ),
+        (
+            ClipGeometry("polygon", ((-1.0, -1.0), (1.0, -1.0), (0.0, 1.0))),
+            (0.0, 0.0),
+            (0.9, 0.9),
+        ),
+    ],
+)
+def test_radial_gradient_masks_actual_scene_clip_geometry(clip, inside, outside):
+    projection = {
+        "x_min": -1.5,
+        "x_max": 1.5,
+        "y_min": -1.5,
+        "y_max": 1.5,
+        "clip_geometries": {"plot": clip},
+    }
+
+    heatmap = PlotlyRenderer(
+        projection, STYLE_INFO, width=500, height=500
+    ).render([radial_gradient_command()]).data[0]
+
+    assert np.isfinite(_heatmap_value_at(heatmap, *inside))
+    assert np.isnan(_heatmap_value_at(heatmap, *outside))
