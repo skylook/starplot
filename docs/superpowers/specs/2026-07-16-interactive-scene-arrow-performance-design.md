@@ -279,8 +279,11 @@ adapters do not repeat collision resolution.
 
 Gradients and other layers with no large arrays can store their resolved
 parameters directly in the external manifest. They remain external to HTML in
-static and API modes. An info table can use a small Arrow layer when its values
-are tabular.
+static and API modes. An info table uses a small Arrow layer with required
+dictionary-encoded `column` and `value` UTF-8 columns plus required
+`width: float32`; `object_id` is optional. Width remains row-aligned Scene 1.0
+data because the current compiler supports per-cell widths and exact visual
+parity cannot reconstruct them from one layer-level style value.
 
 ## 9. Coordinate precision
 

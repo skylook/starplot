@@ -28,7 +28,10 @@ from starplot.interactive.scene import (
 )
 from starplot.interactive.scene_manifest import (
     CapabilitiesModel,
+    LayerManifestModel,
+    PaletteAssetModel,
     SceneManifestModel,
+    StyleAssetModel,
     build_scene_manifest,
     canonical_manifest_bytes,
 )
@@ -204,6 +207,49 @@ def _manifest_for(layer: SceneLayer, payload: bytes):
     return parsed.resolve_layer(layer.id)
 
 
+def _unchecked_manifest_for(layer: SceneLayer, payload: bytes):
+    """Construct test-only resolver context for intentionally malformed IPC."""
+    style_id = f"style-{layer.id}" if layer.style else None
+    styles = (
+        (StyleAssetModel(id=style_id, value=layer.style),)
+        if style_id is not None
+        else ()
+    )
+    palettes = ()
+    if layer.palette is not None:
+        palettes = (
+            PaletteAssetModel(id=layer.style["palette_id"], colors=layer.palette),
+        )
+    wire = LayerManifestModel.from_layer(
+        layer,
+        byte_length=len(payload),
+        content_hash=layer_content_hash(payload),
+        data_source={"format": "arrow-ipc-stream", "uri": f"{layer.id}.arrow"},
+        style_id=style_id,
+    )
+    manifest = SceneManifestModel.model_construct(
+        schema_version="1.0",
+        scene_id="malformed-transport-test",
+        content_hash="sha256:" + "0" * 64,
+        minimum_loader_version="1.0",
+        viewport={},
+        coordinate_spaces={},
+        clips=(),
+        styles=styles,
+        palettes=palettes,
+        layers=(wire,),
+        capabilities=CapabilitiesModel(
+            viewport_query=False,
+            lod=False,
+            magnitude_filter=False,
+            catalog_detail=False,
+            max_batch_rows=250_000,
+        ),
+        extensions={},
+    )
+    return manifest.resolve_layer(layer.id)
+
+
 def _assert_layer_equal(restored: SceneLayer, expected: SceneLayer) -> None:
     assert restored.id == expected.id
     assert restored.kind is expected.kind
@@ -337,7 +383,7 @@ def test_decode_rejects_wrong_length_hash_identity_and_manifest_schema():
         modified = payload[:100] + bytes([payload[100] ^ 1]) + payload[101:]
         decode_layer_stream(modified, manifest)
     wrong_layer = replace(layer, id="wrong")
-    wrong_manifest = _manifest_for(wrong_layer, payload)
+    wrong_manifest = _unchecked_manifest_for(wrong_layer, payload)
     with pytest.raises(ValueError, match="layer id"):
         decode_layer_stream(payload, wrong_manifest)
 
@@ -385,7 +431,7 @@ def test_decode_rejects_arrow_field_type_that_disagrees_with_protocol():
     invalid_arrays[text_index] = pa.chunked_array([[1, 2]], type=pa.int32())
     invalid_table = pa.Table.from_arrays(invalid_arrays, schema=invalid_schema)
     payload = encode_table_stream(invalid_table)
-    manifest = _manifest_for(layer, payload)
+    manifest = _unchecked_manifest_for(layer, payload)
 
     with pytest.raises(ValueError, match="text.*dictionary"):
         decode_layer_stream(payload, manifest)
@@ -398,7 +444,7 @@ def test_decode_rejects_relative_origin_metadata_that_disagrees_with_manifest():
     metadata[b"origin_x"] = b"999.0"
     invalid_table = table.replace_schema_metadata(metadata)
     payload = encode_table_stream(invalid_table)
-    manifest = _manifest_for(layer, payload)
+    manifest = _unchecked_manifest_for(layer, payload)
 
     with pytest.raises(ValueError, match="origin_x"):
         decode_layer_stream(payload, manifest)
@@ -416,7 +462,7 @@ def test_decode_rejects_noncanonical_or_truncated_stream_framing(mutate, message
     layer = _scene_layers()[1]
     payload = encode_layer_stream(layer)
     invalid = mutate(payload)
-    manifest = _manifest_for(layer, invalid)
+    manifest = _unchecked_manifest_for(layer, invalid)
 
     with pytest.raises(ValueError, match=message):
         decode_layer_stream(invalid, manifest)
@@ -429,7 +475,7 @@ def test_decode_rejects_ipc_file_container_even_with_matching_manifest():
     with pa.ipc.new_file(sink, table.schema) as writer:
         writer.write_table(table)
     payload = sink.getvalue().to_pybytes()
-    manifest = _manifest_for(layer, payload)
+    manifest = _unchecked_manifest_for(layer, payload)
 
     with pytest.raises(ValueError, match="IPC Stream|EOS"):
         decode_layer_stream(payload, manifest)
@@ -482,3 +528,87 @@ def test_info_table_width_is_a_documented_required_scene_1_0_column():
 
     assert table.column_names == ["column", "value", "width"]
     assert table.schema.field("width").type == pa.float32()
+
+
+def test_manifest_builder_rejects_arbitrary_or_wrong_layer_payload_bytes():
+    layer = _scene_layers()[1]
+    other = _scene_layers()[2]
+    capabilities = CapabilitiesModel(
+        viewport_query=False,
+        lod=False,
+        magnitude_filter=False,
+        catalog_detail=False,
+        max_batch_rows=250_000,
+    )
+
+    with pytest.raises(ValueError, match="IPC Stream|EOS"):
+        build_scene_manifest(
+            scene_id="invalid",
+            layers=(layer,),
+            layer_bytes={layer.id: b"not-arrow-at-all"},
+            viewport={},
+            coordinate_spaces={},
+            clips=(),
+            capabilities=capabilities,
+        )
+    with pytest.raises(ValueError, match="layer id"):
+        build_scene_manifest(
+            scene_id="wrong-layer",
+            layers=(layer,),
+            layer_bytes={layer.id: encode_layer_stream(other)},
+            viewport={},
+            coordinate_spaces={},
+            clips=(),
+            capabilities=capabilities,
+        )
+
+    altered_columns = dict(layer.data.columns)
+    altered_columns["x"] = np.array([9.0, 8.0, 7.0], dtype=np.float64)
+    altered = replace(layer, data=ColumnarData.from_mapping(altered_columns))
+    with pytest.raises(ValueError, match="data does not match"):
+        build_scene_manifest(
+            scene_id="same-schema-altered-data",
+            layers=(layer,),
+            layer_bytes={layer.id: encode_layer_stream(altered)},
+            viewport={},
+            coordinate_spaces={},
+            clips=(),
+            capabilities=capabilities,
+        )
+
+
+def test_manifest_builder_enforces_palette_id_bidirectionally():
+    scatter = _scene_layers()[0]
+    no_palette = replace(scatter, id="no-palette", palette=None)
+    no_palette_id = replace(scatter, id="no-palette-id", style={"marker": {}})
+    capabilities = CapabilitiesModel(
+        viewport_query=False,
+        lod=False,
+        magnitude_filter=False,
+        catalog_detail=False,
+        max_batch_rows=250_000,
+    )
+
+    with pytest.raises(ValueError, match="palette_id.*palette"):
+        build_scene_manifest(
+            scene_id="style-only-palette",
+            layers=(scatter, no_palette),
+            layer_bytes={
+                scatter.id: encode_layer_stream(scatter),
+                no_palette.id: encode_layer_stream(no_palette),
+            },
+            viewport={},
+            coordinate_spaces={},
+            clips=(),
+            capabilities=capabilities,
+        )
+    with pytest.raises(ValueError, match="palette.*palette_id"):
+        build_scene_manifest(
+            scene_id="data-only-palette",
+            layers=(no_palette_id,),
+            layer_bytes={no_palette_id.id: encode_layer_stream(no_palette_id)},
+            viewport={},
+            coordinate_spaces={},
+            clips=(),
+            capabilities=capabilities,
+        )

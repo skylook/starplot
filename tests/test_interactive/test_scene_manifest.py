@@ -323,3 +323,73 @@ def test_hash_bound_top_level_style_cannot_change_before_resolution():
 
     with pytest.raises(ValueError, match="scene content hash"):
         SceneManifestModel.model_validate(raw)
+
+
+def test_nested_wire_assets_are_recursively_immutable_after_validation():
+    manifest = _manifest(
+        viewport={"reference_width": 1200, "nested": {"scale": 2}},
+        coordinate_spaces={"data": {"axes": ["x", "y"]}},
+        clips=[{"id": "plot", "points": [[0, 0], [1, 1]]}],
+        extensions={"description": {"text": "test"}},
+    )
+    before = canonical_manifest_bytes(manifest)
+
+    mutations = (
+        lambda: manifest.styles[0].value["marker"].__setitem__("line_width", 999),
+        lambda: manifest.viewport.__setitem__("reference_width", 1),
+        lambda: manifest.viewport["nested"].__setitem__("scale", 99),
+        lambda: manifest.coordinate_spaces["data"].__setitem__("axes", ("z",)),
+        lambda: manifest.clips[0].__setitem__("id", "attacker"),
+        lambda: manifest.extensions["description"].__setitem__("text", "changed"),
+        lambda: manifest.layers[0].coordinate_encoding.__setitem__(
+            "x", manifest.layers[0].coordinate_encoding["y"]
+        ),
+    )
+    for mutate in mutations:
+        with pytest.raises(TypeError):
+            mutate()
+
+    assert canonical_manifest_bytes(manifest) == before
+    assert manifest.resolve_layer("stars").style["marker"]["line_width"] == 0
+
+
+def test_wire_models_detach_recursively_from_caller_aliases():
+    style = {"id": "style-stars", "value": {"marker": {"line_width": 0}}}
+    viewport = {"reference_width": 1200, "nested": {"scale": 2}}
+    spaces = {"data": {"axes": ["x", "y"]}}
+    clips = [{"id": "plot", "points": [[0, 0], [1, 1]]}]
+    extensions = {"description": {"text": "original"}}
+    manifest = _manifest(
+        styles=[style],
+        viewport=viewport,
+        coordinate_spaces=spaces,
+        clips=clips,
+        extensions=extensions,
+    )
+    before = canonical_manifest_bytes(manifest)
+
+    style["value"]["marker"]["line_width"] = 999
+    viewport["nested"]["scale"] = 99
+    spaces["data"]["axes"].append("z")
+    clips[0]["points"][0][0] = 99
+    extensions["description"]["text"] = "changed"
+
+    assert canonical_manifest_bytes(manifest) == before
+    assert manifest.viewport["nested"]["scale"] == 2
+    assert manifest.coordinate_spaces["data"]["axes"] == ("x", "y")
+    assert manifest.clips[0]["points"][0] == (0, 0)
+
+
+def test_deeply_frozen_wire_assets_remain_json_serializable():
+    manifest = _manifest(
+        viewport={"nested": {"values": [1, 2]}},
+        extensions={"attribution": {"authors": ["A", "B"]}},
+    )
+
+    dumped = manifest.model_dump(mode="json")
+    reparsed = SceneManifestModel.model_validate_json(
+        canonical_manifest_bytes(manifest)
+    )
+
+    assert dumped["viewport"]["nested"]["values"] == [1, 2]
+    assert canonical_manifest_bytes(reparsed) == canonical_manifest_bytes(manifest)

@@ -675,7 +675,11 @@ schema. Implement these exact columns:
 | line / line_collection | `path_id: uint32`, `vertex_index: uint32`, `x`, `y` | `style_id: uint16`, `object_id` |
 | polygon | `polygon_id: uint32`, `ring_id: uint32`, `vertex_index: uint32`, `x`, `y` | none |
 | text | `x`, `y`, dictionary `text`, `rotation: float32`, `x_offset: float32`, `y_offset: float32`, `style_id: uint16` | `object_id` |
-| info_table | schema-declared dictionary key/value columns | `object_id` |
+| info_table | dictionary `column`, dictionary `value`, `width: float32` | `object_id` |
+
+`info_table.width` is required Scene 1.0 data, not a transport-only field: the
+current Scene compiler preserves row-aligned cell widths needed for exact
+Matplotlib parity.
 
 Here x/y are float64 for `absolute-f64` and reconstructed relative float32 for
 `relative-f32`. Gradients and other small resolved declarative parameters live

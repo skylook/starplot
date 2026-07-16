@@ -6,9 +6,9 @@ from dataclasses import dataclass
 import hashlib
 import json
 import re
-from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from starplot.interactive.commands import CoordinateSpace
@@ -36,6 +36,28 @@ _COORDINATE_KINDS = frozenset(
         SceneKind.TEXT,
     }
 )
+
+
+class _FrozenDict(dict):
+    """Owned dictionary storage whose retained contents cannot be mutated."""
+
+    def _immutable(self, *_args, **_kwargs):
+        raise TypeError("wire manifest mappings are immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __ior__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, _memo):
+        return self
 
 
 class _WireModel(BaseModel):
@@ -96,6 +118,11 @@ class StyleAssetModel(_WireModel):
     def _plain_style_value(cls, value):
         return _plain_json_value(value)
 
+    @field_validator("value")
+    @classmethod
+    def _freeze_style_value(cls, value):
+        return _deep_freeze(value)
+
 
 class PaletteAssetModel(_WireModel):
     id: str = Field(min_length=1)
@@ -125,6 +152,11 @@ class LayerManifestModel(_WireModel):
     @classmethod
     def _valid_content_hash(cls, value: str) -> str:
         return _validate_hash(value)
+
+    @field_validator("coordinate_encoding")
+    @classmethod
+    def _freeze_coordinate_encoding(cls, value):
+        return _deep_freeze(value)
 
     @model_validator(mode="after")
     def _layer_contract(self) -> "LayerManifestModel":
@@ -209,10 +241,20 @@ class SceneManifestModel(_WireModel):
     def _plain_mapping_assets(cls, value):
         return _plain_json_value(value)
 
+    @field_validator("viewport", "coordinate_spaces", "extensions")
+    @classmethod
+    def _freeze_mapping_assets(cls, value):
+        return _deep_freeze(value)
+
     @field_validator("clips", mode="before")
     @classmethod
     def _plain_clip_assets(cls, value):
         return _plain_json_value(value)
+
+    @field_validator("clips")
+    @classmethod
+    def _freeze_clip_assets(cls, value):
+        return tuple(_deep_freeze(item) for item in value)
 
     @field_validator("schema_version")
     @classmethod
@@ -315,8 +357,13 @@ def build_scene_manifest(
         style_id = f"style-{layer.id}" if layer.style else None
         if style_id is not None:
             style_assets.append(StyleAssetModel(id=style_id, value=layer.style))
-        if layer.palette is not None:
-            palette_id = layer.style.get("palette_id")
+        palette_id = layer.style.get("palette_id")
+        if layer.palette is None:
+            if palette_id is not None:
+                raise ValueError(
+                    "style palette_id must be absent when the layer has no palette"
+                )
+        else:
             if not isinstance(palette_id, str) or not palette_id:
                 raise ValueError(
                     "a layer palette requires a hash-bound style palette_id"
@@ -357,6 +404,18 @@ def build_scene_manifest(
         capabilities=capabilities,
         extensions={},
     )
+    # A final manifest must never bless opaque or cross-wired payload bytes.
+    # The local import avoids an import cycle while keeping validation shared.
+    from starplot.interactive.arrow_transport import decode_layer_stream
+
+    for layer in layers:
+        decoded_layer = decode_layer_stream(
+            layer_bytes[layer.id], placeholder.resolve_layer(layer.id)
+        )
+        if not _scene_layers_equal(layer, decoded_layer):
+            raise ValueError(
+                f"Arrow payload data does not match supplied SceneLayer {layer.id!r}"
+            )
     final_values = placeholder.model_dump(mode="python")
     final_values["content_hash"] = scene_content_hash(placeholder, layer_bytes)
     return SceneManifestModel.model_validate(final_values)
@@ -458,14 +517,15 @@ def _require_unique(values, name: str) -> None:
 
 
 def _freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
-    def freeze(item):
-        if isinstance(item, Mapping):
-            return MappingProxyType({key: freeze(child) for key, child in item.items()})
-        if isinstance(item, (list, tuple)):
-            return tuple(freeze(child) for child in item)
-        return item
+    return _deep_freeze(value)
 
-    return freeze(value)
+
+def _deep_freeze(value):
+    if isinstance(value, Mapping):
+        return _FrozenDict({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze(item) for item in value)
+    return value
 
 
 def _plain_json_value(value):
@@ -474,3 +534,40 @@ def _plain_json_value(value):
     if isinstance(value, (list, tuple)):
         return [_plain_json_value(item) for item in value]
     return value
+
+
+def _scene_layers_equal(expected: SceneLayer, actual: SceneLayer) -> bool:
+    semantic_fields = (
+        "id",
+        "kind",
+        "group_id",
+        "zorder",
+        "load_priority",
+        "space",
+        "clip_id",
+        "style",
+        "interaction",
+        "hover_fields",
+        "required",
+        "coordinate_encoding",
+        "palette",
+    )
+    if any(
+        getattr(expected, field) != getattr(actual, field) for field in semantic_fields
+    ):
+        return False
+    if expected.data.row_count != actual.data.row_count:
+        return False
+    if set(expected.data.columns) != set(actual.data.columns):
+        return False
+    for name, expected_values in expected.data.columns.items():
+        actual_values = actual.data[name]
+        if expected_values.dtype != actual_values.dtype:
+            return False
+        if expected_values.dtype.kind in {"f", "c"}:
+            equal = np.array_equal(expected_values, actual_values, equal_nan=True)
+        else:
+            equal = np.array_equal(expected_values, actual_values)
+        if not equal:
+            return False
+    return True
