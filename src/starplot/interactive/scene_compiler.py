@@ -26,7 +26,15 @@ def _validated_opacity_values(
 ) -> np.ndarray:
     raw_values = np.asarray(opacity)
     if raw_values.ndim == 0 and allow_scalar:
-        raw_values = np.full(row_count, raw_values.item())
+        try:
+            scalar_value = float(raw_values.item())
+        except (TypeError, ValueError) as error:
+            raise ValueError("opacity values must be finite numbers") from error
+        if not np.isfinite(scalar_value):
+            raise ValueError("opacity values must be finite")
+        if not 0.0 <= scalar_value <= 1.0:
+            raise ValueError("opacity values must be between 0 and 1")
+        return np.full(row_count, scalar_value, dtype=np.float32)
     elif raw_values.ndim != 1:
         shape_contract = (
             "scalar or one-dimensional" if allow_scalar else "one-dimensional"

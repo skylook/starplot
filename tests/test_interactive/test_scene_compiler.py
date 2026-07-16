@@ -302,6 +302,29 @@ def test_encode_palette_normalizes_empty_python_sequence(opacity):
 
 
 @pytest.mark.parametrize(
+    "opacity",
+    [
+        -0.1,
+        1.1,
+        float("nan"),
+        float("inf"),
+        np.array(float("nan")),
+    ],
+)
+def test_encode_empty_palette_validates_scalar_opacity_before_broadcast(opacity):
+    with pytest.raises(ValueError, match="finite|between 0 and 1"):
+        encode_palette([], opacity)
+
+
+@pytest.mark.parametrize("opacity", [0.0, 1.0, np.array(0.0), np.array(1.0)])
+def test_encode_empty_palette_accepts_scalar_opacity_boundaries(opacity):
+    encoded = encode_palette([], opacity)
+
+    assert encoded.opacity.dtype == np.float32
+    assert encoded.opacity.size == 0
+
+
+@pytest.mark.parametrize(
     "colors",
     [
         np.array(["red", (1.0, 0.0, 0.0)], dtype=object),
