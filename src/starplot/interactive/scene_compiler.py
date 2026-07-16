@@ -303,6 +303,7 @@ def _positive_number(value, name: str) -> float:
 class _CompileContext:
     width: float
     height: float
+    target_axes_width: float
     supported_zoom: float
     projection_info: Mapping[str, Any]
     style_info: Mapping[str, Any]
@@ -389,6 +390,7 @@ class SceneCompiler:
             "paper_background": style.get("figure_background_color", "#ffffff"),
             "axes_background": style.get("background_color", "#ffffff"),
             "transparent": bool(transparent),
+            "target_axes_width": context.target_axes_width,
         }
         return ScenePackage(
             layers=tuple(layer for _, layer in indexed_layers),
@@ -400,10 +402,15 @@ class SceneCompiler:
         )
 
     def compile_command(self, command: DrawingCommand, index: int) -> SceneLayer:
-        if self._context is None and command.kind is CommandType.SCATTER:
-            raise ValueError(
-                "scatter compilation requires constructor context or compile()"
-            )
+        if self._context is None:
+            if command.kind is CommandType.SCATTER:
+                raise ValueError(
+                    "scatter compilation requires constructor context or compile()"
+                )
+            if command.clip_id is not None:
+                raise ValueError(
+                    "clip reference requires constructor context or compile()"
+                )
         layer, _ = self._compile_command_with_assets(
             command, index, self._context
         )
@@ -491,7 +498,7 @@ class SceneCompiler:
         sizes = calibrate_marker_sizes_array(
             sizes,
             dpi=context.style_info.get("dpi", 100),
-            target_width=context.width,
+            target_width=context.target_axes_width,
             source_axes_width=source_width,
         )
         columns = {
@@ -673,6 +680,7 @@ def _build_context(
     height_value = _positive_number(height, "width and height")
     projection = dict(projection_info)
     style = dict(style_info)
+    target_axes_width = _target_axes_width(projection, width_value)
     supported_zoom = _positive_number(
         style.get("supported_zoom", 1), "supported_zoom"
     )
@@ -682,6 +690,7 @@ def _build_context(
     return _CompileContext(
         width=width_value,
         height=height_value,
+        target_axes_width=target_axes_width,
         supported_zoom=supported_zoom,
         projection_info=projection,
         style_info=style,
@@ -689,6 +698,24 @@ def _build_context(
         ignored_clip_ids=ignored_clip_ids,
         transparent=bool(transparent),
     )
+
+
+def _target_axes_width(projection_info, output_width: float) -> float:
+    axes_bbox = projection_info.get("axes_bbox")
+    if axes_bbox is None:
+        return output_width
+    try:
+        values = tuple(float(value) for value in axes_bbox)
+    except (TypeError, ValueError) as error:
+        raise ValueError("axes_bbox must contain four finite values") from error
+    if len(values) != 4:
+        raise ValueError("axes_bbox must contain four finite values")
+    width_fraction = values[2]
+    if not math.isfinite(width_fraction) or not 0 < width_fraction <= 1:
+        raise ValueError("axes_bbox width fraction must be greater than zero and at most one")
+    if not all(math.isfinite(value) for value in (values[0], values[1], values[3])):
+        raise ValueError("axes_bbox must contain four finite values")
+    return output_width * width_fraction
 
 
 def _compile_clips(recorded_clips) -> tuple[dict[str, ClipGeometry], frozenset[str]]:

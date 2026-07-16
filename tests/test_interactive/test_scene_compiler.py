@@ -28,6 +28,7 @@ from starplot.interactive.scene_compiler import (
     filter_columns,
     scatter_clip_mask,
 )
+from starplot.interactive.style_converter import calibrate_marker_size
 
 
 PROJECTION = {
@@ -225,6 +226,74 @@ def test_scene_package_rejects_palette_asset_that_disagrees_with_layer():
 def test_constructor_context_must_be_complete_when_any_value_is_supplied():
     with pytest.raises(ValueError, match="complete constructor context"):
         SceneCompiler(width=1200)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        DrawingCommand(kind="line", data={"x": [0, 1], "y": [0, 1]}),
+        DrawingCommand(kind="polygon", data={"points": [(0, 0), (1, 0), (0, 1)]}),
+        DrawingCommand(kind="text", data={"x": 0, "y": 0, "text": "x"}),
+        DrawingCommand(kind="line_collection", data={"lines": [[(0, 0), (1, 1)]]}),
+        DrawingCommand(kind="gradient", data={"direction": "vertical", "color_stops": []}),
+    ],
+)
+def test_unconfigured_compile_command_rejects_any_clip_reference(command):
+    with pytest.raises(ValueError, match=r"clip reference.*constructor context|compile\(\)"):
+        SceneCompiler().compile_command(command, 0)
+
+
+def test_unconfigured_line_without_clip_uses_absolute_f64():
+    command = DrawingCommand(
+        kind="line",
+        data={"x": [0, 1], "y": [0, 1]},
+        clip_id=None,
+    )
+
+    layer = SceneCompiler().compile_command(command, 0)
+
+    assert layer.coordinate_encoding["x"].kind is CoordinateEncodingKind.ABSOLUTE_F64
+    assert layer.coordinate_encoding["y"].kind is CoordinateEncodingKind.ABSOLUTE_F64
+
+
+def test_target_axes_width_controls_marker_calibration_and_viewport_contract():
+    projection = {
+        **PROJECTION,
+        "axes_bbox": (0.2, 0.1, 0.6, 0.8),
+    }
+    style = {
+        **STYLE,
+        "source_axes_width": 1200.0,
+    }
+    command = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": np.array([1.0]),
+            "y": np.array([1.0]),
+            "sizes": np.array([9.0]),
+            "colors": np.array(["red"]),
+            "alphas": np.array([1.0]),
+        },
+    )
+
+    scene = SceneCompiler().compile([command], projection, style, 1000, 500, False)
+
+    expected = calibrate_marker_size(
+        9.0,
+        width=600.0,
+        dpi=100.0,
+        source_axes_width=1200.0,
+    ) * 1.15
+    assert scene.viewport["target_axes_width"] == pytest.approx(600.0)
+    assert scene.layers[0].data["size"].tolist() == pytest.approx([expected])
+
+
+@pytest.mark.parametrize("width_fraction", [0.0, -0.1, 1.01, np.nan, np.inf])
+def test_context_rejects_invalid_axes_bbox_width_fraction(width_fraction):
+    projection = {**PROJECTION, "axes_bbox": (0.0, 0.0, width_fraction, 1.0)}
+
+    with pytest.raises(ValueError, match="axes_bbox.*width fraction"):
+        SceneCompiler().compile([], projection, STYLE, 1000, 500, False)
 
 
 def test_discontinuous_and_longitude_wrap_lines_keep_permanent_path_boundaries():
@@ -587,6 +656,7 @@ def test_compile_builds_frozen_viewport_clips_and_context_mappings():
         "paper_background": "#010203",
         "axes_background": "#101820",
         "transparent": True,
+        "target_axes_width": 1200.0,
     }
     assert scene.projection_info["x_min"] == 0.0
     assert scene.style_info["background_color"] == "#101820"
@@ -602,7 +672,7 @@ def test_compile_requires_positive_reference_dimensions(width, height):
 
 
 def test_gradient_is_declarative_and_has_no_rows():
-    layer = SceneCompiler().compile_command(_primitive_commands()[5], 0)
+    layer = _configured_compiler().compile_command(_primitive_commands()[5], 0)
 
     assert layer.data.row_count == 0
     assert layer.style["direction"] == "vertical"
