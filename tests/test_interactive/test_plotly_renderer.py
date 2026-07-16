@@ -1,5 +1,8 @@
 """Unit tests for PlotlyRenderer."""
 
+import math
+
+import numpy as np
 import pytest
 
 try:
@@ -10,7 +13,7 @@ except ImportError:
 
 pytestmark = pytest.mark.skipif(not PLOTLY_AVAILABLE, reason="plotly not installed")
 
-from starplot.interactive.commands import CoordinateSpace, DrawingCommand
+from starplot.interactive.commands import ClipGeometry, CoordinateSpace, DrawingCommand
 from starplot.interactive.plotly_renderer import PlotlyRenderer
 
 
@@ -95,11 +98,9 @@ def test_renderer_scatter_preserves_per_point_alpha():
 
     fig = make_renderer().render([cmd])
 
-    assert list(fig.data[0].marker.color) == [
-        "rgba(255,255,255,0.25)",
-        "rgba(0,0,0,0.75)",
-    ]
-    assert fig.data[0].marker.opacity == 1.0
+    assert fig.data[0].marker.color.dtype == np.uint8
+    assert list(fig.data[0].marker.opacity) == pytest.approx([0.25, 0.75])
+    assert fig.data[0].marker.colorscale
 
 
 def test_renderer_line_collection():
@@ -115,7 +116,7 @@ def test_renderer_line_collection():
     fig = renderer.render([cmd])
     assert len(fig.data) == 1
     # 2 segments × 2 points + 2 None separators = 6 entries
-    assert None in fig.data[0].x
+    assert np.isnan(fig.data[0].x).any()
     assert fig.data[0].mode == "lines"
 
 
@@ -429,9 +430,9 @@ def test_renderer_hover_star_text():
 
 
 def test_renderer_disables_hover_payload_for_high_volume_trace(monkeypatch):
-    import starplot.interactive.plotly_renderer as renderer_module
+    import starplot.interactive.scene_compiler as compiler_module
 
-    monkeypatch.setattr(renderer_module, "_MAX_INTERACTIVE_HOVER_POINTS", 1)
+    monkeypatch.setattr(compiler_module, "_MAX_INTERACTIVE_HOVER_POINTS", 1)
     cmd = DrawingCommand(
         kind="scatter",
         data={
@@ -452,9 +453,9 @@ def test_renderer_disables_hover_payload_for_high_volume_trace(monkeypatch):
 
 
 def test_renderer_preserves_subpixel_area_for_high_volume_trace(monkeypatch):
-    import starplot.interactive.plotly_renderer as renderer_module
+    import starplot.interactive.scene_compiler as compiler_module
 
-    monkeypatch.setattr(renderer_module, "_MAX_INTERACTIVE_HOVER_POINTS", 1)
+    monkeypatch.setattr(compiler_module, "_MAX_INTERACTIVE_HOVER_POINTS", 1)
     cmd = DrawingCommand(
         kind="scatter",
         data={
@@ -472,7 +473,7 @@ def test_renderer_preserves_subpixel_area_for_high_volume_trace(monkeypatch):
 
     assert list(fig.data[0].marker.size) == [1.0, 1.0]
     assert fig.data[0].marker.line.width == 0
-    assert all(float(color.rsplit(",", 1)[1][:-1]) < 0.5 for color in fig.data[0].marker.color)
+    assert all(float(opacity) < 0.5 for opacity in fig.data[0].marker.opacity)
 
 
 def test_marker_size_calibration_can_retain_subpixel_diameter():
@@ -540,13 +541,23 @@ def test_marker_size_array_rejects_invalid_calibration_dimensions(
         calibrate_marker_sizes_array(np.array([1.0], dtype=np.float32), **values)
 
 
-def test_tiny_per_point_alpha_is_valid_plotly_css_color():
-    from starplot.interactive.plotly_renderer import _colors_with_alphas
+def test_tiny_per_point_alpha_stays_numeric_for_plotly6():
+    cmd = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": [1.0],
+            "y": [2.0],
+            "sizes": [1.0],
+            "colors": ["#ffffff"],
+            "alphas": [0.0000836198],
+        },
+        gid="stars",
+    )
 
-    color = _colors_with_alphas(["#ffffff"], [0.0000836198], 1)[0]
+    figure = make_renderer().render([cmd])
 
-    assert color == "rgba(255,255,255,0.00008362)"
-    go.Scattergl(marker={"color": [color]})
+    assert figure.data[0].marker.opacity[0] == pytest.approx(0.0000836198)
+    assert figure.data[0].marker.color.dtype == np.uint8
 
 
 def test_renderer_marker_uses_legend_label():
@@ -618,11 +629,6 @@ def test_renderer_uses_coordinate_space_for_axes_annotation():
 # Task 4: Clipping tests
 # ------------------------------------------------------------------
 
-import math
-import numpy as np
-from starplot.interactive.commands import ClipGeometry, CoordinateSpace
-
-
 def _unit_circle_clip():
     """Build a 64-vertex unit-circle ClipGeometry centered at origin."""
     theta = np.linspace(0, 2 * math.pi, 65)[:-1]
@@ -646,10 +652,11 @@ def renderer_with_circle_clip():
 
 def test_renderer_paints_background_inside_recorded_clip_only():
     renderer = renderer_with_circle_clip()
+    figure = renderer.render([])
 
-    assert renderer.fig.layout.plot_bgcolor == "rgba(0,0,0,0)"
-    assert len(renderer.fig.layout.shapes) == 1
-    background = renderer.fig.layout.shapes[0]
+    assert figure.layout.plot_bgcolor == "rgba(0,0,0,0)"
+    assert len(figure.layout.shapes) == 1
+    background = figure.layout.shapes[0]
     assert background.fillcolor == "#000"
     assert background.layer == "below"
 

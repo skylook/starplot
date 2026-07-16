@@ -160,6 +160,59 @@ def test_compiler_covers_every_recorded_primitive(
         assert not column.flags.writeable
 
 
+def test_compiler_preserves_command_gid_outside_backend_neutral_style():
+    command = DrawingCommand(
+        kind="line",
+        data={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        style={"color": "#fff"},
+        gid="ecliptic-line",
+        clip_id=None,
+    )
+
+    layer = SceneCompiler().compile_command(command, 0)
+
+    assert layer.group_id == "ecliptic-line"
+    assert "gid" not in layer.style
+
+
+def test_gradient_compiler_preserves_validated_resolved_geometry():
+    command = DrawingCommand(
+        kind="gradient",
+        data={
+            "direction": "RADIAL",
+            "color_stops": [(1, "#000"), (0, "#fff")],
+            "center": (1, -2),
+            "radius": 4,
+        },
+        gid="gradient",
+        clip_id=None,
+    )
+
+    layer = SceneCompiler().compile_command(command, 0)
+
+    assert layer.style["direction"] == "radial"
+    assert layer.style["color_stops"] == ((0.0, "#fff"), (1.0, "#000"))
+    assert layer.style["center"] == (1.0, -2.0)
+    assert layer.style["radius"] == 4.0
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        ({"direction": 1, "color_stops": []}, "direction"),
+        ({"direction": "radial", "color_stops": [(np.nan, "#fff")]}, "position"),
+        ({"direction": "radial", "color_stops": [(0, 1)]}, "color"),
+        ({"direction": "radial", "color_stops": [], "center": (0,)}, "center"),
+        ({"direction": "radial", "color_stops": [], "radius": 0}, "radius"),
+    ],
+)
+def test_gradient_compiler_rejects_invalid_resolved_geometry(data, message):
+    command = DrawingCommand(kind="gradient", data=data, clip_id=None)
+
+    with pytest.raises(ValueError, match=message):
+        SceneCompiler().compile_command(command, 0)
+
+
 def test_primitive_schemas_use_protocol_dtypes():
     layers = [
         _configured_compiler().compile_command(command, index)
@@ -207,6 +260,36 @@ def test_configured_standalone_scatter_is_self_contained_and_matches_full_compil
     assert packaged.coordinate_encoding == standalone.coordinate_encoding
     for name in packaged.data.columns:
         np.testing.assert_array_equal(packaged.data[name], standalone.data[name])
+
+
+def test_small_interactive_scatter_keeps_safe_hover_columns_in_scene():
+    command = _primitive_commands()[0]
+    command.metadata = [
+        {
+            "name": "A",
+            "type": "star",
+            "magnitude": 1.5,
+            "ra": 15.0,
+            "dec": -2.0,
+            "bayer": "Alpha",
+            "constellation": "Ori",
+        },
+        {
+            "name": "B",
+            "type": "star",
+            "magnitude": 2.5,
+            "ra": 30.0,
+            "dec": 3.0,
+            "bayer": "Beta",
+            "constellation": "Ori",
+        },
+    ]
+
+    layer = _configured_compiler().compile_command(command, 0)
+
+    assert {"ra", "dec", "bayer", "constellation"}.issubset(layer.hover_fields)
+    assert layer.data["ra"].dtype == np.float64
+    assert layer.data["dec"].dtype == np.float64
 
 
 def test_scene_package_rejects_palette_asset_that_disagrees_with_layer():

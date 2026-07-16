@@ -37,6 +37,7 @@ from starplot.interactive.scene import (
 )
 from starplot.interactive.recording_mixin import RecordingMixin
 from starplot.interactive.plotly_renderer import PlotlyRenderer
+from starplot.interactive.plotly_adapter import PlotlySceneAdapter
 
 __all__ = [
     "InteractiveMapPlot",
@@ -54,4 +55,5 @@ __all__ = [
     "ScenePackage",
     "RecordingMixin",
     "PlotlyRenderer",
+    "PlotlySceneAdapter",
 ]

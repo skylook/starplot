@@ -237,6 +237,7 @@ class SceneLayer:
     clip_id: str | None
     style: Mapping[str, Any]
     data: ColumnarData
+    group_id: str = ""
     interaction: InteractionPolicy = InteractionPolicy.NONE
     hover_fields: tuple[str, ...] = ()
     required: bool = True
@@ -246,6 +247,8 @@ class SceneLayer:
     def __post_init__(self):
         if not self.id:
             raise ValueError("SceneLayer id must be non-empty")
+        if not isinstance(self.group_id, str):
+            raise ValueError("SceneLayer group_id must be a string")
 
         kind = SceneKind(self.kind)
         space = CoordinateSpace(self.space)

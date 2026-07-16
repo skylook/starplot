@@ -9,7 +9,6 @@ other repeats and from browser measurement.
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import importlib.metadata
@@ -59,10 +58,7 @@ REQUIRED_ENVIRONMENT_KEYS = {
 _SEED = 20260716
 _DEFAULT_REPEAT_TIMEOUT_SECONDS = 300.0
 _BROWSER_TIMEOUT_MS = 300_000
-_SCENE_COMPILE_SEMANTICS = (
-    "Compatibility alias for legacy_renderer_total: legacy pre-Scene command "
-    "preparation plus Plotly Figure construction; not a native Scene compiler."
-)
+_SCENE_COMPILE_SEMANTICS = "Native SceneCompiler.compile timing."
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _MILLION_STAR_HTML_CANDIDATES = (
     Path("comparison_outputs/map_milky_way_stars/plotly.html"),
@@ -128,30 +124,6 @@ _PLOTLY_COMPLETION_INIT_SCRIPT = r"""
   }
 })();
 """
-
-
-class _ArrayListView(list):
-    """O(1) list-compatible view for legacy renderer ``isinstance`` checks.
-
-    The benchmark's canonical columns remain contiguous read-only ndarrays.
-    This adapter owns no list elements; any materialization observed during the
-    benchmark is therefore performed by the current legacy renderer itself.
-    """
-
-    def __init__(self, values: np.ndarray):
-        self._values = values
-
-    def __bool__(self) -> bool:
-        return bool(self._values.size)
-
-    def __getitem__(self, index):
-        return self._values[index]
-
-    def __iter__(self):
-        return iter(self._values)
-
-    def __len__(self) -> int:
-        return int(self._values.size)
 
 
 def validate_result(result: dict) -> None:
@@ -272,14 +244,6 @@ def _renderer_inputs(point_count: int) -> tuple[object, dict, dict]:
     return command, projection_info, style_info
 
 
-def _legacy_compatible_command(command):
-    data = {
-        key: _ArrayListView(values) if isinstance(values, np.ndarray) else values
-        for key, values in command.data.items()
-    }
-    return replace(command, data=data)
-
-
 def _peak_rss_mb() -> float:
     peak = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     divisor = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
@@ -287,40 +251,31 @@ def _peak_rss_mb() -> float:
 
 
 def _run_python_worker(point_count: int) -> dict:
-    """Run one isolated legacy-preparation and Plotly-construction sample."""
-    from starplot.interactive.plotly_renderer import PlotlyRenderer
+    """Run one isolated Scene compilation and Plotly construction sample."""
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+    from starplot.interactive.scene_compiler import SceneCompiler
 
     command, projection_info, style_info = _renderer_inputs(point_count)
 
     preparation_started = time.perf_counter()
-    compatible_command = _legacy_compatible_command(command)
-    adapter_seconds = time.perf_counter() - preparation_started
-
-    initialization_started = time.perf_counter()
-    renderer = PlotlyRenderer(
+    scene = SceneCompiler().compile(
+        [command],
         projection_info,
         style_info,
-        width=1000,
-        height=500,
+        1000,
+        500,
+        False,
     )
-    initialization_seconds = time.perf_counter() - initialization_started
-
-    clipping_started = time.perf_counter()
-    prepared_command = renderer._clip_command(compatible_command)
-    clipping_seconds = time.perf_counter() - clipping_started
-    if prepared_command is not None:
-        prepared_command.clip_id = None
+    preparation_seconds = time.perf_counter() - preparation_started
 
     construction_started = time.perf_counter()
-    commands = [] if prepared_command is None else [prepared_command]
-    figure = renderer.render(commands)
-    construction_seconds = time.perf_counter() - construction_started
-
-    preparation_seconds = adapter_seconds + clipping_seconds
-    plotly_seconds = initialization_seconds + construction_seconds
+    figure = PlotlySceneAdapter().render(scene)
+    plotly_seconds = time.perf_counter() - construction_started
     peak_rss_mb = _peak_rss_mb()
     payload_bytes = len(figure.to_json().encode("utf-8"))
     return {
+        # Task 13 will migrate the persisted artifact schema. Keep these old
+        # aggregate key names until then so pre-Arrow result readers survive.
         "legacy_renderer_preparation_seconds": preparation_seconds,
         "legacy_renderer_total_seconds": preparation_seconds + plotly_seconds,
         "payload_bytes": payload_bytes,

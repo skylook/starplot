@@ -38,6 +38,9 @@ COMMAND_COMPILERS = {
     CommandType.INFO_TABLE: "_compile_info_table",
 }
 
+_MAX_INTERACTIVE_HOVER_POINTS = 50_000
+_WEBGL_SUBPIXEL_COVERAGE_SCALE = 6.0
+
 
 def _validated_opacity_values(
     opacity,
@@ -435,6 +438,7 @@ class SceneCompiler:
         layer = SceneLayer(
             id=f"layer-{index:04d}-{kind.value}",
             kind=kind,
+            group_id=command.gid,
             zorder=float(command.zorder if command.zorder is not None else 0),
             load_priority=_load_priority(
                 kind, len(next(iter(parts.columns.values()), ()))
@@ -471,7 +475,7 @@ class SceneCompiler:
         colors = _aligned_column(
             command.data.get("colors", ()), row_count, "scatter colors"
         )
-        alphas = _aligned_column(
+        alphas = _aligned_or_scalar_column(
             command.data.get("alphas", ()), row_count, "scatter alphas"
         )
         metadata = tuple(command.metadata)
@@ -495,27 +499,39 @@ class SceneCompiler:
             if context.projection_info.get("axes_pixels")
             else context.style_info.get("resolution", 4096),
         )
+        high_volume = row_count > _MAX_INTERACTIVE_HOVER_POINTS
         sizes = calibrate_marker_sizes_array(
             sizes,
             dpi=context.style_info.get("dpi", 100),
             target_width=context.target_axes_width,
             source_axes_width=source_width,
+            min_size=0.0 if high_volume else 1.5,
         )
+        opacity = palette.opacity
+        if high_volume:
+            coverage = np.minimum(
+                np.float32(1.0),
+                sizes * sizes * np.float32(_WEBGL_SUBPIXEL_COVERAGE_SCALE),
+            )
+            opacity = np.asarray(palette.opacity * coverage, dtype=np.float32)
+            sizes = np.maximum(sizes, np.float32(1.0)).astype(np.float32, copy=False)
         columns = {
             "x": x,
             "y": y,
             "size": sizes,
             "color_index": palette.color_index,
-            "opacity": palette.opacity,
+            "opacity": opacity,
         }
         interaction, hover_fields, metadata_columns = _metadata_interaction(
             metadata,
             range(row_count),
-            suppress=row_count >= 100_000,
+            suppress=high_volume,
         )
         columns.update(metadata_columns)
         coordinate_encoding = _encode_xy(columns, context)
         style = dict(command.style)
+        if high_volume:
+            style["edge_width"] = 0
         style["palette_id"] = f"palette-{index:04d}"
         return _CompiledParts(
             columns,
@@ -625,10 +641,50 @@ class SceneCompiler:
         self, command: DrawingCommand, context: _CompileContext, index: int
     ) -> _CompiledParts:
         style = dict(command.style)
-        style["direction"] = command.data.get("direction")
-        style["color_stops"] = tuple(
-            tuple(stop) for stop in command.data.get("color_stops", ())
-        )
+        direction = command.data.get("direction")
+        if not isinstance(direction, str) or not direction.strip():
+            raise ValueError("gradient direction must be a non-empty string")
+        style["direction"] = direction.strip().lower()
+        stops = []
+        for stop in command.data.get("color_stops", ()):
+            if not isinstance(stop, (list, tuple)) or len(stop) != 2:
+                raise ValueError("gradient color stop must contain position and color")
+            try:
+                position = float(stop[0])
+            except (TypeError, ValueError) as error:
+                raise ValueError("gradient color stop position must be finite") from error
+            if not math.isfinite(position):
+                raise ValueError("gradient color stop position must be finite")
+            color = stop[1]
+            if not isinstance(color, str):
+                raise ValueError("gradient color stop color must be a string")
+            stops.append((min(1.0, max(0.0, position)), color))
+        stops.sort(key=lambda stop: stop[0])
+        if stops and stops[0][0] > 0:
+            stops.insert(0, (0.0, stops[0][1]))
+        if stops and stops[-1][0] < 1:
+            stops.append((1.0, stops[-1][1]))
+        style["color_stops"] = tuple(stops)
+
+        center = command.data.get("center")
+        if center is not None:
+            try:
+                center = tuple(float(value) for value in center)
+            except (TypeError, ValueError) as error:
+                raise ValueError("gradient center must contain two finite values") from error
+            if len(center) != 2 or not all(math.isfinite(value) for value in center):
+                raise ValueError("gradient center must contain two finite values")
+            style["center"] = center
+
+        radius = command.data.get("radius")
+        if radius is not None:
+            try:
+                radius = float(radius)
+            except (TypeError, ValueError) as error:
+                raise ValueError("gradient radius must be positive and finite") from error
+            if not math.isfinite(radius) or radius <= 0:
+                raise ValueError("gradient radius must be positive and finite")
+            style["radius"] = radius
         return _CompiledParts({}, style, {})
 
     def _compile_info_table(
@@ -750,6 +806,13 @@ def _aligned_column(values, row_count: int, name: str) -> np.ndarray:
     return array
 
 
+def _aligned_or_scalar_column(values, row_count: int, name: str) -> np.ndarray:
+    array = np.asarray(values)
+    if array.ndim == 0:
+        return np.full(row_count, array.item())
+    return _aligned_column(array, row_count, name)
+
+
 def _numeric_aligned(x, y, name: str) -> tuple[np.ndarray, np.ndarray]:
     try:
         x_array = np.asarray(x, dtype=np.float64)
@@ -791,7 +854,18 @@ def _metadata_interaction(metadata, row_indices, *, suppress=False):
     row_indices = tuple(row_indices)
     if suppress or not metadata or not row_indices:
         return InteractionPolicy.NONE, (), {}
-    safe_names = ("name", "magnitude", "type", "object_id")
+    safe_names = (
+        "name",
+        "magnitude",
+        "type",
+        "object_id",
+        "ra",
+        "dec",
+        "bayer",
+        "constellation",
+        "dso_type",
+    )
+    numeric_names = {"magnitude", "ra", "dec"}
     columns = {}
     for name in safe_names:
         if not any(isinstance(item, Mapping) and name in item for item in metadata):
@@ -800,14 +874,15 @@ def _metadata_interaction(metadata, row_indices, *, suppress=False):
         for item in metadata:
             value = item.get(name) if isinstance(item, Mapping) else None
             source_values.append(value)
-        if name == "magnitude":
+        if name in numeric_names:
             if not all(_safe_magnitude(value) for value in source_values):
                 continue
             values = [
                 np.nan if source_values[index] is None else source_values[index]
                 for index in row_indices
             ]
-            columns[name] = np.asarray(values, dtype=np.float32)
+            dtype = np.float32 if name == "magnitude" else np.float64
+            columns[name] = np.asarray(values, dtype=dtype)
         else:
             if not all(_safe_text_metadata(value) for value in source_values):
                 continue

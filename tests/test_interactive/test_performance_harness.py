@@ -244,6 +244,16 @@ def test_python_repeat_parses_isolated_worker_result(monkeypatch):
     assert benchmark._run_python_repeat(10, 12.0) == expected
 
 
+def test_benchmark_worker_uses_scene_compiler_and_adapter_source():
+    import inspect
+
+    source = inspect.getsource(benchmark._run_python_worker)
+
+    assert "SceneCompiler" in source
+    assert "PlotlySceneAdapter" in source
+    assert "_clip_command" not in source
+
+
 def test_host_fingerprint_distinguishes_nodes_without_exposing_node(monkeypatch):
     monkeypatch.setattr(benchmark.platform, "processor", lambda: "test-cpu")
     monkeypatch.setattr(benchmark.platform, "machine", lambda: "test-machine")

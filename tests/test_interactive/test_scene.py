@@ -193,6 +193,12 @@ def test_scene_layer_recursively_freezes_style_and_hover_fields():
         layer.style["marker"]["new"] = "value"
 
 
+def test_scene_layer_preserves_backend_neutral_group_identity():
+    layer = _layer(group_id="constellations-line")
+
+    assert layer.group_id == "constellations-line"
+
+
 def test_scene_layer_freezes_ndarrays_retained_in_style():
     base = np.array([1, 99, 2, 99])
     source = base[::2]
