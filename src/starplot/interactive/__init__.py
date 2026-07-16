@@ -38,6 +38,21 @@ from starplot.interactive.scene import (
 from starplot.interactive.recording_mixin import RecordingMixin
 from starplot.interactive.plotly_renderer import PlotlyRenderer
 from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+from starplot.interactive.scene_manifest import (
+    CapabilitiesModel,
+    DataSourceModel,
+    LayerManifestModel,
+    SceneManifestModel,
+    canonical_manifest_bytes,
+    scene_content_hash,
+)
+from starplot.interactive.arrow_transport import (
+    decode_layer_stream,
+    encode_layer_stream,
+    encode_table_stream,
+    layer_content_hash,
+    layer_to_table,
+)
 
 __all__ = [
     "InteractiveMapPlot",
@@ -56,4 +71,15 @@ __all__ = [
     "RecordingMixin",
     "PlotlyRenderer",
     "PlotlySceneAdapter",
+    "CapabilitiesModel",
+    "DataSourceModel",
+    "LayerManifestModel",
+    "SceneManifestModel",
+    "canonical_manifest_bytes",
+    "scene_content_hash",
+    "decode_layer_stream",
+    "encode_layer_stream",
+    "encode_table_stream",
+    "layer_content_hash",
+    "layer_to_table",
 ]
