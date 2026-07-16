@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 import math
 from types import MappingProxyType
@@ -29,6 +29,66 @@ class InteractionPolicy(StrEnum):
     HOVER_AND_DETAIL = "hover-and-detail"
 
 
+class CoordinateEncodingKind(StrEnum):
+    ABSOLUTE_F64 = "absolute-f64"
+    RELATIVE_F32 = "relative-f32"
+
+
+@dataclass(frozen=True)
+class CoordinateEncoding:
+    kind: CoordinateEncodingKind
+    origin: float = 0.0
+    scale: float = 1.0
+    max_error_pixels: float = 0.0
+
+    def __post_init__(self):
+        kind = CoordinateEncodingKind(self.kind)
+        try:
+            origin = float(self.origin)
+            scale = float(self.scale)
+            max_error_pixels = float(self.max_error_pixels)
+        except (TypeError, ValueError) as error:
+            raise ValueError("CoordinateEncoding values must be numeric") from error
+        if not math.isfinite(origin):
+            raise ValueError("CoordinateEncoding origin must be finite")
+        if not math.isfinite(scale) or scale <= 0:
+            raise ValueError(
+                "CoordinateEncoding scale must be finite and greater than zero"
+            )
+        if not math.isfinite(max_error_pixels) or max_error_pixels < 0:
+            raise ValueError(
+                "CoordinateEncoding max_error_pixels must be finite and non-negative"
+            )
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(self, "origin", origin)
+        object.__setattr__(self, "scale", scale)
+        object.__setattr__(self, "max_error_pixels", max_error_pixels)
+
+    def encode(self, values) -> np.ndarray:
+        array = _coordinate_array(values)
+        if self.kind is CoordinateEncodingKind.RELATIVE_F32:
+            encoded = (array - self.origin) / self.scale
+            return readonly_array(encoded, dtype=np.float32)
+        return readonly_array(array, dtype=np.float64)
+
+    def decode(self, values) -> np.ndarray:
+        array = _coordinate_array(values)
+        if self.kind is CoordinateEncodingKind.RELATIVE_F32:
+            decoded = array.astype(np.float64, copy=False) * self.scale + self.origin
+            return readonly_array(decoded, dtype=np.float64)
+        return readonly_array(array, dtype=np.float64)
+
+
+def _coordinate_array(values) -> np.ndarray:
+    try:
+        array = np.asarray(values, dtype=np.float64)
+    except (TypeError, ValueError) as error:
+        raise ValueError("coordinate values must be numeric") from error
+    if array.ndim != 1:
+        raise ValueError("coordinate values must be one-dimensional")
+    return array
+
+
 @dataclass(frozen=True)
 class ClipGeometry:
     """Serializable clip geometry retained by a compiled Scene."""
@@ -43,7 +103,9 @@ class ClipGeometry:
         try:
             points = tuple(tuple(point) for point in self.points)
         except TypeError as error:
-            raise ValueError("ClipGeometry points must be two-value coordinates") from error
+            raise ValueError(
+                "ClipGeometry points must be two-value coordinates"
+            ) from error
 
         minimum_points = 2 if self.kind == "rect" else 3
         if len(points) < minimum_points:
@@ -58,7 +120,9 @@ class ClipGeometry:
             try:
                 x, y = float(point[0]), float(point[1])
             except (TypeError, ValueError) as error:
-                raise ValueError("ClipGeometry points must be finite numbers") from error
+                raise ValueError(
+                    "ClipGeometry points must be finite numbers"
+                ) from error
             if not math.isfinite(x) or not math.isfinite(y):
                 raise ValueError("ClipGeometry points must be finite numbers")
             frozen_points.append((x, y))
@@ -97,9 +161,7 @@ def _validated_row_count(
         raise ValueError("ColumnarData columns must have the same row count")
     row_count = next(iter(lengths), 0)
     if expected_row_count is not None and expected_row_count != row_count:
-        raise ValueError(
-            "ColumnarData row_count must match the column row count"
-        )
+        raise ValueError("ColumnarData row_count must match the column row count")
     return row_count
 
 
@@ -124,19 +186,13 @@ class ColumnarData:
     row_count: int
 
     def __post_init__(self):
-        columns = {
-            name: readonly_array(value)
-            for name, value in self.columns.items()
-        }
+        columns = {name: readonly_array(value) for name, value in self.columns.items()}
         _validated_row_count(columns, self.row_count)
         object.__setattr__(self, "columns", MappingProxyType(columns))
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "ColumnarData":
-        columns = {
-            name: readonly_array(value)
-            for name, value in values.items()
-        }
+        columns = {name: readonly_array(value) for name, value in values.items()}
         for column in columns.values():
             if (
                 not isinstance(column, np.ndarray)
@@ -184,6 +240,7 @@ class SceneLayer:
     interaction: InteractionPolicy = InteractionPolicy.NONE
     hover_fields: tuple[str, ...] = ()
     required: bool = True
+    coordinate_encoding: Mapping[str, CoordinateEncoding] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.id:
@@ -195,18 +252,32 @@ class SceneLayer:
         hover_fields = tuple(self.hover_fields)
 
         if interaction is InteractionPolicy.NONE and hover_fields:
-            raise ValueError(
-                "hover_fields must be empty when interaction is NONE"
-            )
+            raise ValueError("hover_fields must be empty when interaction is NONE")
         unknown_fields = set(hover_fields).difference(self.data.columns)
         if unknown_fields:
             raise ValueError("hover_fields must reference data columns")
+        coordinate_encoding = {
+            name: (
+                value
+                if isinstance(value, CoordinateEncoding)
+                else CoordinateEncoding(**value)
+            )
+            for name, value in self.coordinate_encoding.items()
+        }
+        unknown_encoding = set(coordinate_encoding).difference(self.data.columns)
+        if unknown_encoding:
+            raise ValueError("coordinate_encoding must reference data columns")
 
         object.__setattr__(self, "kind", kind)
         object.__setattr__(self, "space", space)
         object.__setattr__(self, "style", _freeze_value(self.style))
         object.__setattr__(self, "interaction", interaction)
         object.__setattr__(self, "hover_fields", hover_fields)
+        object.__setattr__(
+            self,
+            "coordinate_encoding",
+            MappingProxyType(coordinate_encoding),
+        )
 
 
 @dataclass(frozen=True)

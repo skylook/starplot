@@ -3,9 +3,19 @@ from enum import StrEnum
 
 
 class CoordinateSpace(StrEnum):
-    DATA = "data"      # final x/y in x_min/x_max/y_min/y_max
-    AXES = "axes"      # normalized [0, 1] in Matplotlib axes
-    PAPER = "paper"    # normalized [0, 1] in full figure
+    DATA = "data"  # final x/y in x_min/x_max/y_min/y_max
+    AXES = "axes"  # normalized [0, 1] in Matplotlib axes
+    PAPER = "paper"  # normalized [0, 1] in full figure
+
+
+class CommandType(StrEnum):
+    SCATTER = "scatter"
+    LINE = "line"
+    LINE_COLLECTION = "line_collection"
+    POLYGON = "polygon"
+    TEXT = "text"
+    GRADIENT = "gradient"
+    INFO_TABLE = "info_table"
 
 
 @dataclass(frozen=True)
@@ -43,7 +53,7 @@ class DrawingCommand:
         clip_id: Identifier of the clip geometry to apply, or None for no clip.
     """
 
-    kind: str
+    kind: CommandType
     data: dict = field(default_factory=dict)
     style: dict = field(default_factory=dict)
     metadata: list = field(default_factory=list)
@@ -53,6 +63,10 @@ class DrawingCommand:
     clip_id: str | None = "plot"
 
     def __post_init__(self):
+        try:
+            self.kind = CommandType(self.kind)
+        except ValueError as error:
+            raise ValueError(f"Unknown command type: {self.kind}") from error
         try:
             self.space = CoordinateSpace(self.space)
         except ValueError as error:

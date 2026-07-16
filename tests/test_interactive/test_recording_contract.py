@@ -6,7 +6,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
-from starplot.interactive.commands import CoordinateSpace, DrawingCommand
+from starplot.interactive.commands import CommandType, CoordinateSpace, DrawingCommand
 from starplot.interactive.recorder import DrawingRecorder
 
 
@@ -68,6 +68,19 @@ def test_recorder_marks_spatial_commands_as_final_data_space():
 def test_command_rejects_unknown_coordinate_space():
     with pytest.raises(ValueError, match="Unknown coordinate space"):
         DrawingCommand(kind="line", space="ra_dec")
+
+
+@pytest.mark.parametrize("kind", list(CommandType))
+def test_command_normalizes_every_supported_kind_to_string_compatible_enum(kind):
+    command = DrawingCommand(kind=kind.value)
+
+    assert command.kind is kind
+    assert command.kind == kind.value
+
+
+def test_command_rejects_unknown_primitive_kind():
+    with pytest.raises(ValueError, match="Unknown command type"):
+        DrawingCommand(kind="heatmap")
 
 
 # ------------------------------------------------------------------

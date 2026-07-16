@@ -71,7 +71,7 @@ def _sanitize_color(value, default="rgba(0,0,0,0)"):
 
 def _sanitize_colors(colors):
     """Sanitize a list of colors or a single color string."""
-    if isinstance(colors, (list, tuple)):
+    if isinstance(colors, (list, tuple, np.ndarray)):
         return [_sanitize_color(c) for c in colors]
     if isinstance(colors, str):
         return _sanitize_color(colors)
@@ -93,12 +93,12 @@ def _font_family(value):
 
 def _colors_with_alphas(colors, alphas, count):
     """Return Plotly colors that preserve Matplotlib's per-point alpha."""
-    if isinstance(colors, (list, tuple)):
+    if isinstance(colors, (list, tuple, np.ndarray)):
         color_values = list(colors)
     else:
         color_values = [colors] * count
 
-    if isinstance(alphas, (list, tuple)):
+    if isinstance(alphas, (list, tuple, np.ndarray)):
         alpha_values = list(alphas)
     else:
         alpha_values = [alphas] * count
@@ -273,12 +273,21 @@ class PlotlyRenderer:
         if not any(mask):
             return None
 
+        def masked_values(values):
+            if np.ndim(values) == 0:
+                return values
+            if len(values) != len(mask):
+                raise ValueError("Scatter columns must align before clipping")
+            if isinstance(values, np.ndarray):
+                return values[np.asarray(mask, dtype=np.bool_)]
+            return [value for value, keep in zip(values, mask) if keep]
+
         new_data = {
             "x": [x for x, m in zip(xs, mask) if m],
             "y": [y for y, m in zip(ys, mask) if m],
-            "sizes": [s for s, m in zip(sizes, mask) if m] if sizes else [],
-            "colors": [c for c, m in zip(colors, mask) if m] if isinstance(colors, list) else colors,
-            "alphas": [a for a, m in zip(alphas, mask) if m] if isinstance(alphas, list) else alphas,
+            "sizes": masked_values(sizes),
+            "colors": masked_values(colors),
+            "alphas": masked_values(alphas),
         }
         new_metadata = [m for m, keep in zip(metadata, mask) if keep] if metadata else []
         return DrawingCommand(

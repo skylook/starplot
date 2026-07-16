@@ -7,13 +7,503 @@ import pytest
 import shapely.geometry
 
 import starplot.interactive.scene_compiler as compiler_module
-from starplot.interactive.scene import ClipGeometry, ColumnarData
+from starplot.interactive.commands import (
+    ClipGeometry as RecordedClipGeometry,
+    CoordinateSpace,
+    DrawingCommand,
+)
+from starplot.interactive.scene import (
+    ClipGeometry,
+    ColumnarData,
+    CoordinateEncodingKind,
+    InteractionPolicy,
+    SceneKind,
+)
 from starplot.interactive.scene_compiler import (
     PaletteEncoding,
+    SceneCompiler,
+    choose_coordinate_encoding,
     encode_palette,
     filter_columns,
     scatter_clip_mask,
 )
+
+
+PROJECTION = {
+    "x_min": 0.0,
+    "x_max": 10.0,
+    "y_min": -5.0,
+    "y_max": 5.0,
+    "clip_geometries": {
+        "plot": RecordedClipGeometry("rect", ((0.0, -5.0), (10.0, 5.0))),
+        "none": RecordedClipGeometry("none"),
+    },
+}
+STYLE = {
+    "background_color": "#101820",
+    "figure_background_color": "#010203",
+    "resolution": 4096,
+    "dpi": 100,
+    "supported_zoom": 4,
+}
+
+
+def _primitive_commands():
+    return [
+        DrawingCommand(
+            kind="scatter",
+            data={
+                "x": np.array([1.0, 2.0]),
+                "y": np.array([3.0, 4.0]),
+                "sizes": np.array([4.0, 9.0]),
+                "colors": np.array(["red", "blue"]),
+                "alphas": np.array([1.0, 0.5]),
+            },
+            metadata=[
+                {"name": "A", "object_id": "star-a", "unsafe": [1]},
+                {"name": "B", "object_id": "star-b", "unsafe": [2]},
+            ],
+            zorder=20,
+        ),
+        DrawingCommand(
+            kind="line",
+            data={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            zorder=30,
+        ),
+        DrawingCommand(
+            kind="line_collection",
+            data={"lines": [[(0.0, 0.0), (1.0, 1.0)]]},
+            zorder=31,
+        ),
+        DrawingCommand(
+            kind="polygon",
+            data={"points": [(0.0, 0.0), (2.0, 0.0), (1.0, 2.0)]},
+            zorder=0,
+        ),
+        DrawingCommand(
+            kind="text",
+            data={"x": 0.5, "y": 0.75, "text": "Orion", "offset_points": (2, -3)},
+            style={"rotation": 15.0},
+            zorder=10,
+            space=CoordinateSpace.AXES,
+            clip_id=None,
+        ),
+        DrawingCommand(
+            kind="gradient",
+            data={"direction": "vertical", "color_stops": [(0, "#000"), (1, "#fff")]},
+            zorder=-100,
+        ),
+        DrawingCommand(
+            kind="info_table",
+            data={"columns": ["A", "B"], "values": ["1", "2"], "widths": [0.4, 0.6]},
+            zorder=11,
+            space=CoordinateSpace.PAPER,
+            clip_id=None,
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("command_index", "expected_kind", "expected_columns"),
+    [
+        (
+            0,
+            SceneKind.SCATTER,
+            {"x", "y", "size", "color_index", "opacity", "name", "object_id"},
+        ),
+        (1, SceneKind.LINE, {"path_id", "vertex_index", "x", "y"}),
+        (2, SceneKind.LINE_COLLECTION, {"path_id", "vertex_index", "x", "y"}),
+        (3, SceneKind.POLYGON, {"polygon_id", "ring_id", "vertex_index", "x", "y"}),
+        (
+            4,
+            SceneKind.TEXT,
+            {"x", "y", "text", "rotation", "x_offset", "y_offset", "style_id"},
+        ),
+        (5, SceneKind.GRADIENT, set()),
+        (6, SceneKind.INFO_TABLE, {"column", "value", "width"}),
+    ],
+)
+def test_compiler_covers_every_recorded_primitive(
+    command_index, expected_kind, expected_columns
+):
+    command = _primitive_commands()[command_index]
+
+    scene = SceneCompiler().compile([command], PROJECTION, STYLE, 1200, 800, False)
+
+    assert len(scene.layers) == 1
+    layer = scene.layers[0]
+    assert layer.kind is expected_kind
+    assert layer.id == f"layer-0000-{expected_kind.value}"
+    assert layer.zorder == command.zorder
+    assert layer.space is command.space
+    assert layer.clip_id == command.clip_id
+    assert layer.required is True
+    assert set(layer.data.columns) == expected_columns
+    assert {len(column) for column in layer.data.columns.values()} <= {
+        layer.data.row_count
+    }
+    for column in layer.data.columns.values():
+        assert column.flags.aligned
+        assert column.flags.c_contiguous
+        assert not column.flags.writeable
+
+
+def test_primitive_schemas_use_protocol_dtypes():
+    layers = [
+        SceneCompiler().compile_command(command, index)
+        for index, command in enumerate(_primitive_commands())
+    ]
+
+    assert layers[0].data["size"].dtype == np.float32
+    assert layers[0].data["color_index"].dtype == np.uint8
+    assert layers[0].data["opacity"].dtype == np.float32
+    for layer in layers[1:4]:
+        assert layer.data["vertex_index"].dtype == np.uint32
+    assert layers[1].data["path_id"].dtype == np.uint32
+    assert layers[2].data["path_id"].dtype == np.uint32
+    assert layers[3].data["polygon_id"].dtype == np.uint32
+    assert layers[3].data["ring_id"].dtype == np.uint32
+    assert layers[4].data["rotation"].dtype == np.float32
+    assert layers[4].data["x_offset"].dtype == np.float32
+    assert layers[4].data["y_offset"].dtype == np.float32
+    assert layers[4].data["style_id"].dtype == np.uint16
+    assert layers[6].data["width"].dtype == np.float32
+
+
+def test_compile_command_is_stateless_and_scatter_palette_is_manifest_asset():
+    command = _primitive_commands()[0]
+    compiler = SceneCompiler()
+
+    standalone = compiler.compile_command(command, 7)
+    scene = compiler.compile([command], PROJECTION, STYLE, 1200, 800, False)
+
+    assert standalone.id == "layer-0007-scatter"
+    assert standalone.style["palette_id"] == "palette-0007"
+    assert "palette" not in standalone.style
+    assert scene.layers[0].style["palette_id"] == "palette-0000"
+    assert scene.palettes == {"palette-0000": ("#0000ff", "#ff0000")}
+
+
+def test_discontinuous_and_longitude_wrap_lines_keep_permanent_path_boundaries():
+    command = DrawingCommand(
+        kind="line",
+        data={
+            "x": [359.0, 360.0, None, 0.0, 1.0, np.nan, 2.0, 3.0, 4.0, 5.0],
+            "y": [0.0, 1.0, None, 2.0, 3.0, 4.0, 4.0, 5.0, 6.0, 7.0],
+            "breaks": [False, False, False, False, False, False, False, False, True, False],
+        },
+        clip_id=None,
+    )
+
+    layer = SceneCompiler().compile_command(command, 0)
+
+    assert layer.data["path_id"].tolist() == [0, 0, 1, 1, 2, 2, 3, 3]
+    assert layer.data["vertex_index"].tolist() == [0, 1, 0, 1, 0, 1, 0, 1]
+    decoded_x = layer.coordinate_encoding["x"].decode(layer.data["x"])
+    assert decoded_x.tolist() == pytest.approx(
+        [359.0, 360.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+    )
+
+
+def test_line_collection_clip_assigns_each_result_piece_a_distinct_path():
+    concave = RecordedClipGeometry(
+        "polygon",
+        ((0, 0), (4, 0), (4, 4), (3, 4), (3, 1), (1, 1), (1, 4), (0, 4)),
+    )
+    projection = {**PROJECTION, "clip_geometries": {"plot": concave}}
+    command = DrawingCommand(
+        kind="line_collection",
+        data={"lines": [[(-1.0, 2.0), (5.0, 2.0)], [(0.5, 0.5), (3.5, 0.5)]]},
+    )
+
+    layer = (
+        SceneCompiler().compile([command], projection, STYLE, 400, 400, False).layers[0]
+    )
+
+    assert layer.data["path_id"].tolist() == [0, 0, 1, 1, 2, 2]
+    assert layer.data["vertex_index"].tolist() == [0, 1, 0, 1, 0, 1]
+
+
+def test_polygon_preserves_multiple_polygon_and_ring_ids_through_schema():
+    command = DrawingCommand(
+        kind="polygon",
+        data={
+            "polygons": [
+                [
+                    [(0, 0), (4, 0), (4, 4), (0, 4)],
+                    [(1, 1), (1, 2), (2, 2), (2, 1)],
+                ],
+                [[(6, 0), (8, 0), (7, 2)]],
+            ]
+        },
+        clip_id=None,
+    )
+
+    layer = SceneCompiler().compile_command(command, 0)
+
+    assert layer.data["polygon_id"].tolist() == [0] * 8 + [1] * 3
+    assert layer.data["ring_id"].tolist() == [0] * 4 + [1] * 4 + [0] * 3
+    assert layer.data["vertex_index"].tolist() == [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2]
+
+
+def test_polygon_clip_can_split_one_input_into_distinct_polygon_ids():
+    concave = RecordedClipGeometry(
+        "polygon",
+        ((0, 0), (4, 0), (4, 4), (3, 4), (3, 1), (1, 1), (1, 4), (0, 4)),
+    )
+    projection = {**PROJECTION, "clip_geometries": {"plot": concave}}
+    command = DrawingCommand(
+        kind="polygon",
+        data={"points": [(-1, 2), (5, 2), (5, 3), (-1, 3)]},
+    )
+
+    layer = (
+        SceneCompiler().compile([command], projection, STYLE, 400, 400, False).layers[0]
+    )
+
+    assert set(layer.data["polygon_id"].tolist()) == {0, 1}
+    assert layer.data["ring_id"].tolist() == [0] * layer.data.row_count
+
+
+def test_polygon_clipping_rejects_invalid_input_instead_of_retaining_it():
+    command = DrawingCommand(
+        kind="polygon",
+        data={"points": [(0, 0), (4, 4), (0, 4), (4, 0)]},
+    )
+
+    with pytest.raises(ValueError, match="non-empty, valid, positive-area"):
+        SceneCompiler().compile([command], PROJECTION, STYLE, 400, 400, False)
+
+
+def test_data_scatter_is_clipped_with_every_aligned_metadata_column():
+    command = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": np.array([-1.0, 1.0, 11.0]),
+            "y": np.array([0.0, 1.0, 0.0]),
+            "sizes": np.array([1.0, 4.0, 9.0]),
+            "colors": np.array(["red", "green", "blue"]),
+            "alphas": np.array([0.1, 0.5, 0.9]),
+        },
+        metadata=[{"name": "left"}, {"name": "inside"}, {"name": "right"}],
+    )
+
+    layer = (
+        SceneCompiler()
+        .compile([command], PROJECTION, STYLE, 1000, 500, False)
+        .layers[0]
+    )
+
+    assert layer.data.row_count == 1
+    assert layer.data["x"].tolist() == pytest.approx([0.0])
+    assert layer.coordinate_encoding["x"].decode(
+        layer.data["x"]
+    ).tolist() == pytest.approx([1.0])
+    assert layer.data["name"].tolist() == ["inside"]
+    assert layer.interaction is InteractionPolicy.HOVER
+
+
+def test_non_data_and_unknown_clips_do_not_trigger_scene_geometry_clipping():
+    axes_command = DrawingCommand(
+        kind="line",
+        data={"x": [-1.0, 11.0], "y": [0.0, 0.0]},
+        space=CoordinateSpace.AXES,
+        clip_id="plot",
+    )
+    unknown_command = DrawingCommand(
+        kind="line",
+        data={"x": [-1.0, 11.0], "y": [0.0, 0.0]},
+        clip_id="unknown",
+    )
+
+    scene = SceneCompiler().compile(
+        [axes_command, unknown_command], PROJECTION, STYLE, 100, 100, False
+    )
+
+    assert [layer.data.row_count for layer in scene.layers] == [2, 2]
+
+
+def test_none_recording_clip_is_ignored_at_scene_boundary():
+    command = DrawingCommand(
+        kind="line",
+        data={"x": [0, 1], "y": [0, 1]},
+        clip_id="none",
+    )
+
+    scene = SceneCompiler().compile([command], PROJECTION, STYLE, 100, 100, False)
+
+    assert "none" not in scene.clips
+    assert scene.layers[0].clip_id is None
+
+
+def test_scatter_interaction_columnizes_only_safe_declared_metadata():
+    command = _primitive_commands()[0]
+
+    layer = SceneCompiler().compile_command(command, 0)
+
+    assert layer.interaction is InteractionPolicy.HOVER_AND_DETAIL
+    assert layer.hover_fields == ("name", "object_id")
+    assert "unsafe" not in layer.data.columns
+
+
+def test_high_volume_scatter_omits_metadata_and_loads_last():
+    rows = 100_000
+    command = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": np.arange(rows, dtype=np.float64),
+            "y": np.arange(rows, dtype=np.float64),
+            "sizes": np.ones(rows),
+            "colors": np.full(rows, "white"),
+            "alphas": np.ones(rows),
+        },
+        metadata=[{"name": "faint", "object_id": "x"}] * rows,
+        clip_id=None,
+    )
+
+    layer = SceneCompiler().compile_command(command, 0)
+
+    assert layer.load_priority == 100
+    assert layer.interaction is InteractionPolicy.NONE
+    assert layer.hover_fields == ()
+    assert set(layer.data.columns) == {"x", "y", "size", "color_index", "opacity"}
+
+
+def test_load_priority_is_semantic_and_layers_sort_by_zorder_then_input_index():
+    commands = _primitive_commands()
+    commands[0].zorder = 50
+    commands[1].zorder = 5
+    commands[2].zorder = 5
+
+    scene = SceneCompiler().compile(commands, PROJECTION, STYLE, 1200, 800, False)
+
+    assert [(layer.kind, layer.load_priority) for layer in scene.layers] == [
+        (SceneKind.GRADIENT, 0),
+        (SceneKind.POLYGON, 0),
+        (SceneKind.LINE, 30),
+        (SceneKind.LINE_COLLECTION, 30),
+        (SceneKind.TEXT, 10),
+        (SceneKind.INFO_TABLE, 10),
+        (SceneKind.SCATTER, 20),
+    ]
+    assert scene.layers[2].id == "layer-0001-line"
+    assert scene.layers[3].id == "layer-0002-line_collection"
+
+
+def test_compile_builds_frozen_viewport_clips_and_context_mappings():
+    projection = dict(PROJECTION)
+    style = dict(STYLE)
+
+    scene = SceneCompiler().compile([], projection, style, 1200, 800, True)
+    projection["x_min"] = 99
+    style["background_color"] = "changed"
+
+    assert scene.viewport == {
+        "reference_width": 1200,
+        "reference_height": 800,
+        "data_bounds": {"x_min": 0.0, "x_max": 10.0, "y_min": -5.0, "y_max": 5.0},
+        "paper_background": "#010203",
+        "axes_background": "#101820",
+        "transparent": True,
+    }
+    assert scene.projection_info["x_min"] == 0.0
+    assert scene.style_info["background_color"] == "#101820"
+    assert isinstance(scene.clips["plot"], ClipGeometry)
+    with pytest.raises(TypeError):
+        scene.viewport["reference_width"] = 1
+
+
+@pytest.mark.parametrize(("width", "height"), [(0, 1), (1, 0), (-1, 1), (1, -1)])
+def test_compile_requires_positive_reference_dimensions(width, height):
+    with pytest.raises(ValueError, match="width and height"):
+        SceneCompiler().compile([], PROJECTION, STYLE, width, height, False)
+
+
+def test_gradient_is_declarative_and_has_no_rows():
+    layer = SceneCompiler().compile_command(_primitive_commands()[5], 0)
+
+    assert layer.data.row_count == 0
+    assert layer.style["direction"] == "vertical"
+    assert layer.style["color_stops"] == ((0, "#000"), (1, "#fff"))
+
+
+def test_coordinate_encoding_round_trips_and_preserves_nan_breaks():
+    values = np.array([1.0e12, np.nan, 1.0e12 + 0.25], dtype=np.float64)
+    encoding = choose_coordinate_encoding(values, pixel_span=1000, supported_zoom=10)
+
+    encoded = encoding.encode(values)
+    decoded = encoding.decode(encoded)
+
+    assert encoding.kind is CoordinateEncodingKind.RELATIVE_F32
+    assert encoded.dtype == np.float32
+    assert encoded.flags.c_contiguous and not encoded.flags.writeable
+    assert np.isnan(encoded[1]) and np.isnan(decoded[1])
+    np.testing.assert_allclose(
+        decoded[[0, 2]], values[[0, 2]], rtol=0, atol=encoding.scale * 1e-7
+    )
+
+
+def test_protocol_exposes_no_absolute_float32_coordinate_encoding():
+    assert {kind.value for kind in CoordinateEncodingKind} == {
+        "absolute-f64",
+        "relative-f32",
+    }
+
+
+def test_precision_falls_back_to_absolute_f64_when_zoom_exceeds_error_budget():
+    values = np.array([0.0, 1.0 / 3.0, 1.0], dtype=np.float64)
+
+    encoding = choose_coordinate_encoding(
+        values, pixel_span=2000, supported_zoom=1_000_000
+    )
+    encoded = encoding.encode(values)
+
+    assert encoding.kind is CoordinateEncodingKind.ABSOLUTE_F64
+    assert encoded.dtype == np.float64
+    assert encoding.max_error_pixels == 0.0
+
+
+def test_precision_policy_has_deterministic_constant_and_no_finite_behavior():
+    constant = choose_coordinate_encoding([42.0, 42.0, np.nan], 100, 1)
+    no_finite = choose_coordinate_encoding([np.nan, np.inf], 100, 1)
+
+    assert constant.kind is CoordinateEncodingKind.RELATIVE_F32
+    assert constant.origin == 42.0
+    assert constant.scale == 1.0
+    assert constant.max_error_pixels == 0.0
+    assert no_finite.kind is CoordinateEncodingKind.ABSOLUTE_F64
+    assert no_finite.max_error_pixels == 0.0
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        np.array([-180.0, -45.25, 0.0, 179.999]),
+        np.array([1.0e-12, 1.0001e-12, 1.0002e-12]),
+    ],
+)
+def test_ordinary_map_and_tiny_optical_fields_use_bounded_relative_f32(values):
+    encoding = choose_coordinate_encoding(values, 1600, 32)
+
+    assert encoding.kind is CoordinateEncodingKind.RELATIVE_F32
+    assert encoding.max_error_pixels <= 0.05
+
+
+@pytest.mark.parametrize(
+    ("values", "pixel_span", "supported_zoom", "max_error", "message"),
+    [
+        ([[1.0]], 100, 1, 0.05, "one-dimensional"),
+        (["x"], 100, 1, 0.05, "numeric"),
+        ([1.0], 0, 1, 0.05, "pixel_span"),
+        ([1.0], 100, 0.5, 0.05, "supported_zoom"),
+        ([1.0], 100, 1, 0, "max_pixel_error"),
+    ],
+)
+def test_precision_policy_rejects_invalid_inputs(
+    values, pixel_span, supported_zoom, max_error, message
+):
+    with pytest.raises(ValueError, match=message):
+        choose_coordinate_encoding(values, pixel_span, supported_zoom, max_error)
 
 
 def test_rectangle_clip_mask_is_boundary_inclusive_and_finite():
@@ -96,9 +586,7 @@ def test_rectangle_clip_rejects_zero_width_or_height(points):
         ((0, 0), (2, 2), (0, 2), (2, 0)),
     ],
 )
-def test_polygon_clip_rejects_degenerate_or_invalid_geometry(
-    points, monkeypatch
-):
+def test_polygon_clip_rejects_degenerate_or_invalid_geometry(points, monkeypatch):
     clip = ClipGeometry(kind="polygon", points=points)
 
     def forbidden_contains_xy(*args, **kwargs):
