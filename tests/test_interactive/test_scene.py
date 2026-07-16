@@ -113,12 +113,9 @@ def test_columnar_data_direct_constructor_copies_caller_read_only_owned_array():
     assert not columns["x"].flags.writeable
 
 
-def test_columnar_data_owned_construction_requires_internal_provenance_token():
-    source = np.array([1.0, 2.0], dtype=np.float32)
-    source.setflags(write=False)
-
-    with pytest.raises(TypeError, match="_ownership_token"):
-        ColumnarData._from_owned_columns({"x": source})
+def test_columnar_data_exposes_no_owned_construction_bypass():
+    assert not hasattr(scene_module, "_OWNED_COLUMNS_TOKEN")
+    assert not hasattr(ColumnarData, "_from_owned_columns")
 
 
 def test_columnar_data_from_mapping_snapshots_each_column_once(monkeypatch):

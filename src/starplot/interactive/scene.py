@@ -12,9 +12,6 @@ import numpy as np
 from starplot.interactive.commands import CoordinateSpace
 
 
-_OWNED_COLUMNS_TOKEN = object()
-
-
 class SceneKind(StrEnum):
     SCATTER = "scatter"
     LINE = "line"
@@ -102,20 +99,6 @@ class ColumnarData:
             name: readonly_array(value)
             for name, value in values.items()
         }
-        return cls._from_owned_columns(
-            columns,
-            _ownership_token=_OWNED_COLUMNS_TOKEN,
-        )
-
-    @classmethod
-    def _from_owned_columns(
-        cls,
-        columns: Mapping[str, np.ndarray],
-        *,
-        _ownership_token,
-    ) -> "ColumnarData":
-        if _ownership_token is not _OWNED_COLUMNS_TOKEN:
-            raise ValueError("invalid owned-column provenance token")
         for column in columns.values():
             if (
                 not isinstance(column, np.ndarray)
