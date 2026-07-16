@@ -55,45 +55,42 @@ ANCHOR_MAP = {
 }
 
 
-def calibrate_marker_size(mpl_size: float, resolution: int = 4096, scale: float = 1.0) -> float:
+def calibrate_marker_size(
+    mpl_size: float,
+    resolution: int = 4096,
+    width: float = 1000.0,
+    dpi: float = 100.0,
+    source_axes_width: float = None,
+    min_size: float = 1.5,
+) -> float:
     """Convert matplotlib scatter s parameter (points²) to Plotly marker size (px).
 
-    Theoretical derivation:
-    1. matplotlib renders at DPI=200, creating a figure of (resolution*2) × (resolution*2) pixels
-    2. This is then scaled down to resolution × resolution for export
-    3. Plotly renders in a 1000×1000 viewport by default
-    
-    Complete formula:
-    - Convert area to diameter: d = 2 * sqrt(s / π) points
-    - Convert points to pixels: d_px = d * (DPI / 72) = d * (200 / 72) = d * 2.778
-    - Scale to target resolution: d_scaled = d_px * (resolution / (resolution*2)) = d_px * 0.5
-    - Scale to Plotly viewport: d_final = d_scaled * (1000 / resolution)
-    
-    Combined: d_final = 2 * sqrt(s / π) * 2.778 * 0.5 * (1000 / resolution)
-             = 2 * sqrt(s / π) * 1.389 * (1000 / resolution)
-    
-    For resolution=3600: factor = 1.389 * (1000/3600) = 0.3858
+    matplotlib marker area `s` is in points²; Plotly marker size is the diameter
+    in pixels.  The resulting figure width (in pixels) is used to scale the
+    diameter so the marker has the same apparent size as the matplotlib output.
     """
     import math
     if mpl_size <= 0:
-        return 1.5
-    
-    # Theoretical formula derived from rendering pipeline analysis
-    # DPI conversion: 200/72 = 2.778, but after scaling: 2.778 * 0.5 = 1.389
-    # Viewport scaling: 1000 / resolution (default Plotly viewport is 1000x1000)
-    # Rendering correction: 0.70 factor to match PNG appearance
-    # Final factor: 1.389 * 0.70 = 0.972 (for resolution=3600: 0.270)
-    plotly_viewport = 1000.0
-    rendering_correction = 0.70  # Adjusted based on visual comparison with PNG
-    diameter = 2.0 * math.sqrt(mpl_size / math.pi) * 1.389 * rendering_correction * (plotly_viewport / resolution) * scale
-    return max(1.5, diameter)
+        return float(min_size)
+
+    source_width = source_axes_width or resolution
+    diameter = (
+        2.0
+        * math.sqrt(mpl_size / math.pi)
+        * (dpi / 72.0)
+        * (width / source_width)
+    )
+    return max(float(min_size), diameter)
 
 
-def convert_marker_style(style_dict: dict, scale: float = 1.0, resolution: int = 4096) -> dict:
+def convert_marker_style(style_dict: dict, scale: float = 1.0, resolution: int = 4096, width: float = 1000.0) -> dict:
     """Convert starplot marker style dict to Plotly marker dict."""
+    size = style_dict.get("size", 10)
+    # matplotlib scatter s is area in points²; size is diameter in points
+    s = (size * scale) ** 2
     return {
         "symbol": MARKER_SYMBOL_MAP.get(style_dict.get("symbol", "circle"), "circle"),
-        "size": calibrate_marker_size(style_dict.get("size", 10), resolution=resolution, scale=scale),
+        "size": calibrate_marker_size(s, resolution=resolution, width=width),
         "color": style_dict.get("color"),
         "opacity": style_dict.get("alpha", 1.0),
         "line": {

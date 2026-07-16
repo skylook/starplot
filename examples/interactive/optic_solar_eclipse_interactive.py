@@ -42,4 +42,4 @@ op.sun(
 )
 
 op.export("optic_solar_eclipse.png", padding=0.1, transparent=True)
-op.export_html("optic_solar_eclipse.html", width=1000, height=1000)
+op.export_html("optic_solar_eclipse.html", width=1000, height=1000, transparent=True)

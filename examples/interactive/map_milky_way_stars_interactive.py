@@ -47,4 +47,4 @@ p.stars(
 )
 
 p.export("map_milky_way_stars.png", padding=0.1, transparent=True)
-p.export_html("map_milky_way_stars.html")
+p.export_html("map_milky_way_stars.html", transparent=True)

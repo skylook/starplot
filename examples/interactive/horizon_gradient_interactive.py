@@ -22,4 +22,4 @@ p.constellation_labels()
 p.horizon(labels={180: "SOUTH"})
 
 p.export("horizon_gradient.png", padding=0.1)
-p.export_html("horizon_gradient.html", width=1400, height=700)
+p.export_html("horizon_gradient.html", width=1400, height=1082)

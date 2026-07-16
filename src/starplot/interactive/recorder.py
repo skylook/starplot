@@ -46,12 +46,15 @@ class DrawingRecorder:
         ))
 
     def record_polygon(
-        self, points, style_dict, gid, zorder, *,
+        self, points, style_dict, gid, zorder, *, rings=None,
         space=CoordinateSpace.DATA, clip_id="plot",
     ):
+        data = {"points": list(points)}
+        if rings is not None:
+            data["rings"] = [list(ring) for ring in rings]
         self.commands.append(DrawingCommand(
             kind="polygon",
-            data={"points": list(points)},
+            data=data,
             style=dict(style_dict),
             gid=gid,
             zorder=zorder,

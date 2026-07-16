@@ -38,4 +38,4 @@ p.marker(
 p.constellation_labels()
 
 p.export("star_chart_detail.png", transparent=True, padding=0.1)
-p.export_html("star_chart_detail.html", width=1000, height=1000)
+p.export_html("star_chart_detail.html", width=1000, height=1000, transparent=True)

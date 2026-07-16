@@ -37,4 +37,4 @@ p.milky_way()
 p.constellation_labels()
 
 p.export("star_chart_french.png", transparent=True, padding=0.1)
-p.export_html("star_chart_french.html")
+p.export_html("star_chart_french.html", transparent=True)

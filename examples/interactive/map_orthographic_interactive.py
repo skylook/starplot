@@ -28,4 +28,4 @@ p.celestial_equator()
 p.milky_way()
 
 p.export("map_orthographic.png", padding=0.3, transparent=True)
-p.export_html("map_orthographic.html", width=1000, height=1000)
+p.export_html("map_orthographic.html", width=1000, height=1000, transparent=True)

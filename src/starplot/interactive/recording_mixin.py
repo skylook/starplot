@@ -22,6 +22,8 @@ from starplot.styles.helpers import use_style
 
 LOGGER = logging.getLogger("starplot.interactive")
 
+_MAX_INTERACTIVE_HOVER_POINTS = 50_000
+
 
 def _split_points(points):
     """Split a sequence of points into segments separated by non-finite coordinates."""
@@ -39,11 +41,59 @@ def _split_points(points):
     return segments
 
 
+def _transformed_path_segments(ax, transform, vertices, codes=None):
+    """Return final-DATA segments from a Matplotlib path transform.
+
+    Cartopy applies antimeridian splitting and extent clipping in
+    ``transform_path_non_affine``.  Transforming an Nx2 endpoint array skips
+    that path-only work and reconnects 359°→1° lines in Plotly.  Preserve each
+    ``MOVETO`` as a separate segment after mapping the rendered path back to
+    final axes data coordinates.
+    """
+    from matplotlib.path import Path
+
+    path = Path(vertices, codes)
+    rendered = transform.transform_path(path)
+    data = ax.transData.inverted().transform(rendered.vertices)
+    rendered_codes = rendered.codes
+    if rendered_codes is None:
+        return _split_points(data)
+
+    segments, current = [], []
+    for (x, y), code in zip(data, rendered_codes):
+        if code == Path.MOVETO:
+            if len(current) > 1:
+                segments.append(current)
+            current = []
+        if math.isfinite(x) and math.isfinite(y):
+            current.append((float(x), float(y)))
+        elif len(current) > 1:
+            segments.append(current)
+            current = []
+    if len(current) > 1:
+        segments.append(current)
+    return segments
+
+
+def _transformed_path_rings(ax, transform, vertices, codes=None):
+    """Return final-DATA polygon rings without reconnecting ``MOVETO`` paths."""
+    return [
+        segment for segment in _transformed_path_segments(ax, transform, vertices, codes)
+        if len(segment) >= 3
+    ]
+
+
 def _rgba_to_hex(color):
-    """Convert a Matplotlib color (RGBA tuple, hex string, or named color) to hex."""
+    """Serialize a Matplotlib color without discarding its alpha channel."""
     try:
-        from matplotlib.colors import to_hex
-        return to_hex(color)
+        from matplotlib.colors import to_hex, to_rgba
+        red, green, blue, alpha = to_rgba(color)
+        if alpha < 1.0:
+            return (
+                f"rgba({round(red * 255)},{round(green * 255)},"
+                f"{round(blue * 255)},{alpha:g})"
+            )
+        return to_hex((red, green, blue))
     except Exception:
         return "#ffffff"
 
@@ -88,15 +138,16 @@ class RecordingMixin:
     def _artist_offsets_to_final_data(self, collection):
         """Extract a Collection's offsets and transform to final DATA coords.
 
-        Uses the collection's own transform (which may be identity for
-        Cartopy GeoAxes) composed with ax.transData.inverted() to get
-        the final projected coordinates that Matplotlib actually displays.
+        Matplotlib stores scatter locations in ``get_offset_transform()``,
+        while ``get_transform()`` describes the marker path itself.  Reading
+        the latter maps DATA offsets through an identity marker transform and
+        then wrongly inverse-projects them a second time.
         """
         import numpy as np
         raw = collection.get_offsets()
         if len(raw) == 0:
             return [], []
-        display = collection.get_transform().transform(raw)
+        display = collection.get_offset_transform().transform(raw)
         data = self.ax.transData.inverted().transform(display)
         xs = [float(v) for v in data[:, 0]]
         ys = [float(v) for v in data[:, 1]]
@@ -177,6 +228,8 @@ class RecordingMixin:
         except Exception as e:
             LOGGER.debug("Could not draw without rendering: %s", e)
 
+        self._record_untracked_path_patches()
+
         # Record axes bbox and pixel dimensions
         try:
             ax_pos = self.ax.get_position()
@@ -227,6 +280,27 @@ class RecordingMixin:
                 else None
             ),
         }
+        if self._legend is not None:
+            legend_texts = self._legend.get_texts()
+            legend_title = self._legend.get_title()
+            frame = self._legend.get_frame()
+            self._recorder.style_info.update({
+                "legend_labels": list(self._legend_handles.keys()),
+                "legend_background_color": _rgba_to_hex(frame.get_facecolor()),
+                "legend_border_color": _rgba_to_hex(frame.get_edgecolor()),
+                "legend_font_color": (
+                    _rgba_to_hex(legend_texts[0].get_color())
+                    if legend_texts else "#000000"
+                ),
+                "legend_font_size": (
+                    float(legend_texts[0].get_fontsize())
+                    if legend_texts else 11.0
+                ),
+                "legend_title_font_size": float(legend_title.get_fontsize()),
+            })
+        magnitude_scale = getattr(self, "_interactive_magnitude_scale", None)
+        if magnitude_scale is not None:
+            self._recorder.style_info["magnitude_scale"] = magnitude_scale
         try:
             self._recorder.style_info["source_axes_width"] = float(
                 self.ax.get_window_extent().width
@@ -234,53 +308,113 @@ class RecordingMixin:
         except Exception as e:
             LOGGER.debug("Could not extract axes width: %s", e)
 
-    def _record_final_clip_geometry(self):
-        """Extract the final clip polygon from Matplotlib's background patch.
+    def _record_untracked_path_patches(self):
+        """Capture user-added ``PathPatch`` artists in final data coordinates.
 
-        Transforms the patch path through the patch transform and then through
-        the inverse data transform to get final DATA-space coordinates.
-        Returns a ClipGeometry with kind "rect" or "polygon".
+        The public plotting API records its own primitives at call time, but
+        Matplotlib also permits legitimate extensions via ``ax.add_patch``.
+        Recording those artists here preserves custom marker outlines without
+        introducing example-specific drawing code.
+        """
+        try:
+            import numpy as np
+            from matplotlib.patches import PathPatch
+
+            recorded = getattr(self, "_recorded_external_patch_ids", set())
+            for patch in self.ax.patches:
+                if not isinstance(patch, PathPatch) or id(patch) in recorded:
+                    continue
+                if not patch.get_visible() or patch.get_path().vertices.size == 0:
+                    continue
+
+                path = patch.get_path()
+                rings = _transformed_path_rings(
+                    self.ax, patch.get_transform(), path.vertices, path.codes
+                )
+                if not rings:
+                    continue
+
+                alpha = patch.get_alpha()
+                self._recorder.record_polygon(
+                    points=rings[0],
+                    rings=rings,
+                    style_dict={
+                        "fill_color": _rgba_to_hex(patch.get_facecolor()),
+                        "edge_color": _rgba_to_hex(patch.get_edgecolor()),
+                        "edge_width": float(patch.get_linewidth() or 0),
+                        "alpha": float(alpha if alpha is not None else 1.0),
+                        "line_style": str(patch.get_linestyle()),
+                    },
+                    gid=patch.get_gid() or "custom-path-patch",
+                    zorder=int(patch.get_zorder() or 0),
+                )
+                recorded.add(id(patch))
+            self._recorded_external_patch_ids = recorded
+        except Exception as e:
+            LOGGER.debug("Could not record external path patches: %s", e)
+
+    def _record_final_clip_geometry(self):
+        """Extract the intersection of Matplotlib's final clipping patches.
+
+        Cartopy's ``ax.patch`` carries the curved projection boundary (for
+        example Mollweide), while starplot's ``_background_clip_path`` carries
+        any explicit user clip.  Matplotlib applies both.  Recording only the
+        latter turns curved maps into rectangles; recording their intersection
+        preserves the final artist contract for every backend.
         """
         from starplot.interactive.commands import ClipGeometry
 
-        patch = getattr(self, "_background_clip_path", None)
-        if patch is None:
-            return ClipGeometry(kind="none")
-
         try:
-            path_obj = patch.get_path()
-            # Interpolate curved paths (Circle uses CURVE3/CURVE4 codes)
-            # to get enough vertices for an accurate polygon approximation.
-            codes = path_obj.codes
-            has_curves = codes is not None and any(c in (3, 4) for c in codes)
-            if has_curves and len(path_obj.vertices) < 64:
-                path_obj = path_obj.interpolated(8)
+            from shapely.geometry import Polygon
 
-            # Transform: path coords → display → data
-            trans = patch.get_transform() + self.ax.transData.inverted()
-            raw_verts = trans.transform(path_obj.vertices)
+            polygons = []
+            for patch in (
+                getattr(self, "_background_clip_path", None),
+                getattr(self.ax, "patch", None),
+            ):
+                if patch is None:
+                    continue
+                path_obj = patch.get_path()
+                codes = path_obj.codes
+                has_curves = codes is not None and any(
+                    code in (3, 4) for code in codes
+                )
+                if has_curves and len(path_obj.vertices) < 64:
+                    path_obj = path_obj.interpolated(8)
+                trans = patch.get_transform() + self.ax.transData.inverted()
+                raw_verts = trans.transform(path_obj.vertices)
+                finite = [
+                    (float(x), float(y))
+                    for x, y in raw_verts
+                    if math.isfinite(x) and math.isfinite(y)
+                ]
+                if len(finite) > 1 and finite[0] == finite[-1]:
+                    finite = finite[:-1]
+                if len(finite) >= 3:
+                    polygon = Polygon(finite)
+                    if polygon.is_valid and not polygon.is_empty:
+                        polygons.append(polygon)
 
-            # Filter finite vertices
-            finite = [
-                (float(x), float(y))
-                for x, y in raw_verts
-                if math.isfinite(x) and math.isfinite(y)
-            ]
-            if len(finite) < 3:
+            if not polygons:
                 return ClipGeometry(kind="none")
-
-            # Remove duplicate closing point if present
-            if len(finite) > 1 and finite[0] == finite[-1]:
-                finite = finite[:-1]
-
-            # Classify: rect if exactly 4 unique vertices, otherwise polygon
-            unique = set(finite)
-            if len(unique) == 4:
-                kind = "rect"
-            else:
-                kind = "polygon"
-
-            return ClipGeometry(kind=kind, points=tuple(finite))
+            final = polygons[0]
+            for polygon in polygons[1:]:
+                final = final.intersection(polygon)
+            if final.is_empty:
+                return ClipGeometry(kind="none")
+            if not hasattr(final, "exterior"):
+                candidates = [
+                    geometry for geometry in getattr(final, "geoms", [])
+                    if hasattr(geometry, "exterior")
+                ]
+                if not candidates:
+                    return ClipGeometry(kind="none")
+                final = max(candidates, key=lambda geometry: geometry.area)
+            points = list(final.exterior.coords)
+            if len(points) > 1 and points[0] == points[-1]:
+                points = points[:-1]
+            kind = "rect" if len(set(points)) == 4 else "polygon"
+            return ClipGeometry(kind=kind, points=tuple(points))
         except Exception as e:
             LOGGER.warning("Failed to extract clip geometry: %s", e)
             return ClipGeometry(kind="none")
@@ -297,25 +431,28 @@ class RecordingMixin:
         ras_list = list(ras)
         n = len(ras_list)
 
-        # Pull metadata from recently added star objects
-        recent_stars = self._objects.stars[-n:] if n > 0 else []
         metadata = []
-        for s in recent_stars:
-            label = ""
-            try:
-                label = s.get_label(s) if callable(getattr(s, "get_label", None)) else ""
-            except Exception as e:
-                LOGGER.debug("Could not get star label: %s", e)
-            metadata.append({
-                "name": label or "",
-                "magnitude": getattr(s, "magnitude", None),
-                "hip": getattr(s, "hip", None),
-                "bayer": getattr(s, "bayer", None),
-                "constellation": getattr(s, "constellation_id", None),
-                "ra": getattr(s, "ra", None),
-                "dec": getattr(s, "dec", None),
-                "type": "star",
-            })
+        # Per-point hover strings dominate both memory and HTML size for
+        # million-star catalogs.  Keep every visual point, but reserve rich
+        # hover metadata for traces small enough to remain interactive.
+        if n <= _MAX_INTERACTIVE_HOVER_POINTS:
+            recent_stars = self._objects.stars[-n:] if n > 0 else []
+            for s in recent_stars:
+                label = ""
+                try:
+                    label = s.get_label(s) if callable(getattr(s, "get_label", None)) else ""
+                except Exception as e:
+                    LOGGER.debug("Could not get star label: %s", e)
+                metadata.append({
+                    "name": label or "",
+                    "magnitude": getattr(s, "magnitude", None),
+                    "hip": getattr(s, "hip", None),
+                    "bayer": getattr(s, "bayer", None),
+                    "constellation": getattr(s, "constellation_id", None),
+                    "ra": getattr(s, "ra", None),
+                    "dec": getattr(s, "dec", None),
+                    "type": "star",
+                })
 
         # Extract final DATA coordinates from the newly created Matplotlib
         # artist, matching what Matplotlib actually displays.
@@ -362,27 +499,39 @@ class RecordingMixin:
     # ------------------------------------------------------------------
 
     def _polygon(self, points, style, **kwargs):
-        projected_points = [self._to_final_data(ra, dec, source_space="radec") for ra, dec in points]
+        patches_before = len(self.ax.patches)
         super()._polygon(points, style, **kwargs)
         try:
+            if len(self.ax.patches) <= patches_before:
+                return
+            patch = self.ax.patches[patches_before]
+            path = patch.get_path()
+            rings = _transformed_path_rings(
+                self.ax, patch.get_transform(), path.vertices, path.codes
+            )
+            if not rings:
+                return
             style_dict = {
-                "fill_color": style.fill_color.as_hex() if getattr(style, "fill_color", None) else None,
-                "edge_color": style.edge_color.as_hex() if getattr(style, "edge_color", None) else None,
-                "edge_width": getattr(style, "edge_width", 0),
-                "alpha": getattr(style, "alpha", 1.0),
-                "line_style": str(getattr(style, "line_style", "solid")),
-                "zorder": int(getattr(style, "zorder", 0) or 0),
+                "fill_color": _rgba_to_hex(patch.get_facecolor()),
+                "edge_color": _rgba_to_hex(patch.get_edgecolor()),
+                "edge_width": float(patch.get_linewidth() or 0),
+                "alpha": float(patch.get_alpha() if patch.get_alpha() is not None else 1.0),
+                "line_style": str(patch.get_linestyle()),
                 "legend_label": kwargs.get("legend_label"),
             }
         except Exception as e:
-            LOGGER.debug("Could not extract polygon style: %s", e)
-            style_dict = {"legend_label": kwargs.get("legend_label")}
+            LOGGER.debug("Could not extract rendered polygon: %s", e)
+            return
         self._recorder.record_polygon(
-            points=[(float(x), float(y)) for x, y in projected_points],
+            points=rings[0],
+            rings=rings,
             style_dict=style_dict,
-            gid=kwargs.get("gid", "polygon"),
-            zorder=int(getattr(style, "zorder", 0) or 0),
+            gid=patch.get_gid() or kwargs.get("gid", "polygon"),
+            zorder=int(patch.get_zorder() or 0),
         )
+        self._recorded_external_patch_ids = getattr(
+            self, "_recorded_external_patch_ids", set()
+        ) | {id(patch)}
 
     # ------------------------------------------------------------------
     # Method 3: Text labels (only records labels that survive collision detection)
@@ -453,23 +602,34 @@ class RecordingMixin:
     # ------------------------------------------------------------------
 
     def line(self, style, coordinates=None, geometry=None, **kwargs):
+        lines_before = len(self.ax.lines)
         super().line(style=style, coordinates=coordinates, geometry=geometry, **kwargs)
         try:
-            coords_iter = geometry.coords if geometry is not None else coordinates
-            processed = [self._to_final_data(*p, source_space="radec") for p in coords_iter]
-            if processed:
-                xs, ys = zip(*processed)
-                self._recorder.record_line(
-                    x=list(xs),
-                    y=list(ys),
+            self.fig.canvas.draw()
+            segments = []
+            artists = self.ax.lines[lines_before:]
+            for artist in artists:
+                path = artist.get_path()
+                segments.extend(_transformed_path_segments(
+                    self.ax, artist.get_transform(), path.vertices, path.codes
+                ))
+            if segments and artists:
+                artist = artists[0]
+                self._recorder.record_line_collection(
+                    lines=segments,
                     style_dict={
-                        "color": style.color.as_hex() if hasattr(style, "color") else "#777777",
-                        "width": getattr(style, "width", 1),
-                        "line_style": str(getattr(style, "style", "solid")),
-                        "alpha": getattr(style, "alpha", 1.0),
+                        "color": _rgba_to_hex(artist.get_color()),
+                        "width": float(artist.get_linewidth()),
+                        "line_style": artist.get_linestyle(),
+                        "alpha": (
+                            artist.get_alpha()
+                            if artist.get_alpha() is not None
+                            else 1.0
+                        ),
                     },
+                    metadata=[{"type": "line"} for _ in segments],
                     gid=kwargs.get("gid", "line"),
-                    zorder=int(getattr(style, "zorder", 0) or 0),
+                    zorder=int(artist.get_zorder()),
                 )
         except Exception as e:
             LOGGER.warning("Failed to record line (gid=%s): %s", kwargs.get("gid", "line"), e)
@@ -523,20 +683,35 @@ class RecordingMixin:
             return
 
         style_kwargs = style.marker.matplot_scatter_kwargs(self.scale)
+        facecolors = coll.get_facecolors()
+        edgecolors = coll.get_edgecolors()
+        linewidths = coll.get_linewidths()
+        artist_sizes = coll.get_sizes()
+        face_color = (
+            _rgba_to_hex(facecolors[0]) if len(facecolors)
+            else _rgba_to_hex(style_kwargs.get("c", "none"))
+        )
+        edge_color = (
+            _rgba_to_hex(edgecolors[0]) if len(edgecolors)
+            else _rgba_to_hex(style_kwargs.get("edgecolors", "none"))
+        )
+        face_alpha = float(facecolors[0][3]) if len(facecolors) else 0.0
+        collection_alpha = coll.get_alpha()
+        alpha = float(collection_alpha if collection_alpha is not None else face_alpha)
         style_dict = {
             "symbol": str(getattr(style.marker.symbol, "value", style.marker.symbol)),
-            "edge_color": style_kwargs.get("edgecolors", "none"),
-            "edge_width": style_kwargs.get("linewidths", 0) or 0,
-            "fill": str(getattr(style.marker.fill, "value", style.marker.fill)),
+            "edge_color": edge_color,
+            "edge_width": float(linewidths[0]) if len(linewidths) else 0.0,
+            "fill": "full" if face_alpha > 0 else "none",
             "legend_label": legend_label,
         }
 
         self._recorder.record_scatter(
             x=[x],
             y=[y],
-            sizes=[style_kwargs.get("s", 22)],
-            colors=[style_kwargs.get("c", "#000000")],
-            alphas=[style_kwargs.get("alpha", 1.0)],
+            sizes=[float(artist_sizes[0]) if len(artist_sizes) else style_kwargs.get("s", 22)],
+            colors=[face_color],
+            alphas=[alpha],
             metadata=[{"type": "marker", "name": label or ""}],
             style_dict=style_dict,
             gid=kwargs.get("gid_marker") or "marker",
@@ -557,6 +732,182 @@ class RecordingMixin:
 
             from starplot.plots.horizon import HorizonPlot
             from starplot.plots.map import MapPlot
+
+            if isinstance(self, HorizonPlot):
+                # Cartopy's Gridliner has already applied HorizonPlot's
+                # azimuth -180° conversion, clipping, label padding, and
+                # formatter.  Rebuilding these curves from user locations
+                # loses those semantics.  Extract final rendered segments.
+                self.fig.canvas.draw()
+                gridliner = next(
+                    (artist for artist in self.ax.artists
+                     if type(artist).__name__ == "Gridliner"),
+                    None,
+                )
+                if gridliner is None:
+                    raise RuntimeError("Horizon gridliner artist was not created")
+
+                lines = []
+                for collection in [*gridliner.xline_artists, *gridliner.yline_artists]:
+                    for segment in collection.get_segments():
+                        lines.extend(_transformed_path_segments(
+                            self.ax, collection.get_transform(), segment
+                        ))
+
+                if lines:
+                    self._recorder.record_line_collection(
+                        lines=lines,
+                        style_dict={
+                            "color": style.line.color.as_hex(),
+                            "width": style.line.width,
+                            "alpha": style.line.alpha,
+                            "line_style": str(style.line.style),
+                        },
+                        gid="gridlines",
+                        zorder=int(style.line.zorder or 0),
+                        metadata=[{"type": "gridline"} for _ in lines],
+                    )
+
+                for label in gridliner.label_artists:
+                    if not label.get_visible() or not label.get_text():
+                        continue
+                    bbox = label.get_window_extent(self.fig.canvas.get_renderer())
+                    x, y = self.fig.transFigure.inverted().transform(
+                        (bbox.x0 + bbox.width / 2, bbox.y0 + bbox.height / 2)
+                    )
+                    # HorizonPlot supplies lower azimuth labels separately
+                    # below.  Gridliner's copies live at negative figure-y
+                    # values, which Plotly clips; recording both creates a
+                    # duplicate/off-canvas annotation pair.
+                    if y < 0:
+                        continue
+                    self._recorder.record_text(
+                        text=label.get_text(), x=x, y=y,
+                        style_dict={
+                            "font_size": label.get_fontsize(),
+                            "font_color": _rgba_to_hex(label.get_color()),
+                            "font_alpha": float(label.get_alpha() or 1.0),
+                            "font_weight": label.get_fontweight(),
+                            "font_name": label.get_fontname() or "Inter",
+                            "ha": label.get_horizontalalignment(),
+                            "va": label.get_verticalalignment(),
+                        },
+                        gid="gridlines-label",
+                        zorder=int(style.label.zorder or 0),
+                        space=CoordinateSpace.PAPER,
+                    )
+
+                # Gridliner does not expose HorizonPlot's lower azimuth labels,
+                # divider, and tick annotations as label artists.  These are
+                # separate axes-coordinate artists in HorizonPlot.gridlines().
+                show_labels = kwargs.get("show_labels")
+                if show_labels is None:
+                    show_labels = ["left", "right", "bottom"]
+                az_locations = kwargs.get("az_locations") or list(range(0, 360, 15))
+                az_formatter = kwargs.get("az_formatter_fn") or (lambda az: f"{round(az)}° ")
+                if "bottom" in show_labels:
+                    for azimuth in az_locations:
+                        if not (self.az[0] <= azimuth <= self.az[1]
+                                or self.az[0] <= azimuth + 360 <= self.az[1]):
+                            continue
+                        x, _ = self._to_ax(azimuth, self.alt[0])
+                        if not math.isfinite(x):
+                            continue
+                        self._recorder.record_text(
+                            text=str(az_formatter(azimuth)), x=x,
+                            y=-0.02 * self.scale,
+                            style_dict={
+                                "font_size": style.label.font_size,
+                                "font_color": style.label.font_color.as_hex(),
+                                "font_alpha": style.label.font_alpha,
+                                "font_weight": style.label.font_weight,
+                                "font_name": style.label.font_name,
+                                "ha": "center", "va": "center", "footer": True,
+                            },
+                            gid="gridlines-label",
+                            zorder=int(style.label.zorder or 0),
+                            space=CoordinateSpace.PAPER,
+                        )
+
+                if kwargs.get("divider_line", True):
+                    self._recorder.record_polygon(
+                        points=[(0.0, -0.04 * self.scale), (1.0, -0.04 * self.scale),
+                                (1.0, -0.041 * self.scale), (0.0, -0.041 * self.scale)],
+                        style_dict={"fill_color": style.label.font_color.as_hex(),
+                                    "edge_color": "none", "edge_width": 0,
+                                    "alpha": 1.0, "footer": True},
+                        gid="gridlines-divider", zorder=int(style.label.zorder or 0),
+                        space=CoordinateSpace.PAPER, clip_id=None,
+                    )
+                return
+
+            if isinstance(self, MapPlot):
+                # MapPlot delegates all seam handling, polar redraws, edge
+                # visibility and label placement to Cartopy's Gridliner.
+                # Sampling RA/DEC ourselves loses those decisions, so replay
+                # the artists Cartopy actually produced.
+                self.fig.canvas.draw()
+                gridliner = next(
+                    (artist for artist in self.ax.artists
+                     if type(artist).__name__ == "Gridliner"),
+                    None,
+                )
+                if gridliner is None:
+                    raise RuntimeError("Map gridliner artist was not created")
+
+                lines = []
+                for collection in [*gridliner.xline_artists, *gridliner.yline_artists]:
+                    for segment in collection.get_segments():
+                        lines.extend(_transformed_path_segments(
+                            self.ax, collection.get_transform(), segment
+                        ))
+                # Near-polar MapPlot redraws missing RA lines with ax.plot().
+                # They have the same gid and are already fully transformed.
+                for artist in self.ax.lines:
+                    if artist.get_gid() != "gridlines":
+                        continue
+                    path = artist.get_path()
+                    lines.extend(_transformed_path_segments(
+                        self.ax, artist.get_transform(), path.vertices, path.codes
+                    ))
+
+                if lines:
+                    self._recorder.record_line_collection(
+                        lines=lines,
+                        style_dict={
+                            "color": style.line.color.as_hex(),
+                            "width": style.line.width,
+                            "alpha": style.line.alpha,
+                            "line_style": str(style.line.style),
+                        },
+                        gid="gridlines",
+                        zorder=int(style.line.zorder or 0),
+                        metadata=[{"type": "gridline"} for _ in lines],
+                    )
+
+                for label in gridliner.label_artists:
+                    if not label.get_visible() or not label.get_text():
+                        continue
+                    bbox = label.get_window_extent(self.fig.canvas.get_renderer())
+                    x, y = self.fig.transFigure.inverted().transform(
+                        (bbox.x0 + bbox.width / 2, bbox.y0 + bbox.height / 2)
+                    )
+                    self._recorder.record_text(
+                        text=label.get_text(), x=x, y=y,
+                        style_dict={
+                            "font_size": label.get_fontsize(),
+                            "font_color": _rgba_to_hex(label.get_color()),
+                            "font_alpha": float(label.get_alpha() or 1.0),
+                            "font_weight": label.get_fontweight(),
+                            "font_name": label.get_fontname() or "Inter",
+                            "ha": label.get_horizontalalignment(),
+                            "va": label.get_verticalalignment(),
+                        },
+                        gid="gridlines-label",
+                        zorder=int(style.label.zorder or 0),
+                        space=CoordinateSpace.PAPER,
+                    )
+                return
 
             show_labels = kwargs.get("show_labels")
             if show_labels is None:
@@ -719,60 +1070,41 @@ class RecordingMixin:
     # ------------------------------------------------------------------
 
     def constellations(self, style=None, where=None, sql=None, catalog=None, **kwargs):
+        collections_before = len(self.ax.collections)
         # Let matplotlib render fully first
         kw = {k: v for k, v in {"style": style, "where": where, "sql": sql, "catalog": catalog}.items() if v is not None}
         super().constellations(**kw, **kwargs)
 
-        # Re-extract line data from the constellation objects that were just plotted
-        cons = self._objects.constellations
-        if not cons:
-            return
-
+        # Cartopy performs seam splitting and extent clipping while drawing the
+        # LineCollection.  Rebuilding each source star pair here joins points
+        # across the RA 0°/360° seam, creating a line through the whole Plotly
+        # chart.  Extract the final artist segments instead.
         try:
-            constars = self._prepare_constellation_stars(cons)
+            from matplotlib.collections import LineCollection
+
+            self.fig.canvas.draw()
+            segments = []
+            for collection in self.ax.collections[collections_before:]:
+                if not isinstance(collection, LineCollection):
+                    continue
+                for segment in collection.get_segments():
+                    segments.extend(_transformed_path_segments(
+                        self.ax, collection.get_transform(), segment
+                    ))
         except Exception as e:
-            LOGGER.warning("Failed to prepare constellation stars: %s", e)
+            LOGGER.warning("Failed to extract rendered constellation lines: %s", e)
             return
 
-        constellation_lines = []
-        constellation_metadata = []
-
-        for c in cons:
-            for s1_hip, s2_hip in c.star_hip_lines:
-                if not constars.get(s1_hip) or not constars.get(s2_hip):
-                    continue
-                s1_ra, s1_dec = constars[s1_hip]
-                s2_ra, s2_dec = constars[s2_hip]
-                # _prepare_constellation_stars() already returns AZ/ALT for
-                # HorizonPlot and OpticPlot. Use "prepared" source space
-                # to avoid double-conversion.
-                if self._coordinate_system == CoordinateSystem.AZ_ALT:
-                    x1, y1 = self._to_final_data(s1_ra, s1_dec, source_space="prepared")
-                    x2, y2 = self._to_final_data(s2_ra, s2_dec, source_space="prepared")
-                else:
-                    x1, y1 = self._to_final_data(s1_ra, s1_dec, source_space="radec")
-                    x2, y2 = self._to_final_data(s2_ra, s2_dec, source_space="radec")
-                # Skip segments that project to infinity (e.g. wrap-around seams)
-                if not (math.isfinite(x1) and math.isfinite(y1) and
-                        math.isfinite(x2) and math.isfinite(y2)):
-                    continue
-                constellation_lines.append([(x1, y1), (x2, y2)])
-                constellation_metadata.append({
-                    "name": getattr(c, "name", ""),
-                    "iau_id": getattr(c, "iau_id", ""),
-                    "type": "constellation",
-                })
-
-        if constellation_lines:
+        if segments:
             resolved_style = style or self.style.constellation_lines
             self._recorder.record_line_collection(
-                lines=constellation_lines,
+                lines=segments,
                 style_dict={
                     "color": resolved_style.color.as_hex(),
                     "width": resolved_style.width,
                     "alpha": resolved_style.alpha,
                 },
-                metadata=constellation_metadata,
+                metadata=[{"type": "constellation"} for _ in segments],
                 gid="constellations-line",
                 zorder=resolved_style.zorder,
             )
@@ -784,58 +1116,40 @@ class RecordingMixin:
     @use_style(LineStyle, "constellation_borders")
     def constellation_borders(self, style=None, catalog=None, **kwargs):
         """Record constellation borders as a line collection."""
-        from starplot.data.catalogs import CONSTELLATION_BORDERS
-        catalog = catalog or CONSTELLATION_BORDERS
-        super().constellation_borders(style=style, catalog=catalog, **kwargs)
+        collections_before = len(self.ax.collections)
+        # Do not turn the base method's default catalog into an explicit
+        # ``None``.  This mirrors the public constellation-lines wrapper and
+        # preserves the base plotting contract when callers omit ``catalog``.
+        base_kwargs = {"style": style}
+        if catalog is not None:
+            base_kwargs["catalog"] = catalog
+        super().constellation_borders(**base_kwargs, **kwargs)
 
         try:
-            from starplot.data import db
-            from starplot.data.catalogs import CONSTELLATION_BORDERS
-            from starplot.coordinates import CoordinateSystem
-            from ibis import _
-
-            con = db.connect()
-            borders = CONSTELLATION_BORDERS._load(
-                connection=con, table_name="constellation_borders"
-            )
-            borders = borders.mutate(geometry=_.geometry.cast("geometry"))
-
-            extent = self._extent_mask()
-            borders_df = borders.filter(_.geometry.intersects(extent)).to_pandas()
-
-            if borders_df.empty:
-                return
-
+            from matplotlib.collections import LineCollection
+            self.fig.canvas.draw()
             border_lines = []
-            geometries = [line.geometry for line in borders_df.itertuples()]
-
-            for ls in geometries:
-                if ls.length < 360:
-                    ls = ls.segmentize(1)
-                xy = [c for c in ls.coords]
-
-                if self._coordinate_system == CoordinateSystem.RA_DEC:
-                    coords = [self._to_final_data(*p, source_space="radec") for p in xy]
-                elif self._coordinate_system == CoordinateSystem.AZ_ALT:
-                    coords = [self._to_final_data(*p, source_space="prepared") for p in xy]
-                else:
+            for collection in self.ax.collections[collections_before:]:
+                if not isinstance(collection, LineCollection):
                     continue
-
-                segments = _split_points(coords)
-                border_lines.extend(segments)
+                for segment in collection.get_segments():
+                    border_lines.extend(_transformed_path_segments(
+                        self.ax, collection.get_transform(), segment
+                    ))
 
             if border_lines:
+                resolved_style = style or self.style.constellation_borders
                 self._recorder.record_line_collection(
                     lines=border_lines,
                     style_dict={
-                        "color": style.color.as_hex(),
-                        "width": style.width,
-                        "alpha": style.alpha,
-                        "line_style": str(style.style),
+                        "color": resolved_style.color.as_hex(),
+                        "width": resolved_style.width,
+                        "alpha": resolved_style.alpha,
+                        "line_style": str(resolved_style.style),
                     },
                     metadata=[{"type": "constellation-border"} for _ in border_lines],
                     gid="constellations-border",
-                    zorder=int(style.zorder or 0),
+                    zorder=int(resolved_style.zorder or 0),
                 )
         except Exception as e:
             LOGGER.warning("Failed to record constellation borders: %s", e)
@@ -845,56 +1159,57 @@ class RecordingMixin:
     # ------------------------------------------------------------------
 
     def ecliptic(self, style=None, label="ECLIPTIC", collision_handler=None):
+        lines_before = len(self.ax.lines)
         super().ecliptic(style=style, label=label, collision_handler=collision_handler)
-        try:
-            from starplot.data import ecliptic as ecliptic_data
-            resolved_style = style or self.style.ecliptic
-            xs, ys = [], []
-            for ra_h, dec in ecliptic_data.RA_DECS:
-                x, y = self._to_final_data(ra_h * 15, dec, source_space="radec")
-                xs.append(x)
-                ys.append(y)
-            if xs:
-                self._recorder.record_line(
-                    x=xs, y=ys,
-                    style_dict={
-                        "color": resolved_style.line.color.as_hex(),
-                        "width": resolved_style.line.width,
-                        "line_style": str(resolved_style.line.style),
-                        "alpha": resolved_style.line.alpha,
-                    },
-                    gid="ecliptic-line",
-                    zorder=resolved_style.line.zorder,
-                )
-        except Exception as e:
-            LOGGER.warning("Failed to record ecliptic line: %s", e)
+        resolved_style = style or self.style.ecliptic
+        self._record_rendered_line_artists(
+            lines_before, resolved_style.line, "ecliptic-line"
+        )
 
     # ------------------------------------------------------------------
     # Method 7: Celestial equator
     # ------------------------------------------------------------------
 
     def celestial_equator(self, style=None, label=None, collision_handler=None):
+        lines_before = len(self.ax.lines)
         super().celestial_equator(style=style, label=label, collision_handler=collision_handler)
+        resolved_style = style or self.style.celestial_equator
+        self._record_rendered_line_artists(
+            lines_before, resolved_style.line,
+            "celestial-equator-line",
+        )
+
+    def _record_rendered_line_artists(self, lines_before, style, gid):
+        """Record final Cartopy-split ``Line2D`` artists created by a method."""
         try:
-            resolved_style = style or self.style.celestial_equator
-            # Celestial equator is dec=0 across all RA values
-            xs = list(range(0, 361, 2))
-            ys = [0.0] * len(xs)
-            processed = [self._to_final_data(ra, 0, source_space="radec") for ra in xs]
-            px, py = zip(*processed)
-            self._recorder.record_line(
-                x=list(px), y=list(py),
-                style_dict={
-                    "color": resolved_style.line.color.as_hex(),
-                    "width": resolved_style.line.width,
-                    "line_style": str(resolved_style.line.style),
-                    "alpha": resolved_style.line.alpha,
-                },
-                gid="celestial-equator-line",
-                zorder=resolved_style.line.zorder,
-            )
+            self.fig.canvas.draw()
+            segments = []
+            artists = self.ax.lines[lines_before:]
+            for artist in artists:
+                path = artist.get_path()
+                segments.extend(_transformed_path_segments(
+                    self.ax, artist.get_transform(), path.vertices, path.codes
+                ))
+            if segments and artists:
+                artist = artists[0]
+                self._recorder.record_line_collection(
+                    lines=segments,
+                    style_dict={
+                        "color": _rgba_to_hex(artist.get_color()),
+                        "width": float(artist.get_linewidth()),
+                        "line_style": artist.get_linestyle(),
+                        "alpha": (
+                            artist.get_alpha()
+                            if artist.get_alpha() is not None
+                            else 1.0
+                        ),
+                    },
+                    metadata=[{"type": "line"} for _ in segments],
+                    gid=gid,
+                    zorder=int(artist.get_zorder()),
+                )
         except Exception as e:
-            LOGGER.warning("Failed to record celestial equator: %s", e)
+            LOGGER.warning("Failed to record rendered line artists (gid=%s): %s", gid, e)
 
     # ------------------------------------------------------------------
     # Method 8: Horizon (MapPlot great circle, HorizonPlot bar, ZenithPlot circle)
@@ -903,6 +1218,8 @@ class RecordingMixin:
     @use_style(PathStyle, "horizon")
     def horizon(self, style=None, labels=None, **kwargs):
         """Record horizon elements for MapPlot, HorizonPlot, and ZenithPlot."""
+        patches_before = len(self.ax.patches)
+        texts_before = len(self.ax.texts)
         horizon_kwargs = {"style": style}
         if labels is not None:
             horizon_kwargs["labels"] = labels
@@ -943,6 +1260,8 @@ class RecordingMixin:
                     },
                     gid="horizon-bottom",
                     zorder=int(resolved_style.line.zorder or 0),
+                    space=CoordinateSpace.PAPER,
+                    clip_id=None,
                 )
 
                 # Cardinal/azimuth labels in axes coordinates
@@ -973,7 +1292,11 @@ class RecordingMixin:
                             space=CoordinateSpace.PAPER,
                         )
 
-            elif isinstance(self, MapPlot):
+            # ZenithPlot subclasses MapPlot, but its Matplotlib horizon is an
+            # axes-space circle with fixed cardinal labels.  Exclude it from
+            # the generic MapPlot great-circle branch so the replay uses the
+            # same geometry and label positions as ZenithPlot.horizon().
+            elif isinstance(self, MapPlot) and not isinstance(self, ZenithPlot):
                 from skyfield.api import wgs84
 
                 if self.observer is None:
@@ -1044,6 +1367,11 @@ class RecordingMixin:
                         )
 
             elif isinstance(self, ZenithPlot):
+                horizon_patch = (
+                    self.ax.patches[patches_before]
+                    if len(self.ax.patches) > patches_before
+                    else None
+                )
                 xlim = self.ax.get_xlim()
                 ylim = self.ax.get_ylim()
                 center_x = (xlim[0] + xlim[1]) / 2
@@ -1059,44 +1387,63 @@ class RecordingMixin:
                     x=list(circle_x),
                     y=list(circle_y),
                     style_dict={
-                        "color": resolved_style.line.color.as_hex(),
-                        "width": resolved_style.line.width,
+                        "color": (
+                            _rgba_to_hex(horizon_patch.get_edgecolor())
+                            if horizon_patch is not None
+                            else resolved_style.line.color.as_hex()
+                        ),
+                        "width": (
+                            float(horizon_patch.get_linewidth())
+                            if horizon_patch is not None
+                            else resolved_style.line.width
+                        ),
                         "line_style": str(resolved_style.line.style),
-                        "alpha": resolved_style.line.alpha,
+                        "alpha": (
+                            horizon_patch.get_alpha()
+                            if horizon_patch is not None
+                            and horizon_patch.get_alpha() is not None
+                            else resolved_style.line.alpha
+                        ),
                     },
                     gid="horizon-circle",
                     zorder=int(resolved_style.line.zorder or 0),
+                    # ZenithPlot.horizon() explicitly uses clip_on=False: the
+                    # thick ring sits just outside the map boundary and must
+                    # remain behind the cardinal labels.
+                    clip_id=None,
                 )
 
-                if labels is None:
-                    labels = ["N", "E", "S", "W"]
-                if labels:
-                    labels = [translate(label, self.language) for label in labels]
-                    label_ax_coords = [
-                        (0.5, 0.95),
-                        (0.045, 0.5),
-                        (0.5, 0.045),
-                        (0.954, 0.5),
-                    ]
-                    for label, (ax_x, ax_y) in zip(labels, label_ax_coords):
+                label_artists = self.ax.texts[texts_before:]
+                if label_artists:
+                    for artist in label_artists:
+                        ax_x, ax_y = artist.xy
                         data_x = xlim[0] + (xlim[1] - xlim[0]) * ax_x
                         data_y = ylim[0] + (ylim[1] - ylim[0]) * ax_y
+                        font_family = artist.get_fontfamily()
                         self._recorder.record_text(
-                            text=str(label),
+                            text=artist.get_text(),
                             x=data_x,
                             y=data_y,
                             style_dict={
-                                "font_size": resolved_style.label.font_size,
-                                "font_color": resolved_style.label.font_color.as_hex(),
-                                "font_alpha": resolved_style.label.font_alpha,
-                                "font_weight": resolved_style.label.font_weight,
-                                "font_style": resolved_style.label.font_style,
-                                "font_name": resolved_style.label.font_name,
-                                "ha": "center",
-                                "va": "center",
+                                "font_size": float(artist.get_fontsize()),
+                                "font_color": _rgba_to_hex(artist.get_color()),
+                                "font_alpha": (
+                                    artist.get_alpha()
+                                    if artist.get_alpha() is not None
+                                    else 1.0
+                                ),
+                                "font_weight": artist.get_fontweight(),
+                                "font_style": artist.get_fontstyle(),
+                                "font_name": (
+                                    font_family[0]
+                                    if font_family
+                                    else resolved_style.label.font_name
+                                ),
+                                "ha": artist.get_horizontalalignment(),
+                                "va": artist.get_verticalalignment(),
                             },
                             gid="horizon-label",
-                            zorder=int(resolved_style.label.zorder or 0),
+                            zorder=int(artist.get_zorder()),
                             space=CoordinateSpace.DATA,
                         )
         except Exception as e:
@@ -1150,6 +1497,8 @@ class RecordingMixin:
                 },
                 gid="arrow",
                 zorder=int(getattr(style, "zorder", 0) or 0),
+                space=CoordinateSpace.PAPER,
+                clip_id=None,
             )
         except Exception as e:
             LOGGER.debug("Could not record arrow: %s", e)
@@ -1164,24 +1513,40 @@ class RecordingMixin:
         super().title(text=text, style=style, **kwargs)
 
         try:
+            self.fig.canvas.draw()
+            artist = self.ax.title
+            figure_height = float(self.fig.bbox.height)
+            anchor_x, anchor_y = self.fig.transFigure.inverted().transform(
+                artist.get_transform().transform(artist.get_position())
+            )
+            title_bbox = artist.get_window_extent(
+                renderer=self.fig.canvas.get_renderer()
+            )
+            paper_y_max = max(1.0, float(title_bbox.y1) / figure_height)
+            font_family = artist.get_fontfamily()
             self._recorder.record_text(
-                text=str(text),
-                x=0.5,
-                y=0.98,
+                text=artist.get_text(),
+                x=float(anchor_x),
+                y=float(anchor_y) / paper_y_max,
                 style_dict={
-                    "font_size": style.font_size,
-                    "font_color": style.font_color.as_hex(),
-                    "font_alpha": style.font_alpha,
-                    "font_weight": style.font_weight,
-                    "font_style": style.font_style,
-                    "font_name": style.font_name,
+                    "font_size": float(artist.get_fontsize()),
+                    "font_color": _rgba_to_hex(artist.get_color()),
+                    "font_alpha": (
+                        artist.get_alpha()
+                        if artist.get_alpha() is not None
+                        else 1.0
+                    ),
+                    "font_weight": artist.get_fontweight(),
+                    "font_style": artist.get_fontstyle(),
+                    "font_name": font_family[0] if font_family else style.font_name,
                     "xref": "paper",
                     "yref": "paper",
-                    "ha": "center",
-                    "va": "top",
+                    "ha": artist.get_horizontalalignment(),
+                    "va": artist.get_verticalalignment(),
+                    "axes_domain_top": 1.0 / paper_y_max,
                 },
                 gid="title",
-                zorder=int(style.zorder or 0),
+                zorder=int(artist.get_zorder()),
                 space=CoordinateSpace.PAPER,
             )
         except Exception as e:
@@ -1204,6 +1569,48 @@ class RecordingMixin:
         artists_before = len(self.ax.artists)
         super().star_magnitude_scale(title=title, style=style, **kwargs)
         try:
+            import numpy as np
+            from starplot import callables
+            from starplot.models.star import Star
+
+            size_fn = kwargs.get("size_fn", callables.size_by_magnitude)
+            label_fn = kwargs.get("label_fn", lambda magnitude: str(magnitude))
+            start = kwargs.get("start", -1)
+            stop = kwargs.get("stop", 9)
+            step = kwargs.get("step", 1)
+            marker_style = self.style.star.marker
+            marker_kwargs = marker_style.matplot_kwargs()
+            magnitudes = list(np.arange(start, stop, step))
+            self._interactive_magnitude_scale = {
+                "title": title,
+                "labels": [str(label_fn(magnitude)) for magnitude in magnitudes],
+                # Line2D markersize is a diameter in points.  This exactly
+                # mirrors LegendPlotterMixin.star_magnitude_scale().
+                "sizes": [
+                    float(
+                        math.sqrt(
+                            size_fn(
+                                Star(
+                                    pk=1,
+                                    ra=0,
+                                    dec=0,
+                                    magnitude=magnitude,
+                                    geometry=None,
+                                )
+                            )
+                        )
+                        * self.scale
+                    )
+                    for magnitude in magnitudes
+                ],
+                "color": _rgba_to_hex(
+                    marker_kwargs.get("markerfacecolor", marker_kwargs.get("color", "#000000"))
+                ),
+                "edge_color": _rgba_to_hex(
+                    marker_kwargs.get("markeredgecolor", marker_kwargs.get("color", "#000000"))
+                ),
+            }
+
             # star_magnitude_scale creates a Legend artist, not collections.
             # Extract the legend and its handles/texts.
             from starplot.interactive.commands import DrawingCommand, CoordinateSpace
@@ -1253,6 +1660,7 @@ class RecordingMixin:
         Handles both OpticPlot (info table) and ZenithPlot (info text).
         """
         texts_before = len(self.ax.texts)
+        tables_before = len(self.ax.tables)
         result = super().info(style=style)
 
         from starplot.plots.optic import OpticPlot
@@ -1283,12 +1691,10 @@ class RecordingMixin:
                             "va": txt.get_va(),
                             "alpha": float(txt.get_alpha() or 1.0),
                             "rotation": float(txt.get_rotation() or 0.0),
-                            "xref": "paper",
-                            "yref": "paper",
                         },
                         gid="zenith-info",
                         zorder=int(getattr(resolved_style, "zorder", 0) or 0),
-                        space=CoordinateSpace.PAPER,
+                        space=CoordinateSpace.AXES,
                     )
                     self._recorder.commands.append(cmd)
             except Exception as e:
@@ -1326,6 +1732,15 @@ class RecordingMixin:
 
             font_color = resolved_style.font_color.as_hex()
             font_name = resolved_style.font_name or resolved_style.font_family or "Inter"
+            background_color = self.style.figure_background_color.as_hex()
+            line_color = self.style.border_line_color.as_hex()
+            new_tables = list(self.ax.tables)[tables_before:]
+            if new_tables:
+                cells = list(new_tables[-1].get_celld().values())
+                if cells:
+                    background_color = _rgba_to_hex(cells[0].get_facecolor())
+                    line_color = _rgba_to_hex(cells[0].get_edgecolor())
+                    font_color = _rgba_to_hex(cells[0].get_text().get_color())
 
             self._recorder.record_info_table(
                 columns=columns,
@@ -1337,8 +1752,8 @@ class RecordingMixin:
                     "font_weight": resolved_style.font_weight,
                     "font_name": font_name,
                     "font_alpha": resolved_style.font_alpha,
-                    "background_color": self.style.figure_background_color.as_hex(),
-                    "line_color": self.style.border_line_color.as_hex(),
+                    "background_color": background_color,
+                    "line_color": line_color,
                 },
                 gid="optic-info-table",
                 zorder=getattr(resolved_style, "zorder", 0) + 2000,

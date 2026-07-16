@@ -27,4 +27,4 @@ p.milky_way()
 p.ecliptic()
 
 p.export("map_orion.png", padding=0.3, transparent=True)
-p.export_html("map_orion.html", width=1400, height=900)
+p.export_html("map_orion.html", width=1400, height=900, transparent=True)

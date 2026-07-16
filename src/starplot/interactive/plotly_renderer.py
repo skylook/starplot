@@ -23,6 +23,23 @@ from starplot.interactive.style_converter import (
 
 LOGGER = logging.getLogger("starplot.interactive")
 
+# Kaleido renders Plotly marker and annotation glyphs noticeably smaller than
+# Matplotlib for the same nominal CSS-pixel diameter.  This is a renderer-unit
+# calibration (not a chart-specific scale): apply it uniformly after converting
+# the source Matplotlib point units.
+_KALEIDO_MARKER_SCALE = 1.15
+_KALEIDO_TEXT_SCALE = 1.35
+# Kaleido's rasterized Plotly strokes are about half the visible thickness of
+# Matplotlib strokes after both are normalized to the same output viewport.
+# Keep this renderer-unit calibration separate from marker/font calibration.
+_KALEIDO_STROKE_SCALE = 2.0
+_MAX_INTERACTIVE_HOVER_POINTS = 50_000
+# A one-pixel WebGL circle sprite applies its own edge coverage after marker
+# alpha.  Matplotlib instead rasterizes at export resolution and downsamples.
+# Normalize the total emitted area for theoretical subpixel diameters; this is
+# a backend calibration shared by every high-volume scatter trace.
+_WEBGL_SUBPIXEL_COVERAGE_SCALE = 6.0
+
 # matplotlib uses "none" to indicate no color; Plotly requires a transparent rgba.
 _MATPLOTLIB_NONE_COLORS = frozenset({"none", "None", "NONE", ""})
 
@@ -98,9 +115,13 @@ def _colors_with_alphas(colors, alphas, count):
             continue
         try:
             red, green, blue, base_alpha = to_rgba(color)
-            opacity = base_alpha * float(alpha)
+            opacity = min(1.0, max(0.0, base_alpha * float(alpha)))
+            # Plotly's color validator rejects scientific notation inside
+            # CSS rgba(), which subpixel coverage naturally produces.
+            css_alpha = f"{opacity:.8f}".rstrip("0").rstrip(".") or "0"
             result.append(
-                f"rgba({round(red * 255)},{round(green * 255)},{round(blue * 255)},{opacity:g})"
+                f"rgba({round(red * 255)},{round(green * 255)},"
+                f"{round(blue * 255)},{css_alpha})"
             )
         except (TypeError, ValueError):
             result.append(_sanitize_color(color))
@@ -183,8 +204,11 @@ class PlotlyRenderer:
         self._marker_viewport_width = width or 1000.0
         self._horizon_footer_offset = 0.0
         self._side_margin = 10
+        self._paper_x_bounds = (0.0, 1.0)
+        self._paper_y_bounds = (0.0, 1.0)
         self.transparent = transparent
         self._trace_groups: dict[str, list[int]] = {}
+        self._shown_legend_labels: set[str] = set()
         self.fig = go.Figure()
         self._clip_polygons = self._build_clip_polygons()
         self._setup_layout()
@@ -343,28 +367,28 @@ class PlotlyRenderer:
     def _clip_polygon(self, cmd, clip_poly):
         """Clip a polygon against the clip polygon."""
         from shapely.geometry import Polygon as ShapelyPolygon
-        points = cmd.data.get("points", [])
-        if len(points) < 3:
+        rings = cmd.data.get("rings") or [cmd.data.get("points", [])]
+        if not any(len(points) >= 3 for points in rings):
             return cmd
         try:
-            poly = ShapelyPolygon(points)
-            clipped = poly.intersection(clip_poly)
-            if clipped.is_empty:
+            clipped_rings = []
+            for points in rings:
+                if len(points) < 3:
+                    continue
+                clipped = ShapelyPolygon(points).intersection(clip_poly)
+                if clipped.is_empty:
+                    continue
+                geometries = [clipped] if hasattr(clipped, "exterior") else getattr(clipped, "geoms", [])
+                for geometry in geometries:
+                    new_points = list(geometry.exterior.coords)
+                    if len(new_points) > 1 and new_points[0] == new_points[-1]:
+                        new_points = new_points[:-1]
+                    if len(new_points) >= 3:
+                        clipped_rings.append(new_points)
+            if not clipped_rings:
                 return None
-            # Extract exterior coordinates
-            if hasattr(clipped, 'exterior'):
-                new_points = list(clipped.exterior.coords)
-            elif hasattr(clipped, 'geoms'):
-                # MultiPolygon — use the largest
-                largest = max(clipped.geoms, key=lambda g: g.area)
-                new_points = list(largest.exterior.coords)
-            else:
-                return cmd
-            # Remove closing point if present
-            if len(new_points) > 1 and new_points[0] == new_points[-1]:
-                new_points = new_points[:-1]
             return DrawingCommand(
-                kind=cmd.kind, data={"points": new_points}, style=cmd.style,
+                kind=cmd.kind, data={"points": clipped_rings[0], "rings": clipped_rings}, style=cmd.style,
                 metadata=cmd.metadata, zorder=cmd.zorder, gid=cmd.gid,
                 space=cmd.space, clip_id=cmd.clip_id,
             )
@@ -378,6 +402,8 @@ class PlotlyRenderer:
     def render(self, commands: list[DrawingCommand]) -> go.Figure:
         """Render all commands sorted by zorder."""
         self._reserve_horizon_footer(commands)
+        self._reserve_map_gridline_gutters(commands)
+        self._reserve_title_space(commands)
         for cmd in sorted(commands, key=lambda c: c.zorder if c.zorder is not None else 0):
             # Clip spatial commands before dispatch
             clipped = self._clip_command(cmd)
@@ -396,12 +422,27 @@ class PlotlyRenderer:
                 try:
                     handler(clipped)
                 except Exception as e:
-                    LOGGER.warning(
-                        "Failed to render %s command (gid=%s): %s: %s",
-                        clipped.kind, clipped.gid, type(e).__name__, e,
-                    )
+                    raise RuntimeError(
+                        "Failed to render "
+                        f"{clipped.kind} command (gid={clipped.gid})"
+                    ) from e
         self._add_interactive_features()
         return self.fig
+
+    def _reserve_title_space(self, commands: list[DrawingCommand]):
+        """Reproduce Matplotlib's tight-bbox space above axes titles."""
+        title_tops = [
+            float(command.style["axes_domain_top"])
+            for command in commands
+            if command.gid == "title"
+            and command.style.get("axes_domain_top") is not None
+        ]
+        if not title_tops:
+            return
+        current = self.fig.layout.yaxis.domain or (0.0, 1.0)
+        self.fig.update_yaxes(
+            domain=[float(current[0]), min(float(current[1]), min(title_tops))]
+        )
 
     def _reserve_horizon_footer(self, commands: list[DrawingCommand]):
         """Keep HorizonPlot's negative axes-coordinate footer inside Plotly paper."""
@@ -418,31 +459,79 @@ class PlotlyRenderer:
         if self._horizon_footer_offset:
             self.fig.update_yaxes(domain=[self._horizon_footer_offset, 1.0])
         if any(command.gid == "gridlines-label" for command in commands):
+            # Side altitude labels require paper room on both sides; the
+            # projected plot width itself is controlled by the y-domain and
+            # ``scaleanchor`` below, not by reducing this margin.
             self._side_margin = 50
             self.fig.update_layout(margin=dict(l=50, r=50, t=30, b=10))
+
+    def _reserve_map_gridline_gutters(self, commands: list[DrawingCommand]):
+        """Keep Matplotlib map tick labels outside the axes inside Plotly paper.
+
+        Cartopy's Gridliner deliberately places labels just beyond the axes
+        rectangle.  Matplotlib's export padding includes them, while Plotly
+        clips paper-coordinate annotations outside ``[0, 1]``.  Derive a
+        shared paper viewport from the final rendered label artists and move
+        the axes domain inward by the same affine mapping.
+        """
+        if self.projection_info.get("plot_kind") != "map":
+            return
+        labels = [
+            command for command in commands
+            if command.gid == "gridlines-label"
+            and command.space == CoordinateSpace.PAPER
+        ]
+        if not labels:
+            return
+
+        xs = [float(command.data["x"]) for command in labels]
+        ys = [float(command.data["y"]) for command in labels]
+        # One percent of the source paper span leaves room for glyph ascent,
+        # descent, and the point-based label offset on every plot scale.
+        pad = 0.015
+        x0, x1 = min(0.0, min(xs)) - pad, max(1.0, max(xs)) + pad
+        y0, y1 = min(0.0, min(ys)) - pad, max(1.0, max(ys)) + pad
+        self._paper_x_bounds = (x0, x1)
+        self._paper_y_bounds = (y0, y1)
+        self.fig.update_xaxes(domain=[(0.0 - x0) / (x1 - x0), (1.0 - x0) / (x1 - x0)])
+        self.fig.update_yaxes(domain=[(0.0 - y0) / (y1 - y0), (1.0 - y0) / (y1 - y0)])
+
+    def _paper_x(self, value):
+        """Map a recorded Matplotlib figure x coordinate into Plotly paper."""
+        x0, x1 = self._paper_x_bounds
+        return (value - x0) / (x1 - x0)
 
     def _paper_y(self, value, gid, style=None):
         """Translate the HorizonPlot footer from negative axes space into paper."""
         if gid in {"horizon-bottom", "horizon-label"} or (style or {}).get("footer"):
-            return value + self._horizon_footer_offset
-        return value
+            value += self._horizon_footer_offset
+        y0, y1 = self._paper_y_bounds
+        return (value - y0) / (y1 - y0)
 
     def _target_axes_width(self):
         """Return the drawable Plotly width after the fixed side margins."""
         return max(1.0, self._marker_viewport_width - 2.0 * self._side_margin)
 
-    def _style_pixel_scale(self):
-        """Convert recorded Matplotlib point-based style units into Plotly pixels."""
+    def _font_pixel_scale(self):
+        """Convert final Matplotlib point sizes to target CSS pixels.
+
+        Recorded font sizes already include the plot's style scale.  Applying
+        ``plot_scale`` or the line/marker Kaleido calibration again makes
+        labels disproportionately large on lower-resolution HTML exports.
+        """
         source_width = self.style_info.get("source_axes_width")
         if not source_width:
-            return 0.5
+            return 1.0
         return (
-            float(self.style_info.get("plot_scale", 1.0))
-            * float(self.style_info.get("dpi", 100.0))
+            float(self.style_info.get("dpi", 100.0))
             / 72.0
             * self._target_axes_width()
             / float(source_width)
         )
+
+    def _stroke_pixel_scale(self):
+        """Convert Matplotlib point linewidths to calibrated Plotly pixels."""
+        return self._font_pixel_scale() * _KALEIDO_STROKE_SCALE
 
     # ------------------------------------------------------------------
     # Layout
@@ -452,12 +541,12 @@ class PlotlyRenderer:
         bg = self.style_info.get("background_color", "#ffffff")
         fig_bg = self.style_info.get("figure_background_color", "#ffffff")
 
-        # When transparent=True, both the paper (figure) and plot (axes)
-        # backgrounds become fully transparent, matching matplotlib's
-        # transparent=True export behavior.
+        # Matplotlib's ``savefig(transparent=True)`` makes the figure paper
+        # transparent but preserves the explicit axes facecolor recorded by
+        # starplot styles.  Keeping the Plotly plot background opaque also
+        # preserves light-map Gridliner text and chart interior alpha.
         if self.transparent:
             fig_bg = "rgba(0,0,0,0)"
-            bg = "rgba(0,0,0,0)"
 
         # Use matplotlib's projected axis limits so Plotly renders in the same
         # coordinate space (Cartopy projection units for MapPlot/ZenithPlot,
@@ -491,13 +580,36 @@ class PlotlyRenderer:
         show_legend = self.style_info.get("show_legend", False)
         legend_title = self.style_info.get("legend_title")
         legend_cfg = dict(
-            bgcolor="rgba(0,0,0,0.5)",
-            font=dict(color="#ffffff", size=11),
-            bordercolor="rgba(255,255,255,0.2)",
+            bgcolor=self.style_info.get(
+                "legend_background_color", "rgba(0,0,0,0.5)"
+            ),
+            font=dict(
+                color=self.style_info.get("legend_font_color", "#ffffff"),
+                size=max(
+                    8,
+                    self.style_info.get("legend_font_size", 11)
+                    * self._font_pixel_scale()
+                    * _KALEIDO_TEXT_SCALE,
+                ),
+            ),
+            bordercolor=self.style_info.get(
+                "legend_border_color", "rgba(255,255,255,0.2)"
+            ),
             borderwidth=1,
         )
         if legend_title:
-            legend_cfg["title"] = dict(text=str(legend_title), font=dict(color="#ffffff"))
+            legend_cfg["title"] = dict(
+                text=str(legend_title),
+                font=dict(
+                    color=self.style_info.get("legend_font_color", "#ffffff"),
+                    size=max(
+                        8,
+                        self.style_info.get("legend_title_font_size", 11)
+                        * self._font_pixel_scale()
+                        * _KALEIDO_TEXT_SCALE,
+                    ),
+                ),
+            )
 
         self.fig.update_layout(
             plot_bgcolor=bg,
@@ -513,30 +625,98 @@ class PlotlyRenderer:
         )
         if self.width is not None or self.height is not None:
             self.fig.update_layout(width=self.width, height=self.height)
+        self._add_clipped_plot_background(bg)
+
+    def _add_clipped_plot_background(self, background_color):
+        """Paint the axes face inside the recorded Matplotlib clip boundary."""
+        clip = self._clip_polygons.get("plot")
+        if clip is None or clip.is_empty:
+            return
+        points = list(clip.exterior.coords)
+        if len(points) < 4:
+            return
+        path = f"M {points[0][0]},{points[0][1]}"
+        path += "".join(f" L {x},{y}" for x, y in points[1:])
+        path += " Z"
+        self.fig.update_layout(plot_bgcolor="rgba(0,0,0,0)")
+        self.fig.add_shape(
+            type="path",
+            path=path,
+            xref="x",
+            yref="y",
+            fillcolor=background_color,
+            line=dict(width=0),
+            layer="below",
+        )
 
     # ------------------------------------------------------------------
     # Scatter (stars, markers, DSOs)
     # ------------------------------------------------------------------
 
+    def _should_show_legend_entry(self, label, gid):
+        """Use Matplotlib's final de-duplicated legend labels when available."""
+        if not self.fig.layout.showlegend:
+            return False
+        explicit_labels = self.style_info.get("legend_labels")
+        if explicit_labels is not None:
+            if label not in explicit_labels or label in self._shown_legend_labels:
+                return False
+            self._shown_legend_labels.add(label)
+            return True
+        return (
+            label is not None or gid in _KNOWN_LEGEND_GIDS
+        ) and gid not in self._trace_groups
+
     def _render_scatter(self, cmd: DrawingCommand):
-        hover_texts = self._build_hover_texts(cmd.metadata)
+        point_count = len(cmd.data.get("x", []))
+        high_volume = point_count > _MAX_INTERACTIVE_HOVER_POINTS
+        has_hover = (
+            point_count <= _MAX_INTERACTIVE_HOVER_POINTS
+            and bool(cmd.metadata)
+        )
+        hover_texts = self._build_hover_texts(cmd.metadata) if has_hover else None
         colors = _sanitize_colors(cmd.data.get("colors", []))
         alphas = cmd.data.get("alphas", [1.0])
         sizes_raw = cmd.data.get("sizes", [])
         resolution = self.style_info.get("resolution", 4096)
-        sizes = [
+        theoretical_sizes = [
             calibrate_marker_size(
                 s,
                 resolution=resolution,
                 width=self._target_axes_width(),
                 dpi=self.style_info.get("dpi", 100.0),
                 source_axes_width=self.style_info.get("source_axes_width"),
-            )
+                min_size=0.0 if high_volume else 1.5,
+            ) * _KALEIDO_MARKER_SCALE
             for s in sizes_raw
         ]
+        if high_volume:
+            # WebGL rasterizes every point to at least one physical pixel.
+            # Preserve Matplotlib's subpixel area by moving the fractional
+            # coverage into alpha instead of inflating every faint star.
+            coverage = [
+                min(1.0, size * size * _WEBGL_SUBPIXEL_COVERAGE_SCALE)
+                for size in theoretical_sizes
+            ]
+            sizes = [max(1.0, size) for size in theoretical_sizes]
+            if np.isscalar(alphas):
+                alpha_values = [float(alphas)] * point_count
+            else:
+                alpha_values = [float(alpha) for alpha in alphas]
+                if len(alpha_values) < point_count:
+                    fallback = alpha_values[-1] if alpha_values else 1.0
+                    alpha_values.extend(
+                        [fallback] * (point_count - len(alpha_values))
+                    )
+            alphas = [
+                float(alpha) * factor
+                for alpha, factor in zip(alpha_values, coverage)
+            ]
+        else:
+            sizes = theoretical_sizes
 
         edge_color = _sanitize_color(cmd.style.get("edge_color", "rgba(0,0,0,0)"))
-        edge_width = cmd.style.get("edge_width", 0) or 0
+        edge_width = 0 if high_volume else (cmd.style.get("edge_width", 0) or 0)
 
         # Determine marker fill color: if fill is none or colors are transparent,
         # use a transparent fill so only the outline is visible.
@@ -548,14 +728,17 @@ class PlotlyRenderer:
 
         legend_label = cmd.style.get("legend_label")
         name = legend_label if legend_label is not None else self._gid_to_legend_name(cmd.gid)
-        show_legend = self.fig.layout.showlegend
-        show_legend_trace = (
-            show_legend
-            and (legend_label is not None or cmd.gid in _KNOWN_LEGEND_GIDS)
-            and cmd.gid not in self._trace_groups
+        show_legend_trace = self._should_show_legend_entry(
+            legend_label if legend_label is not None else name,
+            cmd.gid,
         )
 
-        self.fig.add_trace(go.Scattergl(
+        trace_type = (
+            go.Scattergl
+            if cmd.gid == "stars" or len(cmd.data.get("x", [])) > 1000
+            else go.Scatter
+        )
+        self.fig.add_trace(trace_type(
             x=cmd.data.get("x"),
             y=cmd.data.get("y"),
             mode="markers",
@@ -566,11 +749,11 @@ class PlotlyRenderer:
                 symbol=MARKER_SYMBOL_MAP.get(cmd.style.get("symbol", "circle"), "circle"),
                 line=dict(
                     color=edge_color,
-                    width=edge_width * self._style_pixel_scale(),
+                    width=edge_width * self._stroke_pixel_scale(),
                 ),
             ),
             text=hover_texts,
-            hoverinfo="text",
+            hoverinfo="text" if has_hover else "skip",
             name=name,
             legendgroup=cmd.gid,
             showlegend=show_legend_trace,
@@ -606,7 +789,7 @@ class PlotlyRenderer:
             mode="lines",
             line=dict(
                 color=_sanitize_color(cmd.style.get("color", "#aaaaaa")),
-                width=max(0.5, cmd.style.get("width", 1) * self._style_pixel_scale()),
+                width=max(0.25, cmd.style.get("width", 1) * self._stroke_pixel_scale()),
                 dash=dash,
             ),
             opacity=cmd.style.get("alpha", 1.0),
@@ -614,7 +797,9 @@ class PlotlyRenderer:
             hoverinfo="text",
             name=self._gid_to_legend_name(cmd.gid),
             legendgroup=cmd.gid,
-            showlegend=cmd.gid not in self._trace_groups,
+            showlegend=self._should_show_legend_entry(
+                self._gid_to_legend_name(cmd.gid), cmd.gid
+            ),
         ))
         self._trace_groups.setdefault(cmd.gid, []).append(len(self.fig.data) - 1)
 
@@ -623,8 +808,9 @@ class PlotlyRenderer:
     # ------------------------------------------------------------------
 
     def _render_polygon(self, cmd: DrawingCommand):
-        points = cmd.data.get("points", [])
-        if not points:
+        rings = cmd.data.get("rings") or [cmd.data.get("points", [])]
+        rings = [ring for ring in rings if len(ring) >= 3]
+        if not rings:
             return
         raw_fill = cmd.style.get("fill_color")
         has_fill = raw_fill is not None and (
@@ -644,43 +830,44 @@ class PlotlyRenderer:
             def _build_path(pts):
                 if not pts:
                     return ""
-                path = f"M {pts[0][0]},{self._paper_y(pts[0][1], cmd.gid, cmd.style)}"
+                path = f"M {self._paper_x(pts[0][0])},{self._paper_y(pts[0][1], cmd.gid, cmd.style)}"
                 for x, y in pts[1:]:
-                    path += f" L {x},{self._paper_y(y, cmd.gid, cmd.style)}"
+                    path += f" L {self._paper_x(x)},{self._paper_y(y, cmd.gid, cmd.style)}"
                 path += " Z"
                 return path
 
-            path_str = _build_path(points)
-            self.fig.add_shape(
-                type="path",
-                path=path_str,
-                xref="paper",
-                yref="paper",
-                fillcolor=fill_color if has_fill else "rgba(0,0,0,0)",
-                line=dict(
-                    color=edge_color,
-                    width=edge_width * self._style_pixel_scale(),
-                ),
-                opacity=alpha,
-            )
+            for points in rings:
+                self.fig.add_shape(
+                    type="path",
+                    path=_build_path(points),
+                    xref="paper",
+                    yref="paper",
+                    fillcolor=fill_color if has_fill else "rgba(0,0,0,0)",
+                    line=dict(
+                        color=edge_color,
+                        width=edge_width * self._stroke_pixel_scale(),
+                    ),
+                    opacity=alpha,
+                )
         else:
-            x = [p[0] for p in points] + [points[0][0]]
-            y = [p[1] for p in points] + [points[0][1]]
-            self.fig.add_trace(go.Scatter(
-                x=x,
-                y=y,
-                mode="lines",
-                fill="toself" if has_fill else None,
-                fillcolor=fill_color,
-                line=dict(
-                    color=edge_color,
-                    width=max(0, edge_width * self._style_pixel_scale()),
-                ),
-                opacity=alpha,
-                hoverinfo="none",
-                legendgroup=cmd.gid,
-                showlegend=False,
-            ))
+            for points in rings:
+                x = [p[0] for p in points] + [points[0][0]]
+                y = [p[1] for p in points] + [points[0][1]]
+                self.fig.add_trace(go.Scatter(
+                    x=x,
+                    y=y,
+                    mode="lines",
+                    fill="toself" if has_fill else None,
+                    fillcolor=fill_color,
+                    line=dict(
+                        color=edge_color,
+                        width=max(0, edge_width * self._stroke_pixel_scale()),
+                    ),
+                    opacity=alpha,
+                    hoverinfo="none",
+                    legendgroup=cmd.gid,
+                    showlegend=False,
+                ))
 
     # ------------------------------------------------------------------
     # Text annotation
@@ -690,35 +877,78 @@ class PlotlyRenderer:
         va = cmd.style.get("va", "center")
         ha = cmd.style.get("ha", "center")
         yanchor, xanchor = ANCHOR_MAP.get((va, ha), ("middle", "center"))
-        xref = cmd.style.get("xref", "x")
-        yref = cmd.style.get("yref", "y")
+        # Horizontal alignment is defined in screen space.  Reversing the
+        # data axis changes where the anchor is drawn, not which direction
+        # the glyphs extend from it.
+        xanchor = {"left": "left", "right": "right", "center": "center"}.get(
+            ha, "center"
+        )
+        coordinate_refs = {
+            CoordinateSpace.DATA: ("x", "y"),
+            CoordinateSpace.AXES: ("x domain", "y domain"),
+            CoordinateSpace.PAPER: ("paper", "paper"),
+        }
+        xref, yref = coordinate_refs[cmd.space]
 
-        # Convert offset_points (Matplotlib points) to pixels
+        # Convert the final Matplotlib point offset into target CSS pixels.
+        # It must use the same source→target scale as the font itself; using
+        # source DPI alone exaggerates collision-handler placements when a
+        # 4096px source chart is replayed into a 1000px Plotly viewport.
         offset_points = cmd.data.get("offset_points", (0.0, 0.0))
-        dpi = self.style_info.get("dpi", 100)
-        xshift = offset_points[0] / 72.0 * dpi
-        yshift = offset_points[1] / 72.0 * dpi
+        point_scale = self._font_pixel_scale()
+        xshift = offset_points[0] * point_scale
+        yshift = offset_points[1] * point_scale
 
         # Apply any explicit xshift/yshift from style (overrides offset)
         xshift = cmd.style.get("xshift", xshift)
         yshift = cmd.style.get("yshift", yshift)
 
         rotation = cmd.style.get("rotation", 0.0)
+        # Plotly annotations render HTML line breaks, while a literal newline
+        # is collapsed to whitespace.  Preserve Matplotlib's multiline labels.
+        text = str(cmd.data.get("text", "")).replace("\n", "<br>")
+
+        font = dict(
+            size=max(
+                8,
+                cmd.style.get("font_size", 12)
+                * self._font_pixel_scale()
+                * _KALEIDO_TEXT_SCALE,
+            ),
+            color=_sanitize_color(cmd.style.get("font_color", "#ffffff")),
+            family=_font_family(cmd.style.get("font_name")),
+        )
+        # Plotly's current annotation font schema supports CSS weights.  Keep
+        # this conditional for older versions that do not expose the property.
+        if "weight" in go.layout.annotation.Font()._valid_props:
+            weight = cmd.style.get("font_weight", "normal")
+            if isinstance(weight, str):
+                weight = {"normal": 400, "bold": 700}.get(weight.lower(), 400)
+            font["weight"] = weight
+        else:
+            weight = cmd.style.get("font_weight", "normal")
+
+        # Kaleido's Plotly annotation backend can ignore ``font.weight`` for
+        # locally installed fonts.  Its HTML text parser reliably preserves a
+        # Matplotlib bold label, including in static PNG export.
+        if weight == "bold" or (isinstance(weight, (int, float)) and weight >= 600):
+            text = f"<b>{text}</b>"
+            # Plotly/Kaleido versions that accept ``font.weight`` still do
+            # not consistently select the bold face for a locally resolved
+            # family.  Put a widely available bold face first so static PNG
+            # output retains the source label hierarchy.
+            font["family"] = "Arial Black, Arial, sans-serif"
 
         self.fig.add_annotation(
-            x=cmd.data.get("x"),
+            x=(self._paper_x(cmd.data.get("x")) if xref == "paper" else cmd.data.get("x")),
             y=(
                 self._paper_y(cmd.data.get("y"), cmd.gid, cmd.style)
                 if yref == "paper"
                 else cmd.data.get("y")
             ),
-            text=cmd.data.get("text", ""),
+            text=text,
             showarrow=False,
-            font=dict(
-                size=max(8, cmd.style.get("font_size", 12) * self._style_pixel_scale()),
-                color=_sanitize_color(cmd.style.get("font_color", "#ffffff")),
-                family=_font_family(cmd.style.get("font_name")),
-            ),
+            font=font,
             xanchor=xanchor,
             yanchor=yanchor,
             xshift=xshift,
@@ -740,20 +970,60 @@ class PlotlyRenderer:
             dash = "solid"
         else:
             dash = LINE_STYLE_MAP.get(str(line_style), "solid")
-        self.fig.add_trace(go.Scattergl(
+
+        # Matplotlib lines with clip_on=False are decorations outside the
+        # data viewport (for example the Zenith horizon ring).  A Plotly
+        # layout shape preserves that unclipped contract and remains below
+        # layout annotations; a trace can obscure annotations across the
+        # SVG/WebGL layer boundary even when its command zorder is lower.
+        if cmd.clip_id is None:
+            path_parts = []
+            drawing = False
+            for x, y in zip(cmd.data.get("x", []), cmd.data.get("y", [])):
+                if x is None or y is None:
+                    drawing = False
+                    continue
+                path_parts.append(f"{'L' if drawing else 'M'} {x},{y}")
+                drawing = True
+            if path_parts:
+                self.fig.add_shape(
+                    type="path",
+                    path=" ".join(path_parts),
+                    xref="x",
+                    yref="y",
+                    line=dict(
+                        color=_sanitize_color(style.get("color", "#777777")),
+                        width=max(
+                            0.25,
+                            style.get("width", 1) * self._stroke_pixel_scale(),
+                        ),
+                        dash=dash,
+                    ),
+                    opacity=style.get("alpha", 1.0),
+                    layer="above",
+                )
+            return
+
+        # A single Matplotlib Line2D is an SVG-layer artist.  Keep it on
+        # Plotly's SVG layer as well so annotations and shapes obey the same
+        # visual stacking order.  Scattergl's canvas can cover annotations
+        # even when their zorder is higher (notably Zenith cardinal labels).
+        self.fig.add_trace(go.Scatter(
             x=cmd.data.get("x"),
             y=cmd.data.get("y"),
             mode="lines",
             line=dict(
                 color=_sanitize_color(style.get("color", "#777777")),
-                width=max(0.5, style.get("width", 1) * self._style_pixel_scale()),
+                width=max(0.25, style.get("width", 1) * self._stroke_pixel_scale()),
                 dash=dash,
             ),
             opacity=style.get("alpha", 1.0),
             hoverinfo="none",
             name=self._gid_to_legend_name(cmd.gid),
             legendgroup=cmd.gid,
-            showlegend=cmd.gid not in self._trace_groups,
+            showlegend=self._should_show_legend_entry(
+                self._gid_to_legend_name(cmd.gid), cmd.gid
+            ),
         ))
         self._trace_groups.setdefault(cmd.gid, []).append(len(self.fig.data) - 1)
 
@@ -798,16 +1068,30 @@ class PlotlyRenderer:
             radius = cmd.data.get("radius")
             if radius is not None:
                 r = float(radius)
+            elif cmd.clip_id in self._clip_polygons:
+                clip_x0, clip_y0, clip_x1, clip_y1 = self._clip_polygons[
+                    cmd.clip_id
+                ].bounds
+                cx = (clip_x0 + clip_x1) / 2.0
+                cy = (clip_y0 + clip_y1) / 2.0
+                r = min(clip_x1 - clip_x0, clip_y1 - clip_y0) / 2.0
             else:
                 r = max(abs(float(x_max) - cx), abs(float(y_max) - cy))
             rx = max(r, 1e-9)
             ry = max(r, 1e-9)
 
             rr = ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2
-            z = np.clip(1.0 - rr, 0.0, 1.0)
-            z = np.flipud(z)
-            # Reverse color stops to match matplotlib's radial gradient
-            color_stops = [[1.0 - s[0], s[1]] for s in reversed(color_stops)]
+            z = np.where(rr <= 1.0, rr, np.nan)
+
+            # Match GradientBackgroundMixin._create_colormap exactly:
+            # radial positions are halved (except the final stop, which stays
+            # at one) and the resulting Matplotlib colormap is reversed.
+            radial_positions = [float(stop[0]) / 2.0 for stop in color_stops]
+            radial_positions[-1] = 1.0
+            color_stops = [
+                [1.0 - radial_positions[index], color_stops[index][1]]
+                for index in reversed(range(len(color_stops)))
+            ]
         else:
             # Linear gradients in starplot go from stop=0 at the bottom to stop=1 at the top.
             # Use a two-column heatmap so zsmooth works in both directions, matching
@@ -825,7 +1109,7 @@ class PlotlyRenderer:
             colorscale=color_stops,
             showscale=False,
             hoverinfo="skip",
-            zsmooth=False,
+            zsmooth="best" if direction == "radial" else False,
             zmin=0.0,
             zmax=1.0,
             showlegend=False,
@@ -864,8 +1148,9 @@ class PlotlyRenderer:
         font_name = _font_family(style.get("font_name"))
         font_alpha = float(style.get("font_alpha", 1.0))
         base_size = float(style.get("font_size", 12))
-        header_size = max(11, base_size * 0.55)
-        value_size = max(10, base_size * 0.48)
+        font_scale = self._font_pixel_scale()
+        header_size = max(11, base_size * 1.2 * font_scale)
+        value_size = max(10, base_size * font_scale)
         bg_color = style.get(
             "background_color",
             self.style_info.get("figure_background_color", "#ffffff"),
@@ -878,14 +1163,14 @@ class PlotlyRenderer:
                 l=margin.l if margin.l is not None else 10,
                 r=margin.r if margin.r is not None else 10,
                 t=margin.t if margin.t is not None else 30,
-                b=max(margin.b if margin.b is not None else 10, 170),
+                b=max(margin.b if margin.b is not None else 10, 105),
             )
         )
 
         table_top = -0.01
-        header_y = -0.045
-        value_y = -0.09
-        table_bottom = -0.125
+        header_y = -0.03
+        value_y = -0.068
+        table_bottom = -0.09
 
         self.fig.add_shape(
             type="rect",
@@ -947,6 +1232,39 @@ class PlotlyRenderer:
             x_left = x_right
 
     def _add_interactive_features(self):
+        magnitude_scale = self.style_info.get("magnitude_scale")
+        if self.fig.layout.showlegend and magnitude_scale:
+            labels = magnitude_scale.get("labels", [])
+            sizes = magnitude_scale.get("sizes", [])
+            for index, (label, size) in enumerate(zip(labels, sizes)):
+                self.fig.add_trace(go.Scatter(
+                    x=[None],
+                    y=[None],
+                    mode="markers",
+                    marker=dict(
+                        symbol="circle",
+                        size=max(
+                            1.5,
+                            float(size)
+                            * self._font_pixel_scale()
+                            * _KALEIDO_MARKER_SCALE,
+                        ),
+                        color=magnitude_scale.get("color", "#000000"),
+                        line=dict(
+                            color=magnitude_scale.get("edge_color", "#000000"),
+                            width=0,
+                        ),
+                    ),
+                    name=str(label),
+                    legendgroup="star-magnitude-scale",
+                    legendgrouptitle_text=(
+                        str(magnitude_scale.get("title", "Star Magnitude"))
+                        if index == 0 else None
+                    ),
+                    legendrank=2000 + index,
+                    showlegend=True,
+                    hoverinfo="skip",
+                ))
         self.fig.update_layout(
             modebar=dict(
                 add=["zoom", "pan", "select", "lasso2d", "resetScale2d"],

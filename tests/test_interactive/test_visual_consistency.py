@@ -41,6 +41,24 @@ def test_star_count_consistency():
     )
 
 
+def test_star_recording_preserves_resolved_marker_edge_color():
+    """Plotly must receive the edge color that Matplotlib resolved from style."""
+    from ibis import _ as ibis_col
+
+    p = _make_plot()
+    p.stars(
+        where=[ibis_col.magnitude < 6],
+        style__marker__edge_color="#ff0000",
+    )
+
+    scatter_cmds = [
+        command for command in p._recorder.commands
+        if command.kind == "scatter" and command.gid == "stars"
+    ]
+    assert scatter_cmds
+    assert scatter_cmds[0].style["edge_color"] == "#f00"
+
+
 def test_constellation_line_count_consistency():
     """Constellation lines must be recorded."""
     p = _make_plot()
@@ -50,6 +68,49 @@ def test_constellation_line_count_consistency():
     assert len(line_cmds) > 0, "Should have recorded constellation lines"
     total_lines = sum(len(c.data.get("lines", [])) for c in line_cmds)
     assert total_lines > 0
+
+
+def test_horizon_gridline_labels_use_paper_coordinates():
+    """Horizon altitude labels belong in the margins, not inside the sky."""
+    from starplot.interactive import InteractiveHorizonPlot
+
+    p = InteractiveHorizonPlot(
+        altitude=(0, 60),
+        azimuth=(325, 440),
+        resolution=512,
+    )
+    p.gridlines(
+        alt_locations=[30, 40, 50],
+        az_locations=[330, 345, 0, 15, 30, 45, 60, 75],
+    )
+
+    labels = [
+        command for command in p._recorder.commands
+        if command.gid == "gridlines-label"
+    ]
+    assert {"30° ", "40° ", "50° "}.issubset(
+        {command.data["text"] for command in labels}
+    )
+    assert all(command.style["xref"] == "paper" for command in labels)
+    assert all(command.style["yref"] == "paper" for command in labels)
+
+
+def test_horizon_text_records_the_prepared_az_alt_coordinate():
+    """Horizon labels must not project their prepared AZ/ALT coordinates twice."""
+    from starplot.interactive import InteractiveHorizonPlot
+
+    p = InteractiveHorizonPlot(
+        altitude=(0, 60),
+        azimuth=(325, 440),
+        resolution=512,
+    )
+    azimuth, altitude = 380.0, 30.0
+    p._text(azimuth, altitude, "Target", gid="test-label")
+
+    command = next(c for c in p._recorder.commands if c.gid == "test-label")
+    expected = p._proj.transform_point(azimuth, altitude, p._crs)
+    assert command.data["x"] == pytest.approx(expected[0])
+    assert command.data["y"] == pytest.approx(expected[1])
 
 
 def test_star_coordinates_are_finite():

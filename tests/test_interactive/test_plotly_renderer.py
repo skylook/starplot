@@ -10,7 +10,7 @@ except ImportError:
 
 pytestmark = pytest.mark.skipif(not PLOTLY_AVAILABLE, reason="plotly not installed")
 
-from starplot.interactive.commands import DrawingCommand
+from starplot.interactive.commands import CoordinateSpace, DrawingCommand
 from starplot.interactive.plotly_renderer import PlotlyRenderer
 
 
@@ -119,6 +119,48 @@ def test_renderer_line_collection():
     assert fig.data[0].mode == "lines"
 
 
+def test_renderer_single_line_uses_svg_layer_for_annotation_stacking():
+    cmd = DrawingCommand(
+        kind="line",
+        data={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        style={"color": "#ffffff", "width": 2, "alpha": 1.0},
+        zorder=1,
+        gid="horizon-circle",
+        clip_id="plot",
+    )
+
+    fig = make_renderer().render([cmd])
+
+    assert fig.data[0].type == "scatter"
+
+
+def test_renderer_unclipped_line_uses_shape_below_annotations():
+    line = DrawingCommand(
+        kind="line",
+        data={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        style={"color": "#ffffff", "width": 2, "alpha": 1.0},
+        zorder=1,
+        gid="decoration",
+        clip_id=None,
+    )
+    label = DrawingCommand(
+        kind="text",
+        data={"text": "N", "x": 0.5, "y": 0.5},
+        style={"font_color": "#ffffff"},
+        zorder=2,
+        gid="label",
+        space=CoordinateSpace.DATA,
+        clip_id=None,
+    )
+
+    fig = make_renderer().render([line, label])
+
+    assert len(fig.data) == 0
+    assert len(fig.layout.shapes) == 1
+    assert fig.layout.shapes[0].layer == "above"
+    assert len(fig.layout.annotations) == 1
+
+
 def test_renderer_polygon():
     cmd = DrawingCommand(
         kind="polygon",
@@ -170,6 +212,28 @@ def test_renderer_reserves_paper_space_for_horizon_footer():
     assert fig.layout.annotations[0].y == pytest.approx(0.03)
 
 
+def test_renderer_reserves_map_gutters_for_final_gridliner_labels():
+    """Gridliner labels outside Matplotlib axes must survive in Plotly paper."""
+    projection = {**PROJ_INFO, "plot_kind": "map"}
+    bottom = DrawingCommand(
+        kind="text", data={"text": "4h", "x": 0.9, "y": -0.02},
+        style={"font_color": "#000000", "ha": "center", "va": "top"},
+        zorder=1, gid="gridlines-label", space=CoordinateSpace.PAPER,
+    )
+    right = DrawingCommand(
+        kind="text", data={"text": "20°", "x": 1.02, "y": 0.8},
+        style={"font_color": "#000000", "ha": "left", "va": "center"},
+        zorder=1, gid="gridlines-label", space=CoordinateSpace.PAPER,
+    )
+
+    fig = PlotlyRenderer(projection, STYLE_INFO).render([bottom, right])
+
+    assert fig.layout.xaxis.domain[1] < 1
+    assert fig.layout.yaxis.domain[0] > 0
+    assert 0 < fig.layout.annotations[0].y < 1
+    assert 0 < fig.layout.annotations[1].x < 1
+
+
 def test_renderer_text_annotation():
     cmd = DrawingCommand(
         kind="text",
@@ -190,7 +254,23 @@ def test_renderer_text_annotation():
     ann = fig.layout.annotations[0]
     assert ann.text == "Sirius"
     assert ann.x == 10.5
+    assert ann.xanchor == "left"
     assert ann.font.family == "Inter, Arial, sans-serif"
+
+
+def test_renderer_text_preserves_matplotlib_multiline_labels():
+    cmd = DrawingCommand(
+        kind="text",
+        data={"text": "CANIS\nMAJOR", "x": 1.0, "y": 2.0},
+        style={"font_color": "#ffffff", "font_weight": "normal"},
+        zorder=1,
+        gid="constellations-label-name",
+        space=CoordinateSpace.DATA,
+    )
+
+    fig = make_renderer().render([cmd])
+
+    assert fig.layout.annotations[0].text == "CANIS<br>MAJOR"
 
 
 def test_renderer_scales_text_from_matplotlib_points():
@@ -261,6 +341,46 @@ def test_renderer_legend_dedup():
     assert legend_entries.count("Stars") == 1
 
 
+def test_renderer_uses_explicit_matplotlib_legend_and_magnitude_scale():
+    style_info = {
+        **STYLE_INFO,
+        "legend_labels": ["Star", "Nebula"],
+        "legend_background_color": "#f1f6fe",
+        "legend_font_color": "#000000",
+        "magnitude_scale": {
+            "title": "Star Magnitude",
+            "labels": ["0", "1"],
+            "sizes": [12.0, 8.0],
+            "color": "#000000",
+            "edge_color": "#000000",
+        },
+    }
+    commands = [
+        DrawingCommand(
+            kind="scatter",
+            data={"x": [1], "y": [1], "sizes": [10], "colors": ["#fff"], "alphas": [1.0]},
+            style={"legend_label": "Star"}, metadata=[{}], gid="stars",
+        ),
+        DrawingCommand(
+            kind="scatter",
+            data={"x": [2], "y": [2], "sizes": [10], "colors": ["#afa"], "alphas": [1.0]},
+            style={"legend_label": "Nebula"}, metadata=[{}], gid="dso_nebula",
+        ),
+        DrawingCommand(
+            kind="line_collection", data={"lines": [[(0, 0), (1, 1)]]},
+            style={"color": "#777"}, gid="gridlines",
+        ),
+    ]
+
+    fig = PlotlyRenderer(PROJ_INFO, style_info).render(commands)
+    legend_entries = [trace.name for trace in fig.data if trace.showlegend]
+
+    assert legend_entries == ["Star", "Nebula", "0", "1"]
+    assert fig.layout.legend.bgcolor == "#f1f6fe"
+    assert fig.layout.legend.font.color == "#000000"
+    assert fig.data[-2].legendgrouptitle.text == "Star Magnitude"
+
+
 def test_renderer_gradient_no_traces_without_proj_info():
     """Gradient without projected axis bounds should not add traces."""
     cmd = DrawingCommand(
@@ -308,6 +428,70 @@ def test_renderer_hover_star_text():
     assert "RA" in hover_text
 
 
+def test_renderer_disables_hover_payload_for_high_volume_trace(monkeypatch):
+    import starplot.interactive.plotly_renderer as renderer_module
+
+    monkeypatch.setattr(renderer_module, "_MAX_INTERACTIVE_HOVER_POINTS", 1)
+    cmd = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": [1.0, 2.0],
+            "y": [3.0, 4.0],
+            "sizes": [4.0, 4.0],
+            "colors": ["#fff", "#fff"],
+            "alphas": [1.0, 1.0],
+        },
+        metadata=[{"name": "A", "type": "star"}, {"name": "B", "type": "star"}],
+        gid="stars",
+    )
+
+    fig = make_renderer().render([cmd])
+
+    assert fig.data[0].hoverinfo == "skip"
+    assert fig.data[0].text is None
+
+
+def test_renderer_preserves_subpixel_area_for_high_volume_trace(monkeypatch):
+    import starplot.interactive.plotly_renderer as renderer_module
+
+    monkeypatch.setattr(renderer_module, "_MAX_INTERACTIVE_HOVER_POINTS", 1)
+    cmd = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": [1.0, 2.0],
+            "y": [3.0, 4.0],
+            "sizes": [0.02, 0.02],
+            "colors": ["#ffffff", "#ffffff"],
+            "alphas": 0.5,
+        },
+        style={"edge_color": "#ffffff", "edge_width": 2.0},
+        gid="stars",
+    )
+
+    fig = make_renderer().render([cmd])
+
+    assert list(fig.data[0].marker.size) == [1.0, 1.0]
+    assert fig.data[0].marker.line.width == 0
+    assert all(float(color.rsplit(",", 1)[1][:-1]) < 0.5 for color in fig.data[0].marker.color)
+
+
+def test_marker_size_calibration_can_retain_subpixel_diameter():
+    from starplot.interactive.style_converter import calibrate_marker_size
+
+    assert calibrate_marker_size(0.02, min_size=0.0) < 1.0
+    assert calibrate_marker_size(0.02) == 1.5
+    assert calibrate_marker_size(0.0, min_size=0.0) == 0.0
+
+
+def test_tiny_per_point_alpha_is_valid_plotly_css_color():
+    from starplot.interactive.plotly_renderer import _colors_with_alphas
+
+    color = _colors_with_alphas(["#ffffff"], [0.0000836198], 1)[0]
+
+    assert color == "rgba(255,255,255,0.00008362)"
+    go.Scattergl(marker={"color": [color]})
+
+
 def test_renderer_marker_uses_legend_label():
     cmd = DrawingCommand(
         kind="scatter",
@@ -334,6 +518,43 @@ def test_renderer_text_with_paper_ref():
     ann = fig.layout.annotations[0]
     assert ann.xref == "paper"
     assert ann.yref == "paper"
+
+
+def test_renderer_reserves_matplotlib_title_gutter():
+    cmd = DrawingCommand(
+        kind="text",
+        data={"text": "Virgo Cluster", "x": 0.5, "y": 0.95},
+        style={
+            "font_size": 64,
+            "font_color": "#ffffff",
+            "axes_domain_top": 0.86,
+        },
+        zorder=10,
+        gid="title",
+        space=CoordinateSpace.PAPER,
+    )
+
+    fig = make_renderer().render([cmd])
+
+    assert fig.layout.yaxis.domain[1] == pytest.approx(0.86)
+    assert fig.layout.annotations[0].y == pytest.approx(0.95)
+
+
+def test_renderer_uses_coordinate_space_for_axes_annotation():
+    """AXES-space source text must track the Plotly axes domain, not paper."""
+    cmd = DrawingCommand(
+        kind="text",
+        data={"text": "axes label", "x": 0.05, "y": 0.05},
+        style={"xref": "paper", "yref": "paper"},
+        zorder=1,
+        gid="axes-label",
+        space=CoordinateSpace.AXES,
+    )
+
+    fig = make_renderer().render([cmd])
+
+    assert fig.layout.annotations[0].xref == "x domain"
+    assert fig.layout.annotations[0].yref == "y domain"
 
 
 # ------------------------------------------------------------------
@@ -364,6 +585,16 @@ def renderer_with_circle_clip():
              "resolution": 512, "dpi": 100, "plot_scale": 1.0,
              "source_axes_width": 500.0}
     return PlotlyRenderer(proj, style, width=500, height=500)
+
+
+def test_renderer_paints_background_inside_recorded_clip_only():
+    renderer = renderer_with_circle_clip()
+
+    assert renderer.fig.layout.plot_bgcolor == "rgba(0,0,0,0)"
+    assert len(renderer.fig.layout.shapes) == 1
+    background = renderer.fig.layout.shapes[0]
+    assert background.fillcolor == "#000"
+    assert background.layer == "below"
 
 
 def scatter_command(x, y):
@@ -459,8 +690,8 @@ def test_renderer_converts_offset_points_to_pixels():
 # Task 6: Layout, gradients, transparency
 # ------------------------------------------------------------------
 
-def test_transparent_export_clears_paper_and_plot_backgrounds():
-    """Transparent export should set both backgrounds to fully transparent."""
+def test_transparent_export_clears_paper_but_preserves_axes_background():
+    """Match Matplotlib: transparent paper, explicit opaque axes facecolor."""
     from starplot.interactive import InteractiveMapPlot
     from starplot import Miller
     plot = InteractiveMapPlot(
@@ -469,7 +700,7 @@ def test_transparent_export_clears_paper_and_plot_backgrounds():
     )
     fig = plot.to_plotly(transparent=True)
     assert fig.layout.paper_bgcolor == "rgba(0,0,0,0)"
-    assert fig.layout.plot_bgcolor == "rgba(0,0,0,0)"
+    assert fig.layout.plot_bgcolor != "rgba(0,0,0,0)"
 
 
 def radial_gradient_command():
@@ -495,8 +726,10 @@ def test_radial_gradient_uses_source_radius_squared_and_reversal():
     figure = renderer.render([radial_gradient_command()])
     heatmap = next(trace for trace in figure.data if trace.type == "heatmap")
     z = np.array(heatmap.z)
-    # Center value (radius=0) should be ~1.0 (reversed: last color stop)
+    # The data remains radius^2; reversal is encoded in the colorscale,
+    # matching Matplotlib's reversed LinearSegmentedColormap.
     center = z.shape[0] // 2, z.shape[1] // 2
-    assert z[center] == pytest.approx(1.0, abs=0.05)
-    # Corner value (radius=1) should be ~0.0
-    assert z[0][0] == pytest.approx(0.0, abs=0.1)
+    assert z[center] == pytest.approx(0.0, abs=0.05)
+    assert z[0][0] == pytest.approx(1.0, abs=0.1)
+    assert heatmap.colorscale[0][1] == "#000000"
+    assert heatmap.colorscale[-1][1] == "#000022"

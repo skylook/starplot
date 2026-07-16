@@ -177,4 +177,4 @@ p.celestial_equator()
 p.ax.tick_params(axis="both", labelsize=28)
 
 p.export("galaxy_custom_marker.png", padding=0.3, transparent=True)
-p.export_html("galaxy_custom_marker.html")
+p.export_html("galaxy_custom_marker.html", transparent=True)

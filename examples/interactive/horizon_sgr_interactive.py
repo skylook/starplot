@@ -23,4 +23,4 @@ p.horizon(labels={180: "SOUTH"})
 p.gridlines()
 
 p.export("horizon_sgr.png", padding=0.5)
-p.export_html("horizon_sgr.html", width=1400, height=700)
+p.export_html("horizon_sgr.html", width=1400, height=1042)

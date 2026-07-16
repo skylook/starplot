@@ -83,4 +83,4 @@ for sat in iss.trajectory(dt_start, dt_end, step=timedelta(seconds=1)):
     )
 
 p.export("optic_iss_transit.png", padding=0.1, transparent=True)
-p.export_html("optic_iss_transit.html")
+p.export_html("optic_iss_transit.html", transparent=True)

@@ -23,7 +23,7 @@ class DrawingCommand:
         data: Coordinate data dict:
             - scatter: {x, y, sizes, colors, alphas}
             - line: {x, y}
-            - polygon: {points}  # list of (x,y) tuples
+            - polygon: {points, rings?}  # one or more independent paths
             - text: {text, x, y}
             - line_collection: {lines}  # list of [(x1,y1),(x2,y2)] pairs
             - gradient: {direction, color_stops}

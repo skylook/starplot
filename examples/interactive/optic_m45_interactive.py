@@ -23,4 +23,4 @@ p.stars(where=[_.magnitude < 12], color_fn=color_by_bv)
 p.info()
 
 p.export("optic_m45.png", padding=0.1, transparent=True)
-p.export_html("optic_m45.html", width=1000, height=1000)
+p.export_html("optic_m45.html", width=1000, height=1000, transparent=True)

@@ -25,4 +25,4 @@ p.constellation_labels()
 # Static export (same as original)
 p.export("star_chart_basic.png", transparent=True, padding=0.1)
 # Interactive HTML export
-p.export_html("star_chart_basic.html")
+p.export_html("star_chart_basic.html", transparent=True)

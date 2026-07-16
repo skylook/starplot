@@ -75,4 +75,4 @@ p.style.gridlines.line.width = 2
 p.gridlines()
 
 p.export("horizon_double_cluster.png", padding=0.25)
-p.export_html("horizon_double_cluster.html")
+p.export_html("horizon_double_cluster.html", width=1400, height=1000)
