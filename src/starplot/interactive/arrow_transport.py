@@ -12,19 +12,21 @@ import pyarrow as pa
 from starplot.interactive.scene import (
     ColumnarData,
     CoordinateEncodingKind,
-    InteractionPolicy,
     SceneKind,
     SceneLayer,
 )
 from starplot.interactive.scene_manifest import (
     SCENE_SCHEMA_VERSION,
     LayerManifestModel,
+    _ResolvedLayerContext,
 )
 
 
+_STREAM_PREFIX = b"\xff\xff\xff\xff"
+_STREAM_EOS = b"\xff\xff\xff\xff\x00\x00\x00\x00"
 _NUMERIC_TYPES: Mapping[str, pa.DataType] = {
     "size": pa.float32(),
-    "color_index": pa.uint8(),  # uint16 is validated as the other allowed form
+    "color_index": pa.uint8(),  # uint16 is the other validated palette form
     "opacity": pa.float32(),
     "symbol_index": pa.uint8(),
     "magnitude": pa.float32(),
@@ -38,10 +40,48 @@ _NUMERIC_TYPES: Mapping[str, pa.DataType] = {
     "rotation": pa.float32(),
     "x_offset": pa.float32(),
     "y_offset": pa.float32(),
+    # Starplot Scene 1.0 retains per-cell info-table width for exact parity.
     "width": pa.float32(),
 }
 _DICTIONARY_COLUMNS = frozenset({"name", "text", "column", "value"})
 _STRING_COLUMNS = frozenset({"object_id"})
+_CANONICAL_COLUMNS: Mapping[SceneKind, tuple[str, ...]] = {
+    SceneKind.SCATTER: (
+        "x",
+        "y",
+        "size",
+        "color_index",
+        "opacity",
+        "symbol_index",
+        "object_id",
+        "name",
+        "magnitude",
+        "ra",
+        "dec",
+    ),
+    SceneKind.LINE: ("path_id", "vertex_index", "x", "y", "style_id", "object_id"),
+    SceneKind.LINE_COLLECTION: (
+        "path_id",
+        "vertex_index",
+        "x",
+        "y",
+        "style_id",
+        "object_id",
+    ),
+    SceneKind.POLYGON: ("polygon_id", "ring_id", "vertex_index", "x", "y"),
+    SceneKind.TEXT: (
+        "x",
+        "y",
+        "text",
+        "rotation",
+        "x_offset",
+        "y_offset",
+        "style_id",
+        "object_id",
+    ),
+    SceneKind.GRADIENT: (),
+    SceneKind.INFO_TABLE: ("column", "value", "width", "object_id"),
+}
 _REQUIRED_COLUMNS: Mapping[SceneKind, frozenset[str]] = {
     SceneKind.SCATTER: frozenset({"x", "y", "size", "color_index", "opacity"}),
     SceneKind.LINE: frozenset({"path_id", "vertex_index", "x", "y"}),
@@ -51,6 +91,7 @@ _REQUIRED_COLUMNS: Mapping[SceneKind, frozenset[str]] = {
         {"x", "y", "text", "rotation", "x_offset", "y_offset", "style_id"}
     ),
     SceneKind.GRADIENT: frozenset(),
+    # `width` is current Scene 1.0 data, not an invented transport-only field.
     SceneKind.INFO_TABLE: frozenset({"column", "value", "width"}),
 }
 _OPTIONAL_COLUMNS: Mapping[SceneKind, frozenset[str]] = {
@@ -67,14 +108,15 @@ _OPTIONAL_COLUMNS: Mapping[SceneKind, frozenset[str]] = {
 
 
 def layer_to_table(layer: SceneLayer) -> pa.Table:
-    """Validate and convert one immutable Scene layer to an Arrow table."""
+    """Validate and convert one immutable Scene layer to a canonical table."""
     if not isinstance(layer, SceneLayer):
         raise TypeError("layer must be a SceneLayer")
     _validate_layer_columns(layer)
     arrays = []
     fields = []
-    for name, values in layer.data.columns.items():
-        arrow_array = _column_to_arrow(layer, name, values)
+    for name in _canonical_column_names(layer):
+        values = layer.data[name]
+        arrow_array = _column_to_arrow(name, values)
         arrays.append(arrow_array)
         fields.append(
             pa.field(
@@ -89,7 +131,7 @@ def layer_to_table(layer: SceneLayer) -> pa.Table:
 
 
 def encode_table_stream(table: pa.Table, max_chunksize: int = 250_000) -> bytes:
-    """Encode a table using IPC Stream format with deterministic batches."""
+    """Encode a table using canonical IPC Stream batches and EOS framing."""
     if not isinstance(table, pa.Table):
         raise TypeError("table must be a pyarrow.Table")
     if not isinstance(max_chunksize, int) or max_chunksize <= 0:
@@ -97,42 +139,61 @@ def encode_table_stream(table: pa.Table, max_chunksize: int = 250_000) -> bytes:
     sink = pa.BufferOutputStream()
     with pa.ipc.new_stream(sink, table.schema) as writer:
         writer.write_table(table, max_chunksize=max_chunksize)
-    return sink.getvalue().to_pybytes()
+    payload = sink.getvalue().to_pybytes()
+    if not payload.startswith(_STREAM_PREFIX) or not payload.endswith(_STREAM_EOS):
+        raise RuntimeError("PyArrow did not emit canonical IPC Stream framing")
+    return payload
 
 
 def encode_layer_stream(layer: SceneLayer, max_chunksize: int = 250_000) -> bytes:
     return encode_table_stream(layer_to_table(layer), max_chunksize=max_chunksize)
 
 
-def decode_layer_stream(data: bytes, manifest_layer: LayerManifestModel) -> SceneLayer:
-    """Validate exact IPC bytes and reconstruct an immutable Scene layer."""
+def decode_layer_stream(
+    data: bytes, resolved_layer: _ResolvedLayerContext
+) -> SceneLayer:
+    """Validate exact IPC bytes and reconstruct one immutable Scene layer."""
     if not isinstance(data, bytes):
         raise TypeError("data must be bytes")
-    if not isinstance(manifest_layer, LayerManifestModel):
-        manifest_layer = LayerManifestModel.model_validate(manifest_layer)
+    if not isinstance(resolved_layer, _ResolvedLayerContext):
+        raise TypeError(
+            "manifest layer must be resolved by SceneManifestModel.resolve_layer()"
+        )
+    manifest_layer = resolved_layer.wire
     if len(data) != manifest_layer.byte_length:
         raise ValueError("Arrow payload byte_length does not match the manifest")
     if layer_content_hash(data) != manifest_layer.content_hash:
         raise ValueError("Arrow payload content hash does not match the manifest")
+    if not data.startswith(_STREAM_PREFIX):
+        raise ValueError("payload is not a canonical Arrow IPC Stream")
+    if not data.endswith(_STREAM_EOS):
+        raise ValueError("Arrow IPC Stream is missing the canonical EOS marker")
+
+    source = pa.BufferReader(data)
     try:
-        with pa.ipc.open_stream(data) as reader:
+        with pa.ipc.open_stream(source) as reader:
             table = reader.read_all()
-    except (pa.ArrowInvalid, pa.ArrowIOError) as error:
-        raise ValueError("payload is not a valid Arrow IPC Stream") from error
-    metadata = table.schema.metadata or {}
-    if metadata.get(b"starplot_schema_version") != SCENE_SCHEMA_VERSION.encode():
+        consumed = source.tell()
+    except (pa.ArrowInvalid, pa.ArrowIOError, OSError) as error:
         raise ValueError(
-            "Arrow schema version does not match the supported Scene schema"
-        )
-    if metadata.get(b"layer_id") != manifest_layer.id.encode("utf-8"):
+            "payload is truncated or is not a valid Arrow IPC Stream"
+        ) from error
+    if consumed != len(data):
+        raise ValueError("Arrow IPC Stream contains trailing bytes after EOS")
+
+    metadata = table.schema.metadata or {}
+    expected_metadata = _wire_schema_metadata(manifest_layer)
+    if metadata.get(b"layer_id") != expected_metadata[b"layer_id"]:
         raise ValueError("Arrow schema layer id does not match the manifest")
-    if metadata.get(b"kind") != manifest_layer.kind.value.encode("ascii"):
-        raise ValueError("Arrow schema kind does not match the manifest")
+    if metadata != expected_metadata:
+        mismatched = sorted(
+            key.decode("ascii", errors="replace")
+            for key in set(metadata) | set(expected_metadata)
+            if metadata.get(key) != expected_metadata.get(key)
+        )
+        raise ValueError(f"Arrow schema metadata does not match manifest: {mismatched}")
     if table.num_rows != manifest_layer.row_count:
         raise ValueError("Arrow row count does not match the manifest")
-    expected_encoding = _canonical_encoding_json(manifest_layer.coordinate_encoding)
-    if metadata.get(b"coordinate_encoding") != expected_encoding:
-        raise ValueError("Arrow coordinate encoding does not match the manifest")
     _validate_arrow_schema(table.schema, manifest_layer)
 
     columns = {}
@@ -153,40 +214,38 @@ def decode_layer_stream(data: bytes, manifest_layer: LayerManifestModel) -> Scen
     scene_layer = SceneLayer(
         id=manifest_layer.id,
         kind=manifest_layer.kind,
-        group_id=manifest_layer.resolved_group_id,
+        group_id=manifest_layer.group_id,
         zorder=manifest_layer.zorder,
         load_priority=manifest_layer.load_priority,
         space=manifest_layer.coordinate_space,
         clip_id=manifest_layer.clip_id,
-        style=manifest_layer.resolved_style,
+        style=resolved_layer.style,
         data=ColumnarData.from_mapping(columns),
-        interaction=_resolved_interaction(manifest_layer),
+        interaction=manifest_layer.interaction,
         hover_fields=manifest_layer.hover_fields,
         required=manifest_layer.required,
         coordinate_encoding={
             name: value.to_scene()
             for name, value in manifest_layer.coordinate_encoding.items()
         },
-        palette=manifest_layer.resolved_palette,
+        palette=resolved_layer.palette,
     )
     _validate_layer_columns(scene_layer)
     return scene_layer
-
-
-def _resolved_interaction(manifest_layer: LayerManifestModel) -> InteractionPolicy:
-    if manifest_layer.resolved_interaction is not None:
-        return manifest_layer.resolved_interaction
-    if not manifest_layer.interactive:
-        return InteractionPolicy.NONE
-    if "object_id" in manifest_layer.hover_fields:
-        return InteractionPolicy.HOVER_AND_DETAIL
-    return InteractionPolicy.HOVER
 
 
 def layer_content_hash(data: bytes) -> str:
     if not isinstance(data, bytes):
         raise TypeError("data must be bytes")
     return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _canonical_column_names(layer: SceneLayer) -> tuple[str, ...]:
+    known = _CANONICAL_COLUMNS[layer.kind]
+    names = set(layer.data.columns)
+    ordered_known = tuple(name for name in known if name in names)
+    hover_extensions = tuple(sorted(names - set(known)))
+    return ordered_known + hover_extensions
 
 
 def _validate_layer_columns(layer: SceneLayer) -> None:
@@ -201,14 +260,16 @@ def _validate_layer_columns(layer: SceneLayer) -> None:
         raise ValueError(
             f"{layer.kind.value} contains unsupported columns: {unexpected}"
         )
+    expected_encodings = {"x", "y"} if "x" in required else set()
+    if set(layer.coordinate_encoding) != expected_encodings:
+        raise ValueError("coordinate-bearing layers require exactly x/y encodings")
     for name in ("x", "y"):
         if name not in layer.data.columns:
             continue
-        encoding = layer.coordinate_encoding.get(name)
+        encoding = layer.coordinate_encoding[name]
         expected = (
             np.dtype(np.float32)
-            if encoding is not None
-            and encoding.kind is CoordinateEncodingKind.RELATIVE_F32
+            if encoding.kind is CoordinateEncodingKind.RELATIVE_F32
             else np.dtype(np.float64)
         )
         if layer.data[name].dtype != expected:
@@ -229,34 +290,20 @@ def _validate_layer_columns(layer: SceneLayer) -> None:
 def _validate_arrow_schema(
     schema: pa.Schema, manifest_layer: LayerManifestModel
 ) -> None:
-    """Reject type/metadata substitution before allocating NumPy columns."""
-    for axis, encoding in manifest_layer.coordinate_encoding.items():
-        if encoding.kind is not CoordinateEncodingKind.RELATIVE_F32:
-            continue
-        for component, value in (
-            ("origin", encoding.origin),
-            ("scale", encoding.scale),
-        ):
-            key = f"{component}_{axis}".encode("ascii")
-            expected = repr(value).encode("ascii")
-            actual = (schema.metadata or {}).get(key)
-            if actual != expected:
-                raise ValueError(
-                    f"Arrow schema {key.decode()} does not match the manifest"
-                )
-
+    expected_names = _wire_column_names(manifest_layer, tuple(schema.names))
+    if tuple(schema.names) != expected_names:
+        raise ValueError("Arrow fields are not in canonical Scene column order")
     for field in schema:
         name = field.name
-        dtype_bytes = (field.metadata or {}).get(b"numpy_dtype")
-        if dtype_bytes is None:
-            raise ValueError(f"Arrow field {name!r} is missing NumPy dtype metadata")
+        if set(field.metadata or {}) != {b"numpy_dtype"}:
+            raise ValueError(f"Arrow field {name!r} has noncanonical metadata")
+        dtype_bytes = field.metadata[b"numpy_dtype"]
         try:
             numpy_dtype = np.dtype(dtype_bytes.decode("ascii"))
         except (UnicodeDecodeError, TypeError) as error:
             raise ValueError(
                 f"Arrow field {name!r} has invalid dtype metadata"
             ) from error
-
         if name in _DICTIONARY_COLUMNS:
             if not pa.types.is_dictionary(field.type) or not pa.types.is_string(
                 field.type.value_type
@@ -288,7 +335,28 @@ def _validate_arrow_schema(
             )
 
 
-def _column_to_arrow(layer: SceneLayer, name: str, values: np.ndarray) -> pa.Array:
+def _wire_column_names(
+    manifest_layer: LayerManifestModel, actual_names: tuple[str, ...]
+) -> tuple[str, ...]:
+    known = _CANONICAL_COLUMNS[manifest_layer.kind]
+    names = set(actual_names)
+    allowed = (
+        _REQUIRED_COLUMNS[manifest_layer.kind]
+        | _OPTIONAL_COLUMNS[manifest_layer.kind]
+        | set(manifest_layer.hover_fields)
+    )
+    missing = sorted(_REQUIRED_COLUMNS[manifest_layer.kind] - names)
+    unexpected = sorted(names - allowed)
+    if missing:
+        raise ValueError(f"required Arrow columns are missing: {missing}")
+    if unexpected:
+        raise ValueError(f"unsupported Arrow columns: {unexpected}")
+    return tuple(name for name in known if name in names) + tuple(
+        sorted(names - set(known))
+    )
+
+
+def _column_to_arrow(name: str, values: np.ndarray) -> pa.Array:
     if name in _DICTIONARY_COLUMNS:
         return _string_array(values, name).dictionary_encode()
     if name in _STRING_COLUMNS or values.dtype.kind in {"U", "S", "O"}:
@@ -332,6 +400,22 @@ def _schema_metadata(layer: SceneLayer) -> Mapping[bytes, bytes]:
     return metadata
 
 
+def _wire_schema_metadata(layer: LayerManifestModel) -> Mapping[bytes, bytes]:
+    metadata: dict[bytes, bytes] = {
+        b"starplot_schema_version": SCENE_SCHEMA_VERSION.encode("ascii"),
+        b"layer_id": layer.id.encode("utf-8"),
+        b"kind": layer.kind.value.encode("ascii"),
+        b"coordinate_encoding": _canonical_encoding_json(layer.coordinate_encoding),
+    }
+    for axis in ("x", "y"):
+        encoding = layer.coordinate_encoding.get(axis)
+        if encoding is None or encoding.kind is not CoordinateEncodingKind.RELATIVE_F32:
+            continue
+        metadata[f"origin_{axis}".encode()] = repr(encoding.origin).encode("ascii")
+        metadata[f"scale_{axis}".encode()] = repr(encoding.scale).encode("ascii")
+    return metadata
+
+
 def _canonical_encoding_json(encodings: Mapping) -> bytes:
     value = {}
     for name, encoding in encodings.items():
@@ -351,13 +435,24 @@ def _canonical_encoding_json(encodings: Mapping) -> bytes:
 
 
 def _arrow_to_numpy(column: pa.ChunkedArray, dtype: np.dtype, name: str) -> np.ndarray:
-    values = column.to_pylist()
-    if dtype.kind == "O":
-        return np.asarray(values, dtype=object)
-    if dtype.kind in {"U", "S"}:
-        if any(value is None for value in values):
+    if dtype.kind in {"O", "U", "S"}:
+        values = _chunked_to_pylist(column)
+        if dtype.kind in {"U", "S"} and any(value is None for value in values):
             raise ValueError(f"Arrow field {name!r} cannot restore nulls into {dtype}")
         return np.asarray(values, dtype=dtype)
     if column.null_count:
         raise ValueError(f"Arrow numeric field {name!r} cannot contain nulls")
-    return np.asarray(values, dtype=dtype)
+    chunks = [
+        np.asarray(chunk.to_numpy(zero_copy_only=False), dtype=dtype)
+        for chunk in column.chunks
+    ]
+    if not chunks:
+        return np.empty(0, dtype=dtype)
+    if len(chunks) == 1:
+        return np.ascontiguousarray(chunks[0], dtype=dtype)
+    return np.concatenate(chunks).astype(dtype, copy=False)
+
+
+def _chunked_to_pylist(column: pa.ChunkedArray) -> list:
+    """Bounded materialization path used only for string/dictionary columns."""
+    return column.to_pylist()

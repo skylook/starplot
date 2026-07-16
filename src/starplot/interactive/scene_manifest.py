@@ -1,10 +1,12 @@
-"""Versioned JSON manifest models for transport-neutral interactive scenes."""
+"""Strict, versioned manifests for transport-neutral interactive scenes."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import json
 import re
+from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -21,21 +23,38 @@ from starplot.interactive.scene import (
 
 SCENE_SCHEMA_VERSION = "1.0"
 _SUPPORTED_SCHEMA_MAJOR = 1
+_CURRENT_LOADER_VERSION = (1, 0)
 _VERSION_PATTERN = re.compile(r"^(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)$")
 _HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_COMPATIBLE_EXTENSION_KEYS = frozenset({"description", "attribution"})
+_COORDINATE_KINDS = frozenset(
+    {
+        SceneKind.SCATTER,
+        SceneKind.LINE,
+        SceneKind.LINE_COLLECTION,
+        SceneKind.POLYGON,
+        SceneKind.TEXT,
+    }
+)
 
 
-class _ManifestModel(BaseModel):
-    """Frozen wire models that tolerate forward, optional minor fields."""
+class _WireModel(BaseModel):
+    """Frozen wire models: unrecognized fields never affect decoded output."""
 
-    model_config = ConfigDict(extra="ignore", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class CoordinateEncodingModel(_ManifestModel):
+class CoordinateEncodingModel(_WireModel):
     kind: CoordinateEncodingKind
-    origin: float = 0.0
-    scale: float = 1.0
-    max_error_pixels: float = 0.0
+    origin: float
+    scale: float
+    max_error_pixels: float
+
+    @model_validator(mode="after")
+    def _scene_coordinate_contract(self) -> "CoordinateEncodingModel":
+        # Reuse the Scene authority for finite, positive-scale, and error checks.
+        self.to_scene()
+        return self
 
     @classmethod
     def from_scene(cls, value: CoordinateEncoding) -> "CoordinateEncodingModel":
@@ -55,29 +74,38 @@ class CoordinateEncodingModel(_ManifestModel):
         )
 
 
-class DataSourceModel(_ManifestModel):
-    format: Literal["arrow-ipc-stream"] = "arrow-ipc-stream"
-    uri: str
+class DataSourceModel(_WireModel):
+    format: Literal["arrow-ipc-stream"]
+    uri: str = Field(min_length=1)
 
-    @field_validator("uri")
+
+class CapabilitiesModel(_WireModel):
+    viewport_query: bool
+    lod: bool
+    magnitude_filter: bool
+    catalog_detail: bool
+    max_batch_rows: int = Field(gt=0)
+
+
+class StyleAssetModel(_WireModel):
+    id: str = Field(min_length=1)
+    value: Mapping[str, Any]
+
+    @field_validator("value", mode="before")
     @classmethod
-    def _nonempty_uri(cls, value: str) -> str:
-        if not value:
-            raise ValueError("data source uri must be non-empty")
-        return value
+    def _plain_style_value(cls, value):
+        return _plain_json_value(value)
 
 
-class CapabilitiesModel(_ManifestModel):
-    viewport_query: bool = False
-    lod: bool = False
-    magnitude_filter: bool = False
-    catalog_detail: bool = False
-    max_batch_rows: int = Field(default=250_000, gt=0)
+class PaletteAssetModel(_WireModel):
+    id: str = Field(min_length=1)
+    colors: tuple[str, ...]
 
 
-class LayerManifestModel(_ManifestModel):
+class LayerManifestModel(_WireModel):
     id: str = Field(min_length=1)
     kind: SceneKind
+    group_id: str
     required: bool
     zorder: float
     load_priority: int
@@ -85,27 +113,13 @@ class LayerManifestModel(_ManifestModel):
     clip_id: str | None
     style_id: str | None
     interactive: bool
-    hover_fields: tuple[str, ...] = ()
+    interaction: InteractionPolicy
+    hover_fields: tuple[str, ...]
     row_count: int = Field(ge=0)
     byte_length: int = Field(ge=0)
     content_hash: str
-    coordinate_encoding: Mapping[str, CoordinateEncodingModel] = Field(
-        default_factory=dict
-    )
+    coordinate_encoding: Mapping[str, CoordinateEncodingModel]
     data_source: DataSourceModel
-
-    # These are runtime resolver context, not wire fields. Top-level manifest
-    # style/palette assets remain the sole canonical wire representation.
-    resolved_group_id: str = Field(default="", exclude=True, repr=False)
-    resolved_style: Mapping[str, Any] = Field(
-        default_factory=dict, exclude=True, repr=False
-    )
-    resolved_interaction: InteractionPolicy | None = Field(
-        default=None, exclude=True, repr=False
-    )
-    resolved_palette: tuple[str, ...] | None = Field(
-        default=None, exclude=True, repr=False
-    )
 
     @field_validator("content_hash")
     @classmethod
@@ -113,9 +127,19 @@ class LayerManifestModel(_ManifestModel):
         return _validate_hash(value)
 
     @model_validator(mode="after")
-    def _interaction_contract(self) -> "LayerManifestModel":
+    def _layer_contract(self) -> "LayerManifestModel":
         if not self.interactive and self.hover_fields:
             raise ValueError("hover_fields must be empty for a noninteractive layer")
+        expected_interactive = self.interaction is not InteractionPolicy.NONE
+        if self.interactive is not expected_interactive:
+            raise ValueError("interactive must match the exact interaction policy")
+        expected_coordinates = {"x", "y"} if self.kind in _COORDINATE_KINDS else set()
+        actual_coordinates = set(self.coordinate_encoding)
+        if actual_coordinates != expected_coordinates:
+            raise ValueError(
+                "coordinate_encoding must contain exactly x and y for "
+                "coordinate-bearing layers and be empty otherwise"
+            )
         return self
 
     @classmethod
@@ -126,15 +150,14 @@ class LayerManifestModel(_ManifestModel):
         byte_length: int,
         content_hash: str,
         data_source: DataSourceModel | Mapping[str, Any],
-        style_id: str | None = None,
+        style_id: str | None,
     ) -> "LayerManifestModel":
         if not isinstance(layer, SceneLayer):
             raise TypeError("layer must be a SceneLayer")
-        if style_id is None and layer.style:
-            style_id = f"style-{layer.id}"
         return cls(
             id=layer.id,
             kind=layer.kind,
+            group_id=layer.group_id,
             required=layer.required,
             zorder=layer.zorder,
             load_priority=layer.load_priority,
@@ -142,6 +165,7 @@ class LayerManifestModel(_ManifestModel):
             clip_id=layer.clip_id,
             style_id=style_id,
             interactive=layer.interaction is not InteractionPolicy.NONE,
+            interaction=layer.interaction,
             hover_fields=layer.hover_fields,
             row_count=layer.data.row_count,
             byte_length=byte_length,
@@ -151,25 +175,44 @@ class LayerManifestModel(_ManifestModel):
                 for name, encoding in layer.coordinate_encoding.items()
             },
             data_source=data_source,
-            resolved_group_id=layer.group_id,
-            resolved_style=layer.style,
-            resolved_interaction=layer.interaction,
-            resolved_palette=layer.palette,
         )
 
 
-class SceneManifestModel(_ManifestModel):
-    schema_version: str = SCENE_SCHEMA_VERSION
+@dataclass(frozen=True)
+class _ResolvedLayerContext:
+    wire: LayerManifestModel
+    style: Mapping[str, Any]
+    palette: tuple[str, ...] | None
+
+    def __post_init__(self):
+        object.__setattr__(self, "style", _freeze_mapping(self.style))
+        if self.palette is not None:
+            object.__setattr__(self, "palette", tuple(self.palette))
+
+
+class SceneManifestModel(_WireModel):
+    schema_version: str
     scene_id: str = Field(min_length=1)
-    content_hash: str | None = None
-    minimum_loader_version: str = SCENE_SCHEMA_VERSION
+    content_hash: str
+    minimum_loader_version: str
     viewport: Mapping[str, Any]
     coordinate_spaces: Mapping[str, Any]
     clips: tuple[Mapping[str, Any], ...]
-    styles: tuple[Mapping[str, Any], ...]
-    palettes: tuple[Mapping[str, Any], ...]
+    styles: tuple[StyleAssetModel, ...]
+    palettes: tuple[PaletteAssetModel, ...]
     layers: tuple[LayerManifestModel, ...]
-    capabilities: CapabilitiesModel = CapabilitiesModel()
+    capabilities: CapabilitiesModel
+    extensions: Mapping[str, Any] = Field(default_factory=dict)
+
+    @field_validator("viewport", "coordinate_spaces", "extensions", mode="before")
+    @classmethod
+    def _plain_mapping_assets(cls, value):
+        return _plain_json_value(value)
+
+    @field_validator("clips", mode="before")
+    @classmethod
+    def _plain_clip_assets(cls, value):
+        return _plain_json_value(value)
 
     @field_validator("schema_version")
     @classmethod
@@ -184,21 +227,139 @@ class SceneManifestModel(_ManifestModel):
 
     @field_validator("minimum_loader_version")
     @classmethod
-    def _valid_minimum_loader_version(cls, value: str) -> str:
-        _parse_version(value, "minimum_loader_version")
+    def _compatible_minimum_loader_version(cls, value: str) -> str:
+        parsed = _parse_version(value, "minimum_loader_version")
+        if parsed > _CURRENT_LOADER_VERSION:
+            raise ValueError(
+                f"minimum loader version {value} exceeds current loader "
+                f"{SCENE_SCHEMA_VERSION}"
+            )
         return value
 
     @field_validator("content_hash")
     @classmethod
-    def _valid_scene_hash(cls, value: str | None) -> str | None:
-        return None if value is None else _validate_hash(value)
+    def _valid_scene_hash(cls, value: str) -> str:
+        return _validate_hash(value)
+
+    @field_validator("extensions")
+    @classmethod
+    def _compatible_extensions(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
+        unknown = sorted(set(value) - _COMPATIBLE_EXTENSION_KEYS)
+        if unknown:
+            raise ValueError(f"unsupported compatible extension keys: {unknown}")
+        return value
 
     @model_validator(mode="after")
-    def _unique_layer_ids(self) -> "SceneManifestModel":
-        layer_ids = [layer.id for layer in self.layers]
-        if len(layer_ids) != len(set(layer_ids)):
-            raise ValueError("Scene manifest contains a duplicate layer id")
+    def _asset_and_layer_contract(self) -> "SceneManifestModel":
+        _require_unique((layer.id for layer in self.layers), "layer")
+        _require_unique((style.id for style in self.styles), "style")
+        _require_unique((palette.id for palette in self.palettes), "palette")
+        style_ids = {style.id for style in self.styles}
+        palette_ids = {palette.id for palette in self.palettes}
+        for layer in self.layers:
+            if layer.style_id is not None and layer.style_id not in style_ids:
+                raise ValueError(f"layer {layer.id!r} references an unknown style id")
+        for style in self.styles:
+            palette_id = style.value.get("palette_id")
+            if palette_id is not None and palette_id not in palette_ids:
+                raise ValueError(f"style {style.id!r} references an unknown palette id")
         return self
+
+    @model_validator(mode="after")
+    def _content_hash_contract(self) -> "SceneManifestModel":
+        if self.content_hash != _declared_scene_hash(self):
+            raise ValueError("scene content hash does not match canonical manifest")
+        return self
+
+    def resolve_layer(self, layer_id: str) -> _ResolvedLayerContext:
+        try:
+            layer = next(layer for layer in self.layers if layer.id == layer_id)
+        except StopIteration as error:
+            raise KeyError(f"unknown Scene layer id: {layer_id}") from error
+        styles = {asset.id: asset.value for asset in self.styles}
+        palettes = {asset.id: asset.colors for asset in self.palettes}
+        style = {} if layer.style_id is None else styles[layer.style_id]
+        palette_id = style.get("palette_id")
+        palette = None if palette_id is None else palettes[palette_id]
+        return _ResolvedLayerContext(
+            wire=layer,
+            style=style,
+            palette=palette,
+        )
+
+
+def build_scene_manifest(
+    *,
+    scene_id: str,
+    layers: Sequence[SceneLayer],
+    layer_bytes: Mapping[str, bytes],
+    viewport: Mapping[str, Any],
+    coordinate_spaces: Mapping[str, Any],
+    clips: Sequence[Mapping[str, Any]],
+    capabilities: CapabilitiesModel,
+    data_sources: Mapping[str, DataSourceModel | Mapping[str, Any]] | None = None,
+    minimum_loader_version: str = SCENE_SCHEMA_VERSION,
+) -> SceneManifestModel:
+    """Build a strict final manifest from resolved Scene assets and exact bytes."""
+    layers = tuple(layers)
+    layer_ids = {layer.id for layer in layers}
+    if set(layer_bytes) != layer_ids:
+        raise ValueError("layer_bytes keys must exactly match Scene layer ids")
+    if data_sources is not None and set(data_sources) != layer_ids:
+        raise ValueError("data_sources keys must exactly match Scene layer ids")
+
+    style_assets = []
+    palette_assets: dict[str, tuple[str, ...]] = {}
+    manifest_layers = []
+    for layer in layers:
+        style_id = f"style-{layer.id}" if layer.style else None
+        if style_id is not None:
+            style_assets.append(StyleAssetModel(id=style_id, value=layer.style))
+        if layer.palette is not None:
+            palette_id = layer.style.get("palette_id")
+            if not isinstance(palette_id, str) or not palette_id:
+                raise ValueError(
+                    "a layer palette requires a hash-bound style palette_id"
+                )
+            existing = palette_assets.setdefault(palette_id, layer.palette)
+            if existing != layer.palette:
+                raise ValueError("palette ids must reference identical colors")
+        payload = layer_bytes[layer.id]
+        source = (
+            data_sources[layer.id]
+            if data_sources is not None
+            else DataSourceModel(format="arrow-ipc-stream", uri=f"{layer.id}.arrow")
+        )
+        manifest_layers.append(
+            LayerManifestModel.from_layer(
+                layer,
+                byte_length=len(payload),
+                content_hash=_bytes_hash(payload),
+                data_source=source,
+                style_id=style_id,
+            )
+        )
+
+    placeholder = SceneManifestModel.model_construct(
+        schema_version=SCENE_SCHEMA_VERSION,
+        scene_id=scene_id,
+        content_hash="sha256:" + "0" * 64,
+        minimum_loader_version=minimum_loader_version,
+        viewport=viewport,
+        coordinate_spaces=coordinate_spaces,
+        clips=tuple(clips),
+        styles=tuple(style_assets),
+        palettes=tuple(
+            PaletteAssetModel(id=palette_id, colors=colors)
+            for palette_id, colors in sorted(palette_assets.items())
+        ),
+        layers=tuple(manifest_layers),
+        capabilities=capabilities,
+        extensions={},
+    )
+    final_values = placeholder.model_dump(mode="python")
+    final_values["content_hash"] = scene_content_hash(placeholder, layer_bytes)
+    return SceneManifestModel.model_validate(final_values)
 
 
 def canonical_manifest_bytes(
@@ -209,13 +370,13 @@ def canonical_manifest_bytes(
     """Return compact, key-sorted UTF-8 JSON for hashing and transport."""
     if isinstance(manifest, BaseModel):
         exclude = {"content_hash"} if exclude_content_hash else None
-        value = manifest.model_dump(mode="json", exclude=exclude)
+        value = manifest.model_dump(mode="python", exclude=exclude)
     else:
         value = dict(manifest)
         if exclude_content_hash:
             value.pop("content_hash", None)
     return json.dumps(
-        value,
+        _plain_json_value(value),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -227,25 +388,44 @@ def scene_content_hash(
     manifest: SceneManifestModel,
     layers: Mapping[str, bytes | str] | Sequence[bytes | str],
 ) -> str:
-    """Hash canonical scene structure followed by ordered layer hashes."""
-    digest = hashlib.sha256()
-    digest.update(canonical_manifest_bytes(manifest, exclude_content_hash=True))
-    values: Sequence[bytes | str]
+    """Hash a manifest only after every ordered layer identity is verified."""
+    expected_ids = tuple(layer.id for layer in manifest.layers)
     if isinstance(layers, Mapping):
-        missing = [layer.id for layer in manifest.layers if layer.id not in layers]
+        supplied_ids = set(layers)
+        missing = sorted(set(expected_ids) - supplied_ids)
+        extra = sorted(supplied_ids - set(expected_ids))
         if missing:
             raise ValueError(f"missing layer hashes for: {missing}")
-        values = tuple(layers[layer.id] for layer in manifest.layers)
+        if extra:
+            raise ValueError(f"extra layer hashes for: {extra}")
+        values = tuple(layers[layer_id] for layer_id in expected_ids)
     else:
         values = tuple(layers)
-        if len(values) != len(manifest.layers):
+        if len(values) != len(expected_ids):
             raise ValueError("layer hash count must match manifest layer count")
-    for value in values:
-        layer_hash = (
-            "sha256:" + hashlib.sha256(value).hexdigest()
-            if isinstance(value, bytes)
-            else _validate_hash(value)
+
+    ordered_hashes = []
+    for manifest_layer, value in zip(manifest.layers, values):
+        supplied_hash = (
+            _bytes_hash(value) if isinstance(value, bytes) else _validate_hash(value)
         )
+        if supplied_hash != manifest_layer.content_hash:
+            raise ValueError(
+                f"layer {manifest_layer.id!r} hash does not match its manifest declaration"
+            )
+        ordered_hashes.append(supplied_hash)
+
+    return _declared_scene_hash(manifest, ordered_hashes)
+
+
+def _declared_scene_hash(
+    manifest: SceneManifestModel, ordered_hashes: Sequence[str] | None = None
+) -> str:
+    if ordered_hashes is None:
+        ordered_hashes = tuple(layer.content_hash for layer in manifest.layers)
+    digest = hashlib.sha256()
+    digest.update(canonical_manifest_bytes(manifest, exclude_content_hash=True))
+    for layer_hash in ordered_hashes:
         digest.update(layer_hash.encode("ascii"))
     return "sha256:" + digest.hexdigest()
 
@@ -262,4 +442,35 @@ def _parse_version(value: str, name: str) -> tuple[int, int]:
 def _validate_hash(value: str) -> str:
     if not isinstance(value, str) or _HASH_PATTERN.fullmatch(value) is None:
         raise ValueError("content hash must be a sha256: prefixed SHA-256 hex digest")
+    return value
+
+
+def _bytes_hash(value: bytes) -> str:
+    if not isinstance(value, bytes):
+        raise TypeError("layer payloads must be bytes")
+    return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _require_unique(values, name: str) -> None:
+    values = tuple(values)
+    if len(values) != len(set(values)):
+        raise ValueError(f"Scene manifest contains a duplicate {name} id")
+
+
+def _freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    def freeze(item):
+        if isinstance(item, Mapping):
+            return MappingProxyType({key: freeze(child) for key, child in item.items()})
+        if isinstance(item, (list, tuple)):
+            return tuple(freeze(child) for child in item)
+        return item
+
+    return freeze(value)
+
+
+def _plain_json_value(value):
+    if isinstance(value, Mapping):
+        return {key: _plain_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_json_value(item) for item in value]
     return value

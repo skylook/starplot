@@ -43,6 +43,7 @@ from starplot.interactive.scene_manifest import (
     DataSourceModel,
     LayerManifestModel,
     SceneManifestModel,
+    build_scene_manifest,
     canonical_manifest_bytes,
     scene_content_hash,
 )
@@ -75,6 +76,7 @@ __all__ = [
     "DataSourceModel",
     "LayerManifestModel",
     "SceneManifestModel",
+    "build_scene_manifest",
     "canonical_manifest_bytes",
     "scene_content_hash",
     "decode_layer_stream",

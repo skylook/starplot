@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 
 import numpy as np
 import pyarrow as pa
 import pytest
 
+import starplot.interactive.arrow_transport as arrow_transport
 from starplot.interactive.arrow_transport import (
     decode_layer_stream,
     encode_layer_stream,
@@ -24,7 +26,12 @@ from starplot.interactive.scene import (
     SceneKind,
     SceneLayer,
 )
-from starplot.interactive.scene_manifest import LayerManifestModel
+from starplot.interactive.scene_manifest import (
+    CapabilitiesModel,
+    SceneManifestModel,
+    build_scene_manifest,
+    canonical_manifest_bytes,
+)
 
 
 def _scene_layers() -> tuple[SceneLayer, ...]:
@@ -176,13 +183,25 @@ def _scene_layers() -> tuple[SceneLayer, ...]:
     )
 
 
-def _manifest_for(layer: SceneLayer, payload: bytes) -> LayerManifestModel:
-    return LayerManifestModel.from_layer(
-        layer,
-        byte_length=len(payload),
-        content_hash=layer_content_hash(payload),
-        data_source={"format": "arrow-ipc-stream", "uri": f"{layer.id}.arrow"},
+def _manifest_for(layer: SceneLayer, payload: bytes):
+    manifest = build_scene_manifest(
+        scene_id="transport-test",
+        layers=(layer,),
+        layer_bytes={layer.id: payload},
+        viewport={"reference_width": 1200, "reference_height": 800},
+        coordinate_spaces={"data": {}, "paper": {}},
+        clips=(),
+        capabilities=CapabilitiesModel(
+            viewport_query=False,
+            lod=False,
+            magnitude_filter=False,
+            catalog_detail=False,
+            max_batch_rows=250_000,
+        ),
     )
+    serialized = canonical_manifest_bytes(manifest)
+    parsed = SceneManifestModel.model_validate_json(serialized)
+    return parsed.resolve_layer(layer.id)
 
 
 def _assert_layer_equal(restored: SceneLayer, expected: SceneLayer) -> None:
@@ -221,6 +240,14 @@ def test_arrow_stream_round_trip_preserves_every_immutable_scene_layer(layer):
     _assert_layer_equal(restored, layer)
 
 
+def test_round_trip_preserves_exact_interaction_policy_after_wire_parse():
+    for layer in _scene_layers():
+        payload = encode_layer_stream(layer)
+        restored = decode_layer_stream(payload, _manifest_for(layer, payload))
+
+        assert restored.interaction is layer.interaction
+
+
 def test_arrow_stream_is_deterministic_and_not_ipc_file_format():
     layer = _scene_layers()[0]
     first = encode_layer_stream(layer, max_chunksize=1)
@@ -233,6 +260,33 @@ def test_arrow_stream_is_deterministic_and_not_ipc_file_format():
     assert layer_content_hash(first) == "sha256:" + hashlib.sha256(first).hexdigest()
     with pa.ipc.open_stream(first) as reader:
         assert reader.read_all().num_rows == layer.data.row_count
+
+
+def test_equivalent_column_insertion_order_has_identical_stream_bytes():
+    layer = _scene_layers()[0]
+    reversed_data = ColumnarData.from_mapping(
+        dict(reversed(tuple(layer.data.columns.items())))
+    )
+    equivalent = replace(layer, data=reversed_data)
+
+    first = encode_layer_stream(layer, max_chunksize=1)
+    second = encode_layer_stream(equivalent, max_chunksize=1)
+
+    assert first == second
+    assert layer_content_hash(first) == layer_content_hash(second)
+    assert layer_to_table(layer).column_names == [
+        "x",
+        "y",
+        "size",
+        "color_index",
+        "opacity",
+        "symbol_index",
+        "object_id",
+        "name",
+        "magnitude",
+        "ra",
+        "dec",
+    ]
 
 
 def test_arrow_schema_has_exact_protocol_types_dictionary_columns_and_metadata():
@@ -278,14 +332,14 @@ def test_decode_rejects_wrong_length_hash_identity_and_manifest_schema():
     manifest = _manifest_for(layer, payload)
 
     with pytest.raises(ValueError, match="byte_length"):
-        decode_layer_stream(payload, manifest.model_copy(update={"byte_length": 1}))
+        decode_layer_stream(payload[:-1], manifest)
     with pytest.raises(ValueError, match="content hash"):
-        decode_layer_stream(
-            payload,
-            manifest.model_copy(update={"content_hash": "sha256:" + "0" * 64}),
-        )
+        modified = payload[:100] + bytes([payload[100] ^ 1]) + payload[101:]
+        decode_layer_stream(modified, manifest)
+    wrong_layer = replace(layer, id="wrong")
+    wrong_manifest = _manifest_for(wrong_layer, payload)
     with pytest.raises(ValueError, match="layer id"):
-        decode_layer_stream(payload, manifest.model_copy(update={"id": "wrong"}))
+        decode_layer_stream(payload, wrong_manifest)
 
 
 def test_layer_to_table_rejects_missing_required_column_and_invalid_protocol_dtype():
@@ -348,3 +402,83 @@ def test_decode_rejects_relative_origin_metadata_that_disagrees_with_manifest():
 
     with pytest.raises(ValueError, match="origin_x"):
         decode_layer_stream(payload, manifest)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda payload: payload + b"junk", "trailing|EOS"),
+        (lambda payload: payload[:-8], "EOS"),
+        (lambda payload: payload[:40] + payload[-8:], "truncated|Arrow IPC"),
+    ],
+)
+def test_decode_rejects_noncanonical_or_truncated_stream_framing(mutate, message):
+    layer = _scene_layers()[1]
+    payload = encode_layer_stream(layer)
+    invalid = mutate(payload)
+    manifest = _manifest_for(layer, invalid)
+
+    with pytest.raises(ValueError, match=message):
+        decode_layer_stream(invalid, manifest)
+
+
+def test_decode_rejects_ipc_file_container_even_with_matching_manifest():
+    layer = _scene_layers()[1]
+    table = layer_to_table(layer)
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_file(sink, table.schema) as writer:
+        writer.write_table(table)
+    payload = sink.getvalue().to_pybytes()
+    manifest = _manifest_for(layer, payload)
+
+    with pytest.raises(ValueError, match="IPC Stream|EOS"):
+        decode_layer_stream(payload, manifest)
+
+
+def test_numeric_decode_never_materializes_python_scalar_lists(monkeypatch):
+    layer = _scene_layers()[3]
+    payload = encode_layer_stream(layer, max_chunksize=1)
+    manifest = _manifest_for(layer, payload)
+
+    def fail_on_to_pylist(_column):
+        raise AssertionError("numeric columns must not call to_pylist")
+
+    monkeypatch.setattr(arrow_transport, "_chunked_to_pylist", fail_on_to_pylist)
+
+    restored = decode_layer_stream(payload, manifest)
+
+    _assert_layer_equal(restored, layer)
+
+
+@pytest.mark.parametrize("kind", [SceneKind.SCATTER, SceneKind.LINE, SceneKind.TEXT])
+def test_coordinate_bearing_manifest_requires_exactly_x_and_y_encodings(kind):
+    layer = next(item for item in _scene_layers() if item.kind is kind)
+    payload = encode_layer_stream(layer)
+    manifest = build_scene_manifest(
+        scene_id="encoding-test",
+        layers=(layer,),
+        layer_bytes={layer.id: payload},
+        viewport={},
+        coordinate_spaces={"data": {}},
+        clips=(),
+        capabilities=CapabilitiesModel(
+            viewport_query=False,
+            lod=False,
+            magnitude_filter=False,
+            catalog_detail=False,
+            max_batch_rows=250_000,
+        ),
+    )
+    raw = manifest.model_dump(mode="json")
+    raw["layers"][0]["coordinate_encoding"].pop("y")
+
+    with pytest.raises(ValueError, match="coordinate_encoding.*x.*y"):
+        SceneManifestModel.model_validate(raw)
+
+
+def test_info_table_width_is_a_documented_required_scene_1_0_column():
+    layer = _scene_layers()[-1]
+    table = layer_to_table(layer)
+
+    assert table.column_names == ["column", "value", "width"]
+    assert table.schema.field("width").type == pa.float32()
