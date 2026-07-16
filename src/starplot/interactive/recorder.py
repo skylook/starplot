@@ -5,15 +5,26 @@ from starplot.interactive.scene import readonly_array
 from starplot.styles import ZOrderEnum
 
 
-def _materialize_column(value, *, iterator_dtype):
+def _materialize_column(value, *, iterator_dtype, name):
     """Materialize an array-like or one-shot iterable exactly once."""
     if isinstance(value, np.ndarray):
-        return readonly_array(value)
+        array = readonly_array(value)
+    else:
+        array = np.asarray(value)
+        if array.ndim == 0 and not np.isscalar(value):
+            array = np.fromiter(value, dtype=iterator_dtype)
+        array = readonly_array(array)
 
-    array = np.asarray(value)
-    if array.ndim == 0 and not np.isscalar(value):
-        array = np.fromiter(value, dtype=iterator_dtype)
-    return readonly_array(array)
+    if array.ndim != 1:
+        raise ValueError(f"Scatter {name} must be a one-dimensional column")
+    return array
+
+
+def _is_scalar_like(value):
+    """Return whether color/alpha input should be broadcast across rows."""
+    if np.isscalar(value):
+        return True
+    return isinstance(value, np.ndarray) and np.ndim(value) == 0
 
 
 class DrawingRecorder:
@@ -32,18 +43,30 @@ class DrawingRecorder:
         gid="scatter", zorder=0, *,
         space=CoordinateSpace.DATA, clip_id="plot",
     ):
-        x = _materialize_column(x, iterator_dtype=np.float64)
-        y = _materialize_column(y, iterator_dtype=np.float64)
-        sizes = _materialize_column(sizes, iterator_dtype=np.float64)
+        x = _materialize_column(x, iterator_dtype=np.float64, name="x")
+        y = _materialize_column(y, iterator_dtype=np.float64, name="y")
+        sizes = _materialize_column(
+            sizes,
+            iterator_dtype=np.float64,
+            name="sizes",
+        )
         row_count = len(x)
-        if isinstance(colors, str):
+        if _is_scalar_like(colors):
             colors = readonly_array(np.full(row_count, colors))
         else:
-            colors = _materialize_column(colors, iterator_dtype=object)
-        if np.isscalar(alphas):
+            colors = _materialize_column(
+                colors,
+                iterator_dtype=object,
+                name="colors",
+            )
+        if _is_scalar_like(alphas):
             alphas = readonly_array(np.full(row_count, alphas))
         else:
-            alphas = _materialize_column(alphas, iterator_dtype=np.float64)
+            alphas = _materialize_column(
+                alphas,
+                iterator_dtype=np.float64,
+                name="alphas",
+            )
 
         if len({len(x), len(y), len(sizes), len(colors), len(alphas)}) > 1:
             raise ValueError("Scatter columns must have the same row count")

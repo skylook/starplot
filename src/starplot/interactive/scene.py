@@ -29,8 +29,14 @@ class InteractionPolicy(StrEnum):
 
 
 def readonly_array(value, dtype=None) -> np.ndarray:
-    """Return a contiguous NumPy array that cannot be written through."""
-    array = np.ascontiguousarray(value, dtype=dtype)
+    """Copy into owned, contiguous storage that cannot be written through."""
+    array = np.array(
+        value,
+        dtype=dtype,
+        copy=True,
+        order="C",
+        subok=False,
+    )
     array.setflags(write=False)
     return array
 

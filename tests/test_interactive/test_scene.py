@@ -47,6 +47,33 @@ def test_readonly_array_is_contiguous_read_only_and_honors_dtype():
         result[0] = 9
 
 
+def test_readonly_array_owns_storage_without_mutating_contiguous_input():
+    source = np.array([1.0, 2.0], dtype=np.float32)
+
+    result = readonly_array(source)
+
+    assert source.flags.writeable
+    assert result.dtype == source.dtype
+    assert result.flags.owndata
+    assert not np.shares_memory(result, source)
+    source[0] = 99
+    np.testing.assert_array_equal(result, [1.0, 2.0])
+
+
+def test_readonly_array_detaches_from_non_contiguous_view_and_base():
+    base = np.array([1.0, 99.0, 2.0, 99.0], dtype=np.float64)
+    source = base[::2]
+
+    result = readonly_array(source)
+
+    assert source.flags.writeable
+    assert result.flags.c_contiguous
+    assert result.flags.owndata
+    assert not np.shares_memory(result, source)
+    base[0] = 42
+    np.testing.assert_array_equal(result, [1.0, 2.0])
+
+
 def test_columnar_data_is_contiguous_read_only_and_aligned():
     columns = ColumnarData.from_mapping({
         "x": [1.0, 2.0],
@@ -61,6 +88,17 @@ def test_columnar_data_is_contiguous_read_only_and_aligned():
         columns["x"][0] = 9
     with pytest.raises(TypeError):
         columns.columns["z"] = np.array([5.0, 6.0])
+
+
+def test_columnar_data_detaches_from_caller_owned_arrays():
+    source = np.array([1.0, 2.0], dtype=np.float32)
+
+    columns = ColumnarData.from_mapping({"x": source})
+
+    assert source.flags.writeable
+    assert not np.shares_memory(columns["x"], source)
+    source[0] = 99
+    np.testing.assert_array_equal(columns["x"], [1.0, 2.0])
 
 
 def test_columnar_data_rejects_misaligned_columns():
@@ -79,11 +117,18 @@ def test_scene_layer_recursively_freezes_style_and_hover_fields():
 
 
 def test_scene_layer_freezes_ndarrays_retained_in_style():
-    layer = _layer(style={"dash_pattern": np.array([1, 2])[::-1]})
+    base = np.array([1, 99, 2, 99])
+    source = base[::2]
+
+    layer = _layer(style={"dash_pattern": source})
 
     pattern = layer.style["dash_pattern"]
+    assert source.flags.writeable
     assert pattern.flags.c_contiguous
     assert not pattern.flags.writeable
+    assert not np.shares_memory(pattern, source)
+    base[0] = 42
+    np.testing.assert_array_equal(pattern, [1, 2])
 
 
 @pytest.mark.parametrize(

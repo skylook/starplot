@@ -35,7 +35,7 @@ def test_recorder_records_scatter():
 
 
 def test_recorder_records_scatter_with_single_color():
-    """record_scatter should broadcast a single string color to a list."""
+    """record_scatter should broadcast a single string color to a column."""
     rec = DrawingRecorder()
     rec.record_scatter(
         x=[1, 2], y=[3, 4],
@@ -68,6 +68,78 @@ def test_record_scatter_preserves_numpy_columns():
     assert command.data["x"].flags.c_contiguous
     assert not command.data["x"].flags.writeable
     assert command.metadata == ()
+
+
+def test_record_scatter_detaches_all_numpy_columns_from_callers():
+    x_base = np.array([1, 99, 2, 99], dtype=np.float32)
+    inputs = {
+        "x": x_base[::2],
+        "y": np.array([3, 4], dtype=np.float64),
+        "sizes": np.array([5, 6], dtype=np.float32),
+        "colors": np.array(["#fff", "#000"]),
+        "alphas": np.array([1, 0.5], dtype=np.float32),
+    }
+    expected = {name: value.copy() for name, value in inputs.items()}
+    recorder = DrawingRecorder()
+
+    recorder.record_scatter(**inputs, metadata=[])
+
+    command = recorder.commands[0]
+    for name, source in inputs.items():
+        retained = command.data[name]
+        assert source.flags.writeable
+        assert retained.flags.c_contiguous
+        assert retained.flags.owndata
+        assert not retained.flags.writeable
+        assert not np.shares_memory(retained, source)
+        source[0] = source[-1]
+        np.testing.assert_array_equal(retained, expected[name])
+        with pytest.raises(ValueError):
+            retained[0] = retained[-1]
+
+    x_base[0] = 42
+    np.testing.assert_array_equal(command.data["x"], [1, 2])
+
+
+def test_record_scatter_broadcasts_zero_dimensional_color_and_alpha_arrays():
+    recorder = DrawingRecorder()
+
+    recorder.record_scatter(
+        x=[1.0, 2.0, 3.0],
+        y=[4.0, 5.0, 6.0],
+        sizes=[7.0, 8.0, 9.0],
+        colors=np.array("#fff", dtype="<U4"),
+        alphas=np.array(0.5, dtype=np.float32),
+        metadata=[],
+    )
+
+    command = recorder.commands[0]
+    colors = command.data["colors"]
+    alphas = command.data["alphas"]
+    assert colors.shape == (3,)
+    assert colors.dtype == np.dtype("<U4")
+    np.testing.assert_array_equal(colors, ["#fff", "#fff", "#fff"])
+    assert alphas.shape == (3,)
+    assert alphas.dtype == np.float32
+    np.testing.assert_array_equal(alphas, [0.5, 0.5, 0.5])
+    assert not colors.flags.writeable
+    assert not alphas.flags.writeable
+
+
+@pytest.mark.parametrize("name", ["x", "y", "sizes"])
+def test_record_scatter_rejects_zero_dimensional_geometry_columns(name):
+    values = {
+        "x": [1.0, 2.0],
+        "y": [3.0, 4.0],
+        "sizes": [5.0, 6.0],
+        "colors": ["#fff", "#000"],
+        "alphas": [1.0, 0.5],
+        "metadata": [],
+    }
+    values[name] = np.array(1.0)
+
+    with pytest.raises(ValueError, match="one-dimensional"):
+        DrawingRecorder().record_scatter(**values)
 
 
 def test_record_scatter_materializes_each_iterable_once():
