@@ -241,6 +241,7 @@ class SceneLayer:
     hover_fields: tuple[str, ...] = ()
     required: bool = True
     coordinate_encoding: Mapping[str, CoordinateEncoding] = field(default_factory=dict)
+    palette: tuple[str, ...] | None = None
 
     def __post_init__(self):
         if not self.id:
@@ -267,6 +268,9 @@ class SceneLayer:
         unknown_encoding = set(coordinate_encoding).difference(self.data.columns)
         if unknown_encoding:
             raise ValueError("coordinate_encoding must reference data columns")
+        palette = None if self.palette is None else tuple(self.palette)
+        if palette is not None and not all(isinstance(color, str) for color in palette):
+            raise ValueError("SceneLayer palette must contain only strings")
 
         object.__setattr__(self, "kind", kind)
         object.__setattr__(self, "space", space)
@@ -278,6 +282,7 @@ class SceneLayer:
             "coordinate_encoding",
             MappingProxyType(coordinate_encoding),
         )
+        object.__setattr__(self, "palette", palette)
 
 
 @dataclass(frozen=True)
@@ -295,10 +300,27 @@ class ScenePackage:
         layer_ids = [layer.id for layer in layers]
         if len(layer_ids) != len(set(layer_ids)):
             raise ValueError("ScenePackage contains a duplicate layer id")
+        palettes = {
+            palette_id: value if isinstance(value, tuple) else tuple(value)
+            for palette_id, value in self.palettes.items()
+        }
+        if any(
+            not all(isinstance(color, str) for color in palette)
+            for palette in palettes.values()
+        ):
+            raise ValueError("ScenePackage palettes must contain only strings")
+        for layer in layers:
+            if layer.palette is None:
+                continue
+            palette_id = layer.style.get("palette_id")
+            if not isinstance(palette_id, str) or palettes.get(palette_id) != layer.palette:
+                raise ValueError(
+                    "ScenePackage palette asset must match the layer palette"
+                )
 
         object.__setattr__(self, "layers", layers)
         object.__setattr__(self, "projection_info", _freeze_value(self.projection_info))
         object.__setattr__(self, "style_info", _freeze_value(self.style_info))
         object.__setattr__(self, "viewport", _freeze_value(self.viewport))
         object.__setattr__(self, "clips", _freeze_value(self.clips))
-        object.__setattr__(self, "palettes", _freeze_value(self.palettes))
+        object.__setattr__(self, "palettes", MappingProxyType(palettes))

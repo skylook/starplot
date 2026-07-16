@@ -308,6 +308,7 @@ class _CompileContext:
     style_info: Mapping[str, Any]
     clips: Mapping[str, ClipGeometry]
     ignored_clip_ids: frozenset[str] = frozenset()
+    transparent: bool = False
 
 
 @dataclass(frozen=True)
@@ -323,6 +324,35 @@ class _CompiledParts:
 class SceneCompiler:
     """Compile recorded Matplotlib-final primitives into one immutable Scene."""
 
+    def __init__(
+        self,
+        *,
+        projection_info=None,
+        style_info=None,
+        width=None,
+        height=None,
+        transparent=None,
+    ):
+        values = (projection_info, style_info, width, height, transparent)
+        if any(value is not None for value in values) and not all(
+            value is not None for value in values
+        ):
+            raise ValueError(
+                "SceneCompiler requires a complete constructor context: "
+                "projection_info, style_info, width, height, and transparent"
+            )
+        self._context = (
+            _build_context(
+                projection_info,
+                style_info,
+                width,
+                height,
+                transparent,
+            )
+            if all(value is not None for value in values)
+            else None
+        )
+
     def compile(
         self,
         commands,
@@ -332,25 +362,13 @@ class SceneCompiler:
         height: int,
         transparent: bool,
     ) -> ScenePackage:
-        width_value = _positive_number(width, "width and height")
-        height_value = _positive_number(height, "width and height")
-        projection = dict(projection_info)
-        style = dict(style_info)
-        supported_zoom = _positive_number(
-            style.get("supported_zoom", 1), "supported_zoom"
+        context = _build_context(
+            projection_info, style_info, width, height, transparent
         )
-        if supported_zoom < 1:
-            raise ValueError("supported_zoom must be greater than or equal to 1")
-        clips, ignored_clip_ids = _compile_clips(projection.get("clip_geometries", {}))
-        context = _CompileContext(
-            width=width_value,
-            height=height_value,
-            supported_zoom=supported_zoom,
-            projection_info=projection,
-            style_info=style,
-            clips=clips,
-            ignored_clip_ids=ignored_clip_ids,
-        )
+        width_value = context.width
+        height_value = context.height
+        projection = context.projection_info
+        style = context.style_info
 
         indexed_layers = []
         palettes = {}
@@ -377,27 +395,25 @@ class SceneCompiler:
             projection_info=projection,
             style_info=style,
             viewport=viewport,
-            clips=clips,
+            clips=context.clips,
             palettes=palettes,
         )
 
     def compile_command(self, command: DrawingCommand, index: int) -> SceneLayer:
-        context = _CompileContext(
-            width=1000.0,
-            height=1000.0,
-            supported_zoom=1.0,
-            projection_info={},
-            style_info={"resolution": 4096, "dpi": 100},
-            clips={},
+        if self._context is None and command.kind is CommandType.SCATTER:
+            raise ValueError(
+                "scatter compilation requires constructor context or compile()"
+            )
+        layer, _ = self._compile_command_with_assets(
+            command, index, self._context
         )
-        layer, _ = self._compile_command_with_assets(command, index, context)
         return layer
 
     def _compile_command_with_assets(
         self,
         command: DrawingCommand,
         index: int,
-        context: _CompileContext,
+        context: _CompileContext | None,
     ) -> tuple[SceneLayer, Mapping[str, tuple[str, ...]]]:
         if not isinstance(command, DrawingCommand):
             raise TypeError("command must be a DrawingCommand")
@@ -405,7 +421,9 @@ class SceneCompiler:
         parts = getattr(self, method_name)(command, context, index)
         kind = SceneKind(command.kind.value)
         clip_id = (
-            None if command.clip_id in context.ignored_clip_ids else command.clip_id
+            None
+            if context is not None and command.clip_id in context.ignored_clip_ids
+            else command.clip_id
         )
         layer = SceneLayer(
             id=f"layer-{index:04d}-{kind.value}",
@@ -422,6 +440,7 @@ class SceneCompiler:
             hover_fields=parts.hover_fields,
             required=True,
             coordinate_encoding=parts.coordinate_encoding,
+            palette=parts.palette,
         )
         assets = (
             {f"palette-{index:04d}": parts.palette} if parts.palette is not None else {}
@@ -429,8 +448,12 @@ class SceneCompiler:
         return layer, assets
 
     def _compile_scatter(
-        self, command: DrawingCommand, context: _CompileContext, index: int
+        self, command: DrawingCommand, context: _CompileContext | None, index: int
     ) -> _CompiledParts:
+        if context is None:
+            raise ValueError(
+                "scatter compilation requires constructor context or compile()"
+            )
         x, y = _numeric_aligned(
             command.data.get("x", ()), command.data.get("y", ()), "scatter"
         )
@@ -478,8 +501,10 @@ class SceneCompiler:
             "color_index": palette.color_index,
             "opacity": palette.opacity,
         }
-        interaction, hover_fields, metadata_columns = _scatter_interaction(
-            metadata, row_count
+        interaction, hover_fields, metadata_columns = _metadata_interaction(
+            metadata,
+            range(row_count),
+            suppress=row_count >= 100_000,
         )
         columns.update(metadata_columns)
         coordinate_encoding = _encode_xy(columns, context)
@@ -512,18 +537,43 @@ class SceneCompiler:
     def _compile_line_collection(
         self, command: DrawingCommand, context: _CompileContext, index: int
     ) -> _CompiledParts:
-        paths = []
-        for line in command.data.get("lines", ()):
+        lines = tuple(command.data.get("lines", ()))
+        metadata = tuple(command.metadata)
+        if metadata and len(metadata) != len(lines):
+            raise ValueError(
+                "line_collection metadata must have the same row count as source lines"
+            )
+        indexed_paths = []
+        for source_line_index, line in enumerate(lines):
             points = np.asarray(line, dtype=object)
             if points.ndim != 2 or points.shape[1] != 2:
                 raise ValueError("line_collection segments must contain x/y points")
-            paths.extend(_split_xy_paths(points[:, 0], points[:, 1]))
+            indexed_paths.extend(
+                (path, source_line_index)
+                for path in _split_xy_paths(points[:, 0], points[:, 1])
+            )
         clip = _command_clip(command, context)
         if clip is not None:
-            paths = _clip_line_paths(paths, clip)
+            indexed_paths = _clip_indexed_line_paths(indexed_paths, clip)
+        paths = [path for path, _ in indexed_paths]
         columns = _path_columns(paths)
+        source_rows = [
+            source_line_index
+            for path, source_line_index in indexed_paths
+            for _ in path
+        ]
+        interaction, hover_fields, metadata_columns = _metadata_interaction(
+            metadata, source_rows
+        )
+        columns.update(metadata_columns)
         coordinate_encoding = _encode_xy(columns, context)
-        return _CompiledParts(columns, command.style, coordinate_encoding)
+        return _CompiledParts(
+            columns,
+            command.style,
+            coordinate_encoding,
+            interaction,
+            hover_fields,
+        )
 
     def _compile_polygon(
         self, command: DrawingCommand, context: _CompileContext, index: int
@@ -542,16 +592,24 @@ class SceneCompiler:
         offset = command.data.get("offset_points", (0.0, 0.0))
         if len(offset) != 2:
             raise ValueError("text offset_points must contain two values")
+        x = float(command.data.get("x"))
+        y = float(command.data.get("y"))
+        keep = True
+        clip = _command_clip(command, context)
+        if clip is not None:
+            keep = bool(scatter_clip_mask([x], [y], clip)[0])
+
+        def column(value, dtype):
+            return np.asarray([value] if keep else [], dtype=dtype)
+
         columns = {
-            "x": np.array([command.data.get("x")], dtype=np.float64),
-            "y": np.array([command.data.get("y")], dtype=np.float64),
-            "text": np.array([str(command.data.get("text", ""))]),
-            "rotation": np.array(
-                [command.style.get("rotation", 0.0)], dtype=np.float32
-            ),
-            "x_offset": np.array([offset[0]], dtype=np.float32),
-            "y_offset": np.array([offset[1]], dtype=np.float32),
-            "style_id": np.array([0], dtype=np.uint16),
+            "x": column(x, np.float64),
+            "y": column(y, np.float64),
+            "text": column(str(command.data.get("text", "")), np.str_),
+            "rotation": column(command.style.get("rotation", 0.0), np.float32),
+            "x_offset": column(offset[0], np.float32),
+            "y_offset": column(offset[1], np.float32),
+            "style_id": column(0, np.uint16),
         }
         coordinate_encoding = _encode_xy(columns, context)
         return _CompiledParts(columns, command.style, coordinate_encoding)
@@ -569,10 +627,24 @@ class SceneCompiler:
     def _compile_info_table(
         self, command: DrawingCommand, context: _CompileContext, index: int
     ) -> _CompiledParts:
+        raw_columns = {}
+        for name in ("columns", "values", "widths"):
+            values = np.asarray(command.data.get(name, ()))
+            if values.ndim != 1:
+                raise ValueError(f"info_table {name} must be one-dimensional")
+            raw_columns[name] = values
+        try:
+            widths = np.asarray(raw_columns["widths"], dtype=np.float32)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "info_table widths must be finite and non-negative"
+            ) from error
+        if not np.all(np.isfinite(widths)) or np.any(widths < 0):
+            raise ValueError("info_table widths must be finite and non-negative")
         columns = {
-            "column": np.asarray(command.data.get("columns", ())),
-            "value": np.asarray(command.data.get("values", ())),
-            "width": np.asarray(command.data.get("widths", ()), dtype=np.float32),
+            "column": raw_columns["columns"],
+            "value": raw_columns["values"],
+            "width": widths,
         }
         lengths = {len(value) for value in columns.values()}
         if len(lengths) > 1:
@@ -590,6 +662,35 @@ def _load_priority(kind: SceneKind, row_count: int) -> int:
     return 30
 
 
+def _build_context(
+    projection_info,
+    style_info,
+    width,
+    height,
+    transparent,
+) -> _CompileContext:
+    width_value = _positive_number(width, "width and height")
+    height_value = _positive_number(height, "width and height")
+    projection = dict(projection_info)
+    style = dict(style_info)
+    supported_zoom = _positive_number(
+        style.get("supported_zoom", 1), "supported_zoom"
+    )
+    if supported_zoom < 1:
+        raise ValueError("supported_zoom must be greater than or equal to 1")
+    clips, ignored_clip_ids = _compile_clips(projection.get("clip_geometries", {}))
+    return _CompileContext(
+        width=width_value,
+        height=height_value,
+        supported_zoom=supported_zoom,
+        projection_info=projection,
+        style_info=style,
+        clips=clips,
+        ignored_clip_ids=ignored_clip_ids,
+        transparent=bool(transparent),
+    )
+
+
 def _compile_clips(recorded_clips) -> tuple[dict[str, ClipGeometry], frozenset[str]]:
     clips = {}
     ignored = set()
@@ -602,9 +703,13 @@ def _compile_clips(recorded_clips) -> tuple[dict[str, ClipGeometry], frozenset[s
 
 
 def _command_clip(
-    command: DrawingCommand, context: _CompileContext
+    command: DrawingCommand, context: _CompileContext | None
 ) -> ClipGeometry | None:
-    if command.space is not CoordinateSpace.DATA or command.clip_id is None:
+    if (
+        context is None
+        or command.space is not CoordinateSpace.DATA
+        or command.clip_id is None
+    ):
         return None
     return context.clips.get(command.clip_id)
 
@@ -632,38 +737,58 @@ def _numeric_aligned(x, y, name: str) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _encode_xy(
-    columns: dict[str, Any], context: _CompileContext
+    columns: dict[str, Any], context: _CompileContext | None
 ) -> dict[str, CoordinateEncoding]:
     encodings = {}
-    for name, pixel_span in (("x", context.width), ("y", context.height)):
+    pixel_spans = (
+        (("x", context.width), ("y", context.height))
+        if context is not None
+        else (("x", None), ("y", None))
+    )
+    for name, pixel_span in pixel_spans:
         if name not in columns:
             continue
-        encoding = choose_coordinate_encoding(
-            columns[name], pixel_span, context.supported_zoom
+        encoding = (
+            choose_coordinate_encoding(
+                columns[name], pixel_span, context.supported_zoom
+            )
+            if context is not None
+            else CoordinateEncoding(CoordinateEncodingKind.ABSOLUTE_F64)
         )
         columns[name] = encoding.encode(columns[name])
         encodings[name] = encoding
     return encodings
 
 
-def _scatter_interaction(metadata, row_count: int):
-    if row_count >= 100_000 or not metadata:
+def _metadata_interaction(metadata, row_indices, *, suppress=False):
+    row_indices = tuple(row_indices)
+    if suppress or not metadata or not row_indices:
         return InteractionPolicy.NONE, (), {}
     safe_names = ("name", "magnitude", "type", "object_id")
     columns = {}
     for name in safe_names:
         if not any(isinstance(item, Mapping) and name in item for item in metadata):
             continue
-        values = []
-        safe = True
+        source_values = []
         for item in metadata:
             value = item.get(name) if isinstance(item, Mapping) else None
-            if not _safe_metadata_scalar(value):
-                safe = False
-                break
-            values.append(value)
-        if safe:
-            columns[name] = np.asarray(values)
+            source_values.append(value)
+        if name == "magnitude":
+            if not all(_safe_magnitude(value) for value in source_values):
+                continue
+            values = [
+                np.nan if source_values[index] is None else source_values[index]
+                for index in row_indices
+            ]
+            columns[name] = np.asarray(values, dtype=np.float32)
+        else:
+            if not all(_safe_text_metadata(value) for value in source_values):
+                continue
+            values = [
+                "" if source_values[index] is None else str(source_values[index])
+                for index in row_indices
+            ]
+            columns[name] = np.asarray(values, dtype=np.str_)
     hover_fields = tuple(name for name in safe_names if name in columns)
     if "object_id" in columns:
         interaction = InteractionPolicy.HOVER_AND_DETAIL
@@ -674,19 +799,14 @@ def _scatter_interaction(metadata, row_count: int):
     return interaction, hover_fields, columns
 
 
-def _safe_metadata_scalar(value) -> bool:
-    return value is None or isinstance(
-        value,
-        (
-            str,
-            int,
-            float,
-            bool,
-            np.str_,
-            np.integer,
-            np.floating,
-            np.bool_,
-        ),
+def _safe_text_metadata(value) -> bool:
+    return value is None or isinstance(value, (str, np.str_))
+
+
+def _safe_magnitude(value) -> bool:
+    return value is None or (
+        isinstance(value, (int, float, np.integer, np.floating))
+        and not isinstance(value, (bool, np.bool_))
     )
 
 
@@ -766,6 +886,19 @@ def _clip_line_paths(paths, clip: ClipGeometry):
     return result
 
 
+def _clip_indexed_line_paths(indexed_paths, clip: ClipGeometry):
+    clip_shape = _clip_shape(clip)
+    result = []
+    for path, source_line_index in indexed_paths:
+        if len(path) < 2:
+            continue
+        clipped = LineString(path).intersection(clip_shape)
+        result.extend(
+            (piece, source_line_index) for piece in _line_geometry_paths(clipped)
+        )
+    return result
+
+
 def _line_geometry_paths(geometry):
     if geometry.is_empty:
         return []
@@ -809,8 +942,8 @@ def _is_point(value) -> bool:
 def _polygon_groups(data) -> list[list[list[tuple[float, float]]]]:
     if "polygons" in data:
         raw_polygons = data["polygons"]
-    elif data.get("rings"):
-        raw_polygons = [data["rings"]]
+    elif data.get("rings") is not None and len(data["rings"]) > 0:
+        raw_polygons = [[ring] for ring in data["rings"]]
     else:
         raw_polygons = [[data.get("points", ())]]
     polygons = []
