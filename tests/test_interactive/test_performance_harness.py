@@ -1,9 +1,49 @@
+import json
 from pathlib import Path
+import subprocess
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from benchmarks import interactive_scene_pipeline as benchmark
 from benchmarks.interactive_scene_pipeline import validate_result
+
+
+ENVIRONMENT = {
+    "browser": "chromium 150",
+    "captured_at_utc": "2026-07-16T00:00:00+00:00",
+    "cpu": "test-cpu",
+    "cpu_count": 8,
+    "host_fingerprint": "0123456789abcdef",
+    "machine": "x86_64",
+    "numpy": "2.2.2",
+    "os": "test-os",
+    "playwright": "1.57.0",
+    "plotly": "6.5.2",
+    "pyarrow": "20.0.0",
+    "python": "3.13.2",
+    "shapely": "2.1.1",
+    "starplot": "0.19.5",
+}
+
+
+def complete_result():
+    summary = {"median_seconds": 1.0, "p95_seconds": 1.2}
+    return {
+        "browser": {"complete_render_median_ms": 100.0},
+        "environment": ENVIRONMENT,
+        "legacy_renderer_preparation": summary,
+        "legacy_renderer_total": summary,
+        "payload_bytes": 1000,
+        "peak_rss_mb": 10.0,
+        "plotly_construction": summary,
+        "point_count": 100,
+        "scene_compile": {
+            **summary,
+            "semantics": "compatibility alias for legacy_renderer_total",
+        },
+    }
 
 
 def test_benchmark_result_schema_rejects_missing_metrics():
@@ -12,16 +52,15 @@ def test_benchmark_result_schema_rejects_missing_metrics():
 
 
 def test_benchmark_result_schema_accepts_complete_result():
-    validate_result(
-        {
-            "environment": {"python": "3.12", "platform": "test"},
-            "point_count": 100,
-            "scene_compile": {"median_seconds": 1.0, "p95_seconds": 1.2},
-            "peak_rss_mb": 10.0,
-            "payload_bytes": 1000,
-            "browser": {"complete_render_median_ms": 100.0},
-        }
-    )
+    validate_result(complete_result())
+
+
+def test_benchmark_result_schema_rejects_missing_environment_versions():
+    result = complete_result()
+    result["environment"] = {"python": "3.13.2", "platform": "test"}
+
+    with pytest.raises(ValueError, match="pyarrow"):
+        validate_result(result)
 
 
 def test_benchmark_summary_reports_median_and_p95():
@@ -31,19 +70,104 @@ def test_benchmark_summary_reports_median_and_p95():
     }
 
 
-def test_python_benchmark_produces_complete_result(monkeypatch):
+@pytest.mark.parametrize(
+    ("column", "dtype"),
+    [
+        ("x", np.dtype(np.float64)),
+        ("y", np.dtype(np.float64)),
+        ("sizes", np.dtype(np.float64)),
+        ("colors", np.dtype("<U7")),
+        ("alphas", np.dtype(np.float64)),
+    ],
+)
+def test_scatter_command_columns_are_contiguous_read_only_arrays(column, dtype):
+    command = benchmark._build_scatter_command(100)
+    values = command.data[column]
+
+    assert isinstance(values, np.ndarray)
+    assert values.dtype == dtype
+    assert values.flags.c_contiguous
+    assert not values.flags.writeable
+
+
+def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch, capsys):
+    worker_result = {
+        "legacy_renderer_preparation_seconds": 0.25,
+        "legacy_renderer_total_seconds": 1.5,
+        "payload_bytes": 1000,
+        "peak_rss_mb": 20.0,
+        "plotly_construction_seconds": 1.25,
+    }
+    calls = []
+
+    def run_repeat(point_count, timeout_seconds):
+        calls.append((point_count, timeout_seconds))
+        return worker_result
+
+    monkeypatch.setattr(benchmark, "_run_python_repeat", run_repeat)
     monkeypatch.setattr(
         benchmark,
         "run_browser_benchmark",
-        lambda repeats: {"complete_render_median_ms": None, "status": "test"},
+        lambda repeats: {
+            "complete_render_median_ms": None,
+            "engine": "chromium",
+            "engine_version": "test",
+            "status": "test",
+        },
     )
 
-    result = benchmark.run_python_benchmark(point_count=10, repeats=1)
+    result = benchmark.run_python_benchmark(
+        point_count=10,
+        repeats=1,
+        repeat_timeout_seconds=2.0,
+    )
 
     validate_result(result)
-    assert result["point_count"] == 10
-    assert result["scene_compile"]["median_seconds"] >= 0
-    assert result["payload_bytes"] > 0
+    assert calls == [(10, 2.0), (10, 2.0)]
+    assert result["scene_compile"]["median_seconds"] == 1.5
+    assert result["legacy_renderer_total"]["median_seconds"] == 1.5
+    assert result["legacy_renderer_preparation"]["median_seconds"] == 0.25
+    assert result["plotly_construction"]["median_seconds"] == 1.25
+    assert result["peak_rss_mb"] == 20.0
+    output = capsys.readouterr().out
+    assert "Python warm-up: starting" in output
+    assert "Python repeat 1/1: complete" in output
+
+
+def test_python_repeat_timeout_is_fatal(monkeypatch):
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(benchmark.subprocess, "run", timeout)
+
+    with pytest.raises(RuntimeError, match="timed out after 0.01 seconds"):
+        benchmark._run_python_repeat(point_count=10, timeout_seconds=0.01)
+
+
+def test_browser_page_waits_for_instrumented_plotly_promise_and_final_paint():
+    events = []
+
+    class FakePage:
+        def add_init_script(self, script):
+            events.append(("init", script))
+
+        def goto(self, uri, wait_until, timeout):
+            events.append(("goto", uri, wait_until, timeout))
+
+        def wait_for_function(self, predicate, timeout):
+            events.append(("wait", predicate, timeout))
+
+    page = FakePage()
+    elapsed = benchmark._measure_browser_page(page, "file:///plot.html", 1234)
+
+    assert elapsed >= 0
+    assert [event[0] for event in events] == ["init", "goto", "wait"]
+    init_script = events[0][1]
+    assert "newPlot" in init_script
+    assert "react" in init_script
+    assert "Promise.resolve" in init_script
+    assert init_script.count("requestAnimationFrame") >= 2
+    assert "__starplotBenchmark.complete === true" in events[2][1]
 
 
 def test_browser_launcher_falls_back_to_system_chrome(monkeypatch):
@@ -69,3 +193,23 @@ def test_browser_launcher_falls_back_to_system_chrome(monkeypatch):
         {"headless": True},
         {"executable_path": str(chrome), "headless": True},
     ]
+
+
+def test_python_repeat_parses_isolated_worker_result(monkeypatch):
+    expected = {
+        "legacy_renderer_preparation_seconds": 0.1,
+        "legacy_renderer_total_seconds": 0.3,
+        "payload_bytes": 123,
+        "peak_rss_mb": 45.0,
+        "plotly_construction_seconds": 0.2,
+    }
+    completed = SimpleNamespace(stdout=json.dumps(expected), stderr="")
+
+    def run(command, **kwargs):
+        assert "--python-worker" in command
+        assert kwargs["timeout"] == 12.0
+        return completed
+
+    monkeypatch.setattr(benchmark.subprocess, "run", run)
+
+    assert benchmark._run_python_repeat(10, 12.0) == expected

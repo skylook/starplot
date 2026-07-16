@@ -1,36 +1,66 @@
 """Reproducible pre-Arrow benchmark for the interactive Scene pipeline.
 
 The synthetic command is built before timing starts, so catalog access and
-Matplotlib drawing cannot contaminate the renderer measurements.
+Matplotlib drawing cannot contaminate the renderer measurements. Each Python
+repeat runs in a fresh bounded subprocess so its peak RSS is isolated from
+other repeats and from browser measurement.
 """
 
 from __future__ import annotations
 
 import argparse
-import gc
+from dataclasses import replace
+from datetime import datetime, timezone
+import hashlib
 import importlib.metadata
 import json
 import math
+import os
+from pathlib import Path
 import platform
 import resource
+import subprocess
 import sys
 import time
-from datetime import datetime, timezone
-from pathlib import Path
 
 import numpy as np
 
 
 REQUIRED_RESULT_KEYS = {
+    "browser",
     "environment",
+    "legacy_renderer_preparation",
+    "legacy_renderer_total",
+    "payload_bytes",
+    "peak_rss_mb",
+    "plotly_construction",
     "point_count",
     "scene_compile",
-    "peak_rss_mb",
-    "payload_bytes",
+}
+REQUIRED_ENVIRONMENT_KEYS = {
     "browser",
+    "captured_at_utc",
+    "cpu",
+    "cpu_count",
+    "host_fingerprint",
+    "machine",
+    "numpy",
+    "os",
+    "playwright",
+    "plotly",
+    "pyarrow",
+    "python",
+    "shapely",
+    "starplot",
 }
 
 _SEED = 20260716
+_DEFAULT_REPEAT_TIMEOUT_SECONDS = 300.0
+_BROWSER_TIMEOUT_MS = 300_000
+_SCENE_COMPILE_SEMANTICS = (
+    "Compatibility alias for legacy_renderer_total: legacy pre-Scene command "
+    "preparation plus Plotly Figure construction; not a native Scene compiler."
+)
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _MILLION_STAR_HTML_CANDIDATES = (
     Path("comparison_outputs/map_milky_way_stars/plotly.html"),
@@ -38,11 +68,102 @@ _MILLION_STAR_HTML_CANDIDATES = (
     Path("comparison_outputs/map_milky_way_stars.html"),
 )
 
+_PLOTLY_COMPLETION_INIT_SCRIPT = r"""
+(() => {
+  const state = window.__starplotBenchmark = {
+    calls: 0,
+    complete: false,
+    completedAt: null,
+    method: null,
+    startedAt: null
+  };
+
+  const afterFinalPaint = (callback) => {
+    requestAnimationFrame(() => requestAnimationFrame(callback));
+  };
+
+  const wrapPlotly = (plotly) => {
+    if (!plotly || plotly.__starplotBenchmarkWrapped) return;
+    Object.defineProperty(plotly, "__starplotBenchmarkWrapped", {
+      value: true,
+      configurable: true
+    });
+    for (const method of ["newPlot", "react"]) {
+      const original = plotly[method];
+      if (typeof original !== "function") continue;
+      plotly[method] = function(...args) {
+        const generation = ++state.calls;
+        state.complete = false;
+        state.method = method;
+        state.startedAt = performance.now();
+        const result = original.apply(this, args);
+        return Promise.resolve(result).then((value) => new Promise((resolve) => {
+          afterFinalPaint(() => {
+            if (generation === state.calls) {
+              state.completedAt = performance.now();
+              state.complete = true;
+            }
+            resolve(value);
+          });
+        }));
+      };
+    }
+  };
+
+  let plotlyValue = window.Plotly;
+  if (plotlyValue) wrapPlotly(plotlyValue);
+  const descriptor = Object.getOwnPropertyDescriptor(window, "Plotly");
+  if (!descriptor || descriptor.configurable) {
+    Object.defineProperty(window, "Plotly", {
+      configurable: true,
+      enumerable: true,
+      get: () => plotlyValue,
+      set: (value) => {
+        plotlyValue = value;
+        wrapPlotly(value);
+      }
+    });
+  }
+})();
+"""
+
+
+class _ArrayListView(list):
+    """O(1) list-compatible view for legacy renderer ``isinstance`` checks.
+
+    The benchmark's canonical columns remain contiguous read-only ndarrays.
+    This adapter owns no list elements; any materialization observed during the
+    benchmark is therefore performed by the current legacy renderer itself.
+    """
+
+    def __init__(self, values: np.ndarray):
+        self._values = values
+
+    def __bool__(self) -> bool:
+        return bool(self._values.size)
+
+    def __getitem__(self, index):
+        return self._values[index]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return int(self._values.size)
+
 
 def validate_result(result: dict) -> None:
     missing = REQUIRED_RESULT_KEYS - result.keys()
     if missing:
         raise ValueError(f"Missing benchmark keys: {sorted(missing)}")
+    environment = result.get("environment")
+    if not isinstance(environment, dict):
+        raise ValueError("Benchmark environment must be a mapping")
+    missing_environment = REQUIRED_ENVIRONMENT_KEYS - environment.keys()
+    if missing_environment:
+        raise ValueError(
+            f"Missing benchmark environment keys: {sorted(missing_environment)}"
+        )
 
 
 def percentile(values: list[float], q: float) -> float:
@@ -56,6 +177,12 @@ def summarize(values: list[float]) -> dict[str, float]:
     }
 
 
+def _read_only_contiguous(values, dtype=None) -> np.ndarray:
+    result = np.ascontiguousarray(values, dtype=dtype)
+    result.setflags(write=False)
+    return result
+
+
 def _mollweide_clip_points(vertex_count: int = 360) -> tuple[tuple[float, float], ...]:
     """Return a stable ellipse approximating the map's Mollweide boundary."""
     angles = np.linspace(0.0, 2.0 * math.pi, vertex_count, endpoint=False)
@@ -66,7 +193,7 @@ def _mollweide_clip_points(vertex_count: int = 360) -> tuple[tuple[float, float]
 
 
 def _palette() -> list[str]:
-    """Build 50 stable, visually distinct colors without Matplotlib."""
+    """Build the fixed 50-color palette (never a per-point Python list)."""
     return [
         f"#{(37 * index + 47) % 256:02x}{(83 * index + 89) % 256:02x}"
         f"{(149 * index + 131) % 256:02x}"
@@ -78,24 +205,26 @@ def _build_scatter_command(point_count: int):
     from starplot.interactive.commands import DrawingCommand
 
     rng = np.random.default_rng(_SEED)
-    x = rng.uniform(-math.pi, math.pi, point_count)
-    y = rng.uniform(-0.5 * math.pi, 0.5 * math.pi, point_count)
-    sizes = rng.uniform(0.02, 1.5, point_count).tolist()
+    indices = np.arange(point_count, dtype=np.intp) % 50
+    palette = np.asarray(_palette(), dtype="<U7")
+    alpha_cycle = np.linspace(0.04, 1.0, 50, dtype=np.float64)
 
-    palette = _palette()
-    alpha_cycle = np.linspace(0.04, 1.0, 50, dtype=np.float64).tolist()
-    colors = [palette[index % 50] for index in range(point_count)]
-    alphas = [alpha_cycle[index % 50] for index in range(point_count)]
-
+    columns = {
+        "x": _read_only_contiguous(
+            rng.uniform(-math.pi, math.pi, point_count), np.float64
+        ),
+        "y": _read_only_contiguous(
+            rng.uniform(-0.5 * math.pi, 0.5 * math.pi, point_count), np.float64
+        ),
+        "sizes": _read_only_contiguous(
+            rng.uniform(0.02, 1.5, point_count), np.float64
+        ),
+        "colors": _read_only_contiguous(palette[indices], "<U7"),
+        "alphas": _read_only_contiguous(alpha_cycle[indices], np.float64),
+    }
     return DrawingCommand(
         kind="scatter",
-        data={
-            "x": x,
-            "y": y,
-            "sizes": sizes,
-            "colors": colors,
-            "alphas": alphas,
-        },
+        data=columns,
         style={
             "symbol": "circle",
             "edge_color": "none",
@@ -133,23 +262,93 @@ def _renderer_inputs(point_count: int) -> tuple[object, dict, dict]:
     return command, projection_info, style_info
 
 
-def _render_once(command, projection_info: dict, style_info: dict):
-    from starplot.interactive.plotly_renderer import PlotlyRenderer
-
-    started = time.perf_counter()
-    figure = PlotlyRenderer(
-        projection_info,
-        style_info,
-        width=1000,
-        height=500,
-    ).render([command])
-    return time.perf_counter() - started, figure
+def _legacy_compatible_command(command):
+    data = {
+        key: _ArrayListView(values) if isinstance(values, np.ndarray) else values
+        for key, values in command.data.items()
+    }
+    return replace(command, data=data)
 
 
 def _peak_rss_mb() -> float:
     peak = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     divisor = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
     return peak / divisor
+
+
+def _run_python_worker(point_count: int) -> dict:
+    """Run one isolated legacy-preparation and Plotly-construction sample."""
+    from starplot.interactive.plotly_renderer import PlotlyRenderer
+
+    command, projection_info, style_info = _renderer_inputs(point_count)
+
+    preparation_started = time.perf_counter()
+    compatible_command = _legacy_compatible_command(command)
+    adapter_seconds = time.perf_counter() - preparation_started
+
+    initialization_started = time.perf_counter()
+    renderer = PlotlyRenderer(
+        projection_info,
+        style_info,
+        width=1000,
+        height=500,
+    )
+    initialization_seconds = time.perf_counter() - initialization_started
+
+    clipping_started = time.perf_counter()
+    prepared_command = renderer._clip_command(compatible_command)
+    clipping_seconds = time.perf_counter() - clipping_started
+    if prepared_command is not None:
+        prepared_command.clip_id = None
+
+    construction_started = time.perf_counter()
+    commands = [] if prepared_command is None else [prepared_command]
+    figure = renderer.render(commands)
+    construction_seconds = time.perf_counter() - construction_started
+
+    preparation_seconds = adapter_seconds + clipping_seconds
+    plotly_seconds = initialization_seconds + construction_seconds
+    peak_rss_mb = _peak_rss_mb()
+    payload_bytes = len(figure.to_json().encode("utf-8"))
+    return {
+        "legacy_renderer_preparation_seconds": preparation_seconds,
+        "legacy_renderer_total_seconds": preparation_seconds + plotly_seconds,
+        "payload_bytes": payload_bytes,
+        "peak_rss_mb": peak_rss_mb,
+        "plotly_construction_seconds": plotly_seconds,
+    }
+
+
+def _run_python_repeat(point_count: int, timeout_seconds: float) -> dict:
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--python-worker",
+        "--points",
+        str(point_count),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=_REPOSITORY_ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"Python benchmark repeat timed out after {timeout_seconds} seconds"
+        ) from error
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or "no worker output").strip()
+        raise RuntimeError(f"Python benchmark repeat failed: {detail}") from error
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"Python benchmark worker returned invalid JSON: {completed.stdout!r}"
+        ) from error
 
 
 def _package_version(distribution: str) -> str:
@@ -159,14 +358,41 @@ def _package_version(distribution: str) -> str:
         return "unknown"
 
 
-def _environment() -> dict[str, str]:
+def _host_fingerprint() -> str:
+    """Hash stable host traits without recording a private hostname."""
+    traits = {
+        "cpu": platform.processor() or platform.machine(),
+        "cpu_count": os.cpu_count(),
+        "machine": platform.machine(),
+        "os": platform.platform(),
+    }
+    encoded = json.dumps(traits, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def _environment(browser_result: dict) -> dict[str, object]:
+    browser = " ".join(
+        value
+        for value in (
+            str(browser_result.get("engine", "unavailable")),
+            str(browser_result.get("engine_version", "unknown")),
+        )
+        if value
+    )
     return {
+        "browser": browser,
         "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+        "cpu": platform.processor() or platform.machine(),
+        "cpu_count": os.cpu_count(),
+        "host_fingerprint": _host_fingerprint(),
         "machine": platform.machine(),
         "numpy": np.__version__,
-        "platform": platform.platform(),
+        "os": platform.platform(),
+        "playwright": _package_version("playwright"),
         "plotly": _package_version("plotly"),
+        "pyarrow": _package_version("pyarrow"),
         "python": platform.python_version(),
+        "shapely": _package_version("shapely"),
         "starplot": _package_version("starplot"),
     }
 
@@ -201,6 +427,18 @@ def _launch_browser(playwright):
         )
 
 
+def _measure_browser_page(page, uri: str, timeout_ms: int) -> float:
+    """Measure navigation through instrumented Plotly promise and final paint."""
+    page.add_init_script(_PLOTLY_COMPLETION_INIT_SCRIPT)
+    started = time.perf_counter()
+    page.goto(uri, wait_until="load", timeout=timeout_ms)
+    page.wait_for_function(
+        "() => window.__starplotBenchmark.complete === true",
+        timeout=timeout_ms,
+    )
+    return (time.perf_counter() - started) * 1000.0
+
+
 def run_browser_benchmark(repeats: int) -> dict:
     """Measure complete rendering of the existing million-star HTML, if usable."""
     html_path = _million_star_html()
@@ -229,22 +467,21 @@ def run_browser_benchmark(repeats: int) -> dict:
             try:
                 browser_version = browser.version
                 for iteration in range(repeats + 1):
+                    label = "warm-up" if iteration == 0 else f"repeat {iteration}/{repeats}"
+                    print(f"Browser {label}: starting", flush=True)
                     page = browser.new_page(viewport={"width": 1000, "height": 500})
-                    started = time.perf_counter()
-                    page.goto(html_path.as_uri(), wait_until="load", timeout=300_000)
-                    page.wait_for_function(
-                        """() => {
-                            const graph = document.querySelector('.plotly-graph-div');
-                            return Boolean(graph && graph._fullLayout && graph._fullData);
-                        }""",
-                        timeout=300_000,
+                    try:
+                        elapsed_ms = _measure_browser_page(
+                            page,
+                            html_path.as_uri(),
+                            _BROWSER_TIMEOUT_MS,
+                        )
+                    finally:
+                        page.close()
+                    print(
+                        f"Browser {label}: complete ({elapsed_ms:.3f} ms)",
+                        flush=True,
                     )
-                    page.evaluate(
-                        "() => new Promise(resolve => requestAnimationFrame(() => "
-                        "requestAnimationFrame(resolve)))"
-                    )
-                    elapsed_ms = (time.perf_counter() - started) * 1000.0
-                    page.close()
                     if iteration:
                         measurements.append(elapsed_ms)
             finally:
@@ -258,49 +495,80 @@ def run_browser_benchmark(repeats: int) -> dict:
             "status": "measurement_failed",
         }
 
-    milliseconds = {
+    return {
         "complete_render_median_ms": percentile(measurements, 50),
         "complete_render_p95_ms": percentile(measurements, 95),
+        "completion_signal": "Plotly newPlot/react promise plus two animation frames",
         "engine": "chromium",
         "engine_version": browser_version,
         "source_html": relative_source,
         "status": "measured",
     }
-    return milliseconds
 
 
-def run_python_benchmark(point_count: int, repeats: int) -> dict:
+def _summarize_worker_results(results: list[dict], key: str) -> dict[str, float]:
+    return summarize([float(result[key]) for result in results])
+
+
+def run_python_benchmark(
+    point_count: int,
+    repeats: int,
+    repeat_timeout_seconds: float = _DEFAULT_REPEAT_TIMEOUT_SECONDS,
+) -> dict:
     if point_count <= 0:
         raise ValueError("point_count must be positive")
     if repeats <= 0:
         raise ValueError("repeats must be positive")
+    if repeat_timeout_seconds <= 0:
+        raise ValueError("repeat_timeout_seconds must be positive")
 
-    command, projection_info, style_info = _renderer_inputs(point_count)
+    print("Python warm-up: starting", flush=True)
+    warmup = _run_python_repeat(point_count, repeat_timeout_seconds)
+    print(
+        "Python warm-up: complete "
+        f"({warmup['legacy_renderer_total_seconds']:.3f} s, "
+        f"{warmup['peak_rss_mb']:.3f} MiB peak RSS)",
+        flush=True,
+    )
 
-    # Warm-up. Command creation, RNG work, catalog access, and Matplotlib are
-    # deliberately outside the timed renderer region.
-    _, figure = _render_once(command, projection_info, style_info)
-    del figure
-    gc.collect()
+    measured: list[dict] = []
+    for iteration in range(1, repeats + 1):
+        print(f"Python repeat {iteration}/{repeats}: starting", flush=True)
+        result = _run_python_repeat(point_count, repeat_timeout_seconds)
+        measured.append(result)
+        print(
+            f"Python repeat {iteration}/{repeats}: complete "
+            f"({result['legacy_renderer_total_seconds']:.3f} s, "
+            f"{result['peak_rss_mb']:.3f} MiB peak RSS)",
+            flush=True,
+        )
 
-    durations: list[float] = []
-    final_figure = None
-    for _ in range(repeats):
-        duration, figure = _render_once(command, projection_info, style_info)
-        durations.append(duration)
-        if final_figure is not None:
-            del final_figure
-            gc.collect()
-        final_figure = figure
+    payload_sizes = {int(result["payload_bytes"]) for result in measured}
+    if len(payload_sizes) != 1:
+        raise RuntimeError(f"Python repeat payload sizes differ: {sorted(payload_sizes)}")
 
-    payload_bytes = len(final_figure.to_json().encode("utf-8"))
+    preparation = _summarize_worker_results(
+        measured, "legacy_renderer_preparation_seconds"
+    )
+    plotly_construction = _summarize_worker_results(
+        measured, "plotly_construction_seconds"
+    )
+    legacy_total = _summarize_worker_results(
+        measured, "legacy_renderer_total_seconds"
+    )
+    scene_compile = {**legacy_total, "semantics": _SCENE_COMPILE_SEMANTICS}
+
+    browser = run_browser_benchmark(repeats)
     result = {
-        "browser": run_browser_benchmark(repeats),
-        "environment": _environment(),
-        "payload_bytes": payload_bytes,
-        "peak_rss_mb": _peak_rss_mb(),
+        "browser": browser,
+        "environment": _environment(browser),
+        "legacy_renderer_preparation": preparation,
+        "legacy_renderer_total": legacy_total,
+        "payload_bytes": payload_sizes.pop(),
+        "peak_rss_mb": max(float(item["peak_rss_mb"]) for item in measured),
+        "plotly_construction": plotly_construction,
         "point_count": point_count,
-        "scene_compile": summarize(durations),
+        "scene_compile": scene_compile,
     }
     validate_result(result)
     return result
@@ -310,13 +578,24 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--points", type=int, default=974_153)
     parser.add_argument("--repeats", type=int, default=5)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--repeat-timeout-seconds", type=float, default=300.0)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--python-worker", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
-    result = run_python_benchmark(args.points, args.repeats)
+    if args.python_worker:
+        print(json.dumps(_run_python_worker(args.points), sort_keys=True))
+        return
+    if args.output is None:
+        raise SystemExit("--output is required")
+    result = run_python_benchmark(
+        args.points,
+        args.repeats,
+        repeat_timeout_seconds=args.repeat_timeout_seconds,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n",

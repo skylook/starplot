@@ -1,26 +1,47 @@
 {
   "browser": {
-    "complete_render_median_ms": 7082.274551969022,
-    "complete_render_p95_ms": 7429.081240808591,
+    "complete_render_median_ms": 5987.665318010841,
+    "complete_render_p95_ms": 6161.506794032175,
+    "completion_signal": "Plotly newPlot/react promise plus two animation frames",
     "engine": "chromium",
     "engine_version": "150.0.7871.116",
     "source_html": "comparison_outputs/map_milky_way_stars/plotly.html",
     "status": "measured"
   },
   "environment": {
-    "captured_at_utc": "2026-07-16T16:19:15.940531+00:00",
+    "browser": "chromium 150.0.7871.116",
+    "captured_at_utc": "2026-07-16T16:45:19.482885+00:00",
+    "cpu": "i386",
+    "cpu_count": 12,
+    "host_fingerprint": "5451c46791c81455",
     "machine": "x86_64",
     "numpy": "2.2.2",
-    "platform": "macOS-10.16-x86_64-i386-64bit-Mach-O",
+    "os": "macOS-10.16-x86_64-i386-64bit-Mach-O",
+    "playwright": "1.58.0",
     "plotly": "6.5.2",
+    "pyarrow": "19.0.0",
     "python": "3.13.2",
+    "shapely": "2.0.7",
     "starplot": "0.19.5"
   },
+  "legacy_renderer_preparation": {
+    "median_seconds": 39.17426662496291,
+    "p95_seconds": 39.802509986795485
+  },
+  "legacy_renderer_total": {
+    "median_seconds": 74.3508419219288,
+    "p95_seconds": 74.8359587154002
+  },
   "payload_bytes": 55580751,
-  "peak_rss_mb": 946.109375,
+  "peak_rss_mb": 853.578125,
+  "plotly_construction": {
+    "median_seconds": 34.89394527103286,
+    "p95_seconds": 35.640239169017875
+  },
   "point_count": 974153,
   "scene_compile": {
-    "median_seconds": 102.14324288099306,
-    "p95_seconds": 103.17773139697965
+    "median_seconds": 74.3508419219288,
+    "p95_seconds": 74.8359587154002,
+    "semantics": "Compatibility alias for legacy_renderer_total: legacy pre-Scene command preparation plus Plotly Figure construction; not a native Scene compiler."
   }
 }
