@@ -1,7 +1,7 @@
 import numpy as np
 
 from starplot.interactive.commands import CoordinateSpace, DrawingCommand
-from starplot.interactive.scene import readonly_array
+from starplot.interactive.scene import _seal_owned_array, readonly_array
 from starplot.styles import ZOrderEnum
 
 
@@ -9,15 +9,31 @@ def _materialize_column(value, *, iterator_dtype, name):
     """Materialize an array-like or one-shot iterable exactly once."""
     if isinstance(value, np.ndarray):
         array = readonly_array(value)
+    elif isinstance(value, (list, tuple)):
+        array = np.array(
+            value,
+            copy=True,
+            order="C",
+            subok=False,
+        )
+    elif np.isscalar(value):
+        array = np.array(
+            value,
+            copy=True,
+            order="C",
+            subok=False,
+        )
     else:
-        array = np.asarray(value)
-        if array.ndim == 0 and not np.isscalar(value):
-            array = np.fromiter(value, dtype=iterator_dtype)
-        array = readonly_array(array)
+        array = np.fromiter(value, dtype=iterator_dtype)
 
+    return _seal_owned_column(array, name=name)
+
+
+def _seal_owned_column(array, *, name):
+    """Validate and seal a newly owned one-dimensional scatter column."""
     if array.ndim != 1:
         raise ValueError(f"Scatter {name} must be a one-dimensional column")
-    return array
+    return _seal_owned_array(array)
 
 
 def _is_scalar_like(value):
@@ -52,7 +68,10 @@ class DrawingRecorder:
         )
         row_count = len(x)
         if _is_scalar_like(colors):
-            colors = readonly_array(np.full(row_count, colors))
+            colors = _seal_owned_column(
+                np.full(row_count, colors),
+                name="colors",
+            )
         else:
             colors = _materialize_column(
                 colors,
@@ -60,7 +79,10 @@ class DrawingRecorder:
                 name="colors",
             )
         if _is_scalar_like(alphas):
-            alphas = readonly_array(np.full(row_count, alphas))
+            alphas = _seal_owned_column(
+                np.full(row_count, alphas),
+                name="alphas",
+            )
         else:
             alphas = _materialize_column(
                 alphas,

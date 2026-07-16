@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+import starplot.interactive.recorder as recorder_module
 from starplot.interactive.recorder import DrawingRecorder
 from starplot.interactive.commands import DrawingCommand
 
@@ -140,6 +141,141 @@ def test_record_scatter_rejects_zero_dimensional_geometry_columns(name):
 
     with pytest.raises(ValueError, match="one-dimensional"):
         DrawingRecorder().record_scatter(**values)
+
+
+def test_record_scatter_list_columns_allocate_once_and_are_sealed_in_place(
+    monkeypatch,
+):
+    original_array = recorder_module.np.array
+    original_asarray = recorder_module.np.asarray
+    allocations = []
+    asarray_calls = []
+
+    def array_spy(*args, **kwargs):
+        result = original_array(*args, **kwargs)
+        allocations.append(result)
+        return result
+
+    def asarray_spy(*args, **kwargs):
+        asarray_calls.append(args[0])
+        return original_asarray(*args, **kwargs)
+
+    monkeypatch.setattr(recorder_module.np, "array", array_spy)
+    monkeypatch.setattr(recorder_module.np, "asarray", asarray_spy)
+    recorder = DrawingRecorder()
+    recorder.record_scatter(
+        x=[1.0, 2.0],
+        y=[3.0, 4.0],
+        sizes=[5.0, 6.0],
+        colors=["#fff", "#000"],
+        alphas=[1.0, 0.5],
+        metadata=[],
+    )
+    monkeypatch.setattr(recorder_module.np, "array", original_array)
+    monkeypatch.setattr(recorder_module.np, "asarray", original_asarray)
+
+    assert asarray_calls == []
+    assert len(allocations) == 5
+    for name, allocation in zip(
+        ("x", "y", "sizes", "colors", "alphas"),
+        allocations,
+    ):
+        assert recorder.commands[0].data[name] is allocation
+        assert allocation.flags.owndata
+        assert not allocation.flags.writeable
+
+
+def test_record_scatter_generator_columns_allocate_once_and_are_sealed_in_place(
+    monkeypatch,
+):
+    original_array = recorder_module.np.array
+    original_asarray = recorder_module.np.asarray
+    original_fromiter = recorder_module.np.fromiter
+    array_calls = []
+    asarray_calls = []
+    allocations = []
+
+    def array_spy(*args, **kwargs):
+        array_calls.append(args[0])
+        return original_array(*args, **kwargs)
+
+    def asarray_spy(*args, **kwargs):
+        asarray_calls.append(args[0])
+        return original_asarray(*args, **kwargs)
+
+    def fromiter_spy(*args, **kwargs):
+        result = original_fromiter(*args, **kwargs)
+        allocations.append(result)
+        return result
+
+    monkeypatch.setattr(recorder_module.np, "array", array_spy)
+    monkeypatch.setattr(recorder_module.np, "asarray", asarray_spy)
+    monkeypatch.setattr(recorder_module.np, "fromiter", fromiter_spy)
+    recorder = DrawingRecorder()
+    recorder.record_scatter(
+        x=(value for value in [1.0, 2.0]),
+        y=(value for value in [3.0, 4.0]),
+        sizes=(value for value in [5.0, 6.0]),
+        colors=(value for value in ["#fff", "#000"]),
+        alphas=(value for value in [1.0, 0.5]),
+        metadata=[],
+    )
+    monkeypatch.setattr(recorder_module.np, "array", original_array)
+    monkeypatch.setattr(recorder_module.np, "asarray", original_asarray)
+    monkeypatch.setattr(recorder_module.np, "fromiter", original_fromiter)
+
+    assert array_calls == []
+    assert asarray_calls == []
+    assert len(allocations) == 5
+    for name, allocation in zip(
+        ("x", "y", "sizes", "colors", "alphas"),
+        allocations,
+    ):
+        assert recorder.commands[0].data[name] is allocation
+        assert allocation.flags.owndata
+        assert not allocation.flags.writeable
+
+
+def test_record_scatter_scalar_broadcasts_allocate_once_and_are_sealed_in_place(
+    monkeypatch,
+):
+    color = np.array("#fff", dtype="<U4")
+    alpha = np.array(0.5, dtype=np.float32)
+    original_array = recorder_module.np.array
+    original_full = recorder_module.np.full
+    array_allocations = []
+    full_allocations = []
+
+    def array_spy(*args, **kwargs):
+        result = original_array(*args, **kwargs)
+        array_allocations.append(result)
+        return result
+
+    def full_spy(*args, **kwargs):
+        result = original_full(*args, **kwargs)
+        full_allocations.append(result)
+        return result
+
+    monkeypatch.setattr(recorder_module.np, "array", array_spy)
+    monkeypatch.setattr(recorder_module.np, "full", full_spy)
+    recorder = DrawingRecorder()
+    recorder.record_scatter(
+        x=[1.0, 2.0],
+        y=[3.0, 4.0],
+        sizes=[5.0, 6.0],
+        colors=color,
+        alphas=alpha,
+        metadata=[],
+    )
+    monkeypatch.setattr(recorder_module.np, "array", original_array)
+    monkeypatch.setattr(recorder_module.np, "full", original_full)
+
+    assert len(array_allocations) == 3
+    assert len(full_allocations) == 2
+    assert recorder.commands[0].data["colors"] is full_allocations[0]
+    assert recorder.commands[0].data["alphas"] is full_allocations[1]
+    assert all(allocation.flags.owndata for allocation in full_allocations)
+    assert all(not allocation.flags.writeable for allocation in full_allocations)
 
 
 def test_record_scatter_materializes_each_iterable_once():

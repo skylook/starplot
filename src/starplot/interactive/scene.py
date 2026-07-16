@@ -12,6 +12,9 @@ import numpy as np
 from starplot.interactive.commands import CoordinateSpace
 
 
+_OWNED_COLUMNS_TOKEN = object()
+
+
 class SceneKind(StrEnum):
     SCATTER = "scatter"
     LINE = "line"
@@ -37,8 +40,32 @@ def readonly_array(value, dtype=None) -> np.ndarray:
         order="C",
         subok=False,
     )
+    return _seal_owned_array(array)
+
+
+def _seal_owned_array(array: np.ndarray) -> np.ndarray:
+    """Seal newly allocated owned storage without making another copy."""
+    if not isinstance(array, np.ndarray):
+        raise TypeError("owned array must be a NumPy ndarray")
+    if not array.flags.owndata or not array.flags.c_contiguous:
+        raise ValueError("owned array must own C-contiguous storage")
     array.setflags(write=False)
     return array
+
+
+def _validated_row_count(
+    columns: Mapping[str, np.ndarray],
+    expected_row_count: int | None = None,
+) -> int:
+    lengths = {len(column) for column in columns.values()}
+    if len(lengths) > 1:
+        raise ValueError("ColumnarData columns must have the same row count")
+    row_count = next(iter(lengths), 0)
+    if expected_row_count is not None and expected_row_count != row_count:
+        raise ValueError(
+            "ColumnarData row_count must match the column row count"
+        )
+    return row_count
 
 
 def _freeze_value(value):
@@ -66,14 +93,7 @@ class ColumnarData:
             name: readonly_array(value)
             for name, value in self.columns.items()
         }
-        lengths = {len(column) for column in columns.values()}
-        if len(lengths) > 1:
-            raise ValueError("ColumnarData columns must have the same row count")
-        actual_row_count = next(iter(lengths), 0)
-        if self.row_count != actual_row_count:
-            raise ValueError(
-                "ColumnarData row_count must match the column row count"
-            )
+        _validated_row_count(columns, self.row_count)
         object.__setattr__(self, "columns", MappingProxyType(columns))
 
     @classmethod
@@ -82,10 +102,36 @@ class ColumnarData:
             name: readonly_array(value)
             for name, value in values.items()
         }
-        lengths = {len(column) for column in columns.values()}
-        if len(lengths) > 1:
-            raise ValueError("ColumnarData columns must have the same row count")
-        return cls(MappingProxyType(columns), lengths.pop() if lengths else 0)
+        return cls._from_owned_columns(
+            columns,
+            _ownership_token=_OWNED_COLUMNS_TOKEN,
+        )
+
+    @classmethod
+    def _from_owned_columns(
+        cls,
+        columns: Mapping[str, np.ndarray],
+        *,
+        _ownership_token,
+    ) -> "ColumnarData":
+        if _ownership_token is not _OWNED_COLUMNS_TOKEN:
+            raise ValueError("invalid owned-column provenance token")
+        for column in columns.values():
+            if (
+                not isinstance(column, np.ndarray)
+                or not column.flags.owndata
+                or not column.flags.c_contiguous
+                or column.flags.writeable
+            ):
+                raise ValueError(
+                    "owned columns must be C-contiguous, read-only NumPy arrays"
+                )
+
+        row_count = _validated_row_count(columns)
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "columns", MappingProxyType(dict(columns)))
+        object.__setattr__(instance, "row_count", row_count)
+        return instance
 
     def __getitem__(self, name: str) -> np.ndarray:
         return self.columns[name]

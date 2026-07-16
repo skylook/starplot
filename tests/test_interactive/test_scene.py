@@ -5,6 +5,7 @@ from types import MappingProxyType
 import numpy as np
 import pytest
 
+import starplot.interactive.scene as scene_module
 from starplot.interactive.commands import CoordinateSpace
 from starplot.interactive.scene import (
     ColumnarData,
@@ -99,6 +100,45 @@ def test_columnar_data_detaches_from_caller_owned_arrays():
     assert not np.shares_memory(columns["x"], source)
     source[0] = 99
     np.testing.assert_array_equal(columns["x"], [1.0, 2.0])
+
+
+def test_columnar_data_direct_constructor_copies_caller_read_only_owned_array():
+    source = np.array([1.0, 2.0], dtype=np.float32)
+    source.setflags(write=False)
+
+    columns = ColumnarData({"x": source}, row_count=2)
+
+    assert not np.shares_memory(columns["x"], source)
+    assert columns["x"].flags.owndata
+    assert not columns["x"].flags.writeable
+
+
+def test_columnar_data_owned_construction_requires_internal_provenance_token():
+    source = np.array([1.0, 2.0], dtype=np.float32)
+    source.setflags(write=False)
+
+    with pytest.raises(TypeError, match="_ownership_token"):
+        ColumnarData._from_owned_columns({"x": source})
+
+
+def test_columnar_data_from_mapping_snapshots_each_column_once(monkeypatch):
+    original_array = scene_module.np.array
+    allocations = []
+
+    def array_spy(*args, **kwargs):
+        result = original_array(*args, **kwargs)
+        allocations.append(result)
+        return result
+
+    monkeypatch.setattr(scene_module.np, "array", array_spy)
+    columns = ColumnarData.from_mapping({"x": [1, 2], "y": [3, 4]})
+    monkeypatch.setattr(scene_module.np, "array", original_array)
+
+    assert len(allocations) == 2
+    assert columns["x"] is allocations[0]
+    assert columns["y"] is allocations[1]
+    assert all(column.flags.owndata for column in allocations)
+    assert all(not column.flags.writeable for column in allocations)
 
 
 def test_columnar_data_rejects_misaligned_columns():
