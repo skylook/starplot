@@ -29,13 +29,15 @@ import numpy as np
 REQUIRED_RESULT_KEYS = {
     "browser",
     "environment",
-    "legacy_renderer_preparation",
-    "legacy_renderer_total",
     "payload_bytes",
     "peak_rss_mb",
-    "plotly_construction",
     "point_count",
     "scene_compile",
+}
+REQUIRED_ARTIFACT_KEYS = REQUIRED_RESULT_KEYS | {
+    "legacy_renderer_preparation",
+    "legacy_renderer_total",
+    "plotly_construction",
 }
 REQUIRED_ENVIRONMENT_KEYS = {
     "browser",
@@ -156,6 +158,14 @@ def validate_result(result: dict) -> None:
     missing = REQUIRED_RESULT_KEYS - result.keys()
     if missing:
         raise ValueError(f"Missing benchmark keys: {sorted(missing)}")
+
+
+def validate_benchmark_artifact(result: dict) -> None:
+    """Validate the stricter schema required for a persisted baseline JSON."""
+    validate_result(result)
+    missing = REQUIRED_ARTIFACT_KEYS - result.keys()
+    if missing:
+        raise ValueError(f"Missing benchmark artifact keys: {sorted(missing)}")
     environment = result.get("environment")
     if not isinstance(environment, dict):
         raise ValueError("Benchmark environment must be a mapping")
@@ -364,6 +374,7 @@ def _host_fingerprint() -> str:
         "cpu": platform.processor() or platform.machine(),
         "cpu_count": os.cpu_count(),
         "machine": platform.machine(),
+        "node": platform.node(),
         "os": platform.platform(),
     }
     encoded = json.dumps(traits, sort_keys=True, separators=(",", ":")).encode()
@@ -570,7 +581,7 @@ def run_python_benchmark(
         "point_count": point_count,
         "scene_compile": scene_compile,
     }
-    validate_result(result)
+    validate_benchmark_artifact(result)
     return result
 
 
@@ -596,6 +607,7 @@ def main() -> None:
         args.repeats,
         repeat_timeout_seconds=args.repeat_timeout_seconds,
     )
+    validate_benchmark_artifact(result)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n",

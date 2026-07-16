@@ -51,8 +51,29 @@ def test_benchmark_result_schema_rejects_missing_metrics():
         validate_result({"environment": {}, "point_count": 100})
 
 
-def test_benchmark_result_schema_accepts_complete_result():
-    validate_result(complete_result())
+def test_public_benchmark_result_schema_is_the_brief_six_key_contract():
+    assert benchmark.REQUIRED_RESULT_KEYS == {
+        "environment",
+        "point_count",
+        "scene_compile",
+        "peak_rss_mb",
+        "payload_bytes",
+        "browser",
+    }
+    validate_result(
+        {
+            "environment": {"python": "3.12", "platform": "test"},
+            "point_count": 100,
+            "scene_compile": {"median_seconds": 1.0, "p95_seconds": 1.2},
+            "peak_rss_mb": 10.0,
+            "payload_bytes": 1000,
+            "browser": {"complete_render_median_ms": 100.0},
+        }
+    )
+
+
+def test_strict_artifact_schema_accepts_complete_result():
+    benchmark.validate_benchmark_artifact(complete_result())
 
 
 def test_benchmark_result_schema_rejects_missing_environment_versions():
@@ -60,7 +81,15 @@ def test_benchmark_result_schema_rejects_missing_environment_versions():
     result["environment"] = {"python": "3.13.2", "platform": "test"}
 
     with pytest.raises(ValueError, match="pyarrow"):
-        validate_result(result)
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_strict_artifact_schema_rejects_missing_stage_metrics():
+    result = complete_result()
+    del result["plotly_construction"]
+
+    with pytest.raises(ValueError, match="plotly_construction"):
+        benchmark.validate_benchmark_artifact(result)
 
 
 def test_benchmark_summary_reports_median_and_p95():
@@ -122,7 +151,7 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch, capsys)
         repeat_timeout_seconds=2.0,
     )
 
-    validate_result(result)
+    benchmark.validate_benchmark_artifact(result)
     assert calls == [(10, 2.0), (10, 2.0)]
     assert result["scene_compile"]["median_seconds"] == 1.5
     assert result["legacy_renderer_total"]["median_seconds"] == 1.5
@@ -213,3 +242,22 @@ def test_python_repeat_parses_isolated_worker_result(monkeypatch):
     monkeypatch.setattr(benchmark.subprocess, "run", run)
 
     assert benchmark._run_python_repeat(10, 12.0) == expected
+
+
+def test_host_fingerprint_distinguishes_nodes_without_exposing_node(monkeypatch):
+    monkeypatch.setattr(benchmark.platform, "processor", lambda: "test-cpu")
+    monkeypatch.setattr(benchmark.platform, "machine", lambda: "test-machine")
+    monkeypatch.setattr(benchmark.platform, "platform", lambda: "test-os")
+    monkeypatch.setattr(benchmark.os, "cpu_count", lambda: 8)
+
+    private_node_one = "private-host-one.example"
+    private_node_two = "private-host-two.example"
+    monkeypatch.setattr(benchmark.platform, "node", lambda: private_node_one)
+    fingerprint_one = benchmark._host_fingerprint()
+    monkeypatch.setattr(benchmark.platform, "node", lambda: private_node_two)
+    fingerprint_two = benchmark._host_fingerprint()
+
+    assert fingerprint_one != fingerprint_two
+    assert private_node_one not in fingerprint_one
+    assert private_node_two not in fingerprint_two
+    assert len(fingerprint_one) == 16

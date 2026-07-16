@@ -1,7 +1,7 @@
 {
   "browser": {
-    "complete_render_median_ms": 5987.665318010841,
-    "complete_render_p95_ms": 6161.506794032175,
+    "complete_render_median_ms": 5775.945772009436,
+    "complete_render_p95_ms": 6206.042184168473,
     "completion_signal": "Plotly newPlot/react promise plus two animation frames",
     "engine": "chromium",
     "engine_version": "150.0.7871.116",
@@ -10,10 +10,10 @@
   },
   "environment": {
     "browser": "chromium 150.0.7871.116",
-    "captured_at_utc": "2026-07-16T16:45:19.482885+00:00",
+    "captured_at_utc": "2026-07-16T17:02:21.772099+00:00",
     "cpu": "i386",
     "cpu_count": 12,
-    "host_fingerprint": "5451c46791c81455",
+    "host_fingerprint": "2c491292ea611770",
     "machine": "x86_64",
     "numpy": "2.2.2",
     "os": "macOS-10.16-x86_64-i386-64bit-Mach-O",
@@ -25,23 +25,23 @@
     "starplot": "0.19.5"
   },
   "legacy_renderer_preparation": {
-    "median_seconds": 39.17426662496291,
-    "p95_seconds": 39.802509986795485
+    "median_seconds": 39.11432937398786,
+    "p95_seconds": 40.35316551357973
   },
   "legacy_renderer_total": {
-    "median_seconds": 74.3508419219288,
-    "p95_seconds": 74.8359587154002
+    "median_seconds": 74.81611629691906,
+    "p95_seconds": 75.36228827115846
   },
   "payload_bytes": 55580751,
-  "peak_rss_mb": 853.578125,
+  "peak_rss_mb": 855.2578125,
   "plotly_construction": {
-    "median_seconds": 34.89394527103286,
-    "p95_seconds": 35.640239169017875
+    "median_seconds": 34.60361833899515,
+    "p95_seconds": 35.60824974534334
   },
   "point_count": 974153,
   "scene_compile": {
-    "median_seconds": 74.3508419219288,
-    "p95_seconds": 74.8359587154002,
+    "median_seconds": 74.81611629691906,
+    "p95_seconds": 75.36228827115846,
     "semantics": "Compatibility alias for legacy_renderer_total: legacy pre-Scene command preparation plus Plotly Figure construction; not a native Scene compiler."
   }
 }
