@@ -279,6 +279,28 @@ def test_encode_palette_accepts_homogeneous_string_specs_only():
     assert encoded.color_index.tolist() == [1, 0, 1]
 
 
+def test_encode_palette_rejects_plain_mixed_list_with_stable_message():
+    with pytest.raises(
+        ValueError,
+        match=r"^colors must be a one-dimensional string array$",
+    ):
+        encode_palette(["red", (1.0, 0.0, 0.0)], 1.0)
+
+
+@pytest.mark.parametrize(
+    "opacity",
+    [np.array([], dtype=np.float32), 1.0],
+)
+def test_encode_palette_normalizes_empty_python_sequence(opacity):
+    encoded = encode_palette([], opacity)
+
+    assert encoded.palette == ()
+    assert encoded.color_index.dtype == np.uint8
+    assert encoded.color_index.size == 0
+    assert encoded.opacity.dtype == np.float32
+    assert encoded.opacity.size == 0
+
+
 @pytest.mark.parametrize(
     "colors",
     [

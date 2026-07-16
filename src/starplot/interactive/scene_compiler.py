@@ -162,11 +162,19 @@ def filter_columns(data: ColumnarData, mask) -> ColumnarData:
 
 def encode_palette(colors, opacity) -> PaletteEncoding:
     """Encode colors once per unique value and retain numeric per-point alpha."""
-    color_values = np.asarray(colors)
+    color_error = "colors must be a one-dimensional string array"
+    try:
+        color_values = np.asarray(colors)
+    except (TypeError, ValueError) as error:
+        raise ValueError(color_error) from error
+    if (
+        color_values.ndim == 1
+        and color_values.size == 0
+        and not isinstance(colors, np.ndarray)
+    ):
+        color_values = np.asarray([], dtype=str)
     if color_values.ndim != 1 or color_values.dtype.kind != "U":
-        raise ValueError(
-            "colors must be a one-dimensional string array of Matplotlib specs"
-        )
+        raise ValueError(color_error)
 
     opacity_values = _validated_opacity_values(
         opacity,
