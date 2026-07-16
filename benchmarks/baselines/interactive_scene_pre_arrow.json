@@ -1,0 +1,26 @@
+{
+  "browser": {
+    "complete_render_median_ms": 7082.274551969022,
+    "complete_render_p95_ms": 7429.081240808591,
+    "engine": "chromium",
+    "engine_version": "150.0.7871.116",
+    "source_html": "comparison_outputs/map_milky_way_stars/plotly.html",
+    "status": "measured"
+  },
+  "environment": {
+    "captured_at_utc": "2026-07-16T16:19:15.940531+00:00",
+    "machine": "x86_64",
+    "numpy": "2.2.2",
+    "platform": "macOS-10.16-x86_64-i386-64bit-Mach-O",
+    "plotly": "6.5.2",
+    "python": "3.13.2",
+    "starplot": "0.19.5"
+  },
+  "payload_bytes": 55580751,
+  "peak_rss_mb": 946.109375,
+  "point_count": 974153,
+  "scene_compile": {
+    "median_seconds": 102.14324288099306,
+    "p95_seconds": 103.17773139697965
+  }
+}
