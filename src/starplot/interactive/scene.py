@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+import math
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -26,6 +27,43 @@ class InteractionPolicy(StrEnum):
     NONE = "none"
     HOVER = "hover"
     HOVER_AND_DETAIL = "hover-and-detail"
+
+
+@dataclass(frozen=True)
+class ClipGeometry:
+    """Serializable clip geometry retained by a compiled Scene."""
+
+    kind: str
+    points: tuple[tuple[float, float], ...]
+
+    def __post_init__(self):
+        if not isinstance(self.kind, str) or self.kind not in {"rect", "polygon"}:
+            raise ValueError("ClipGeometry kind must be rect or polygon")
+
+        try:
+            points = tuple(tuple(point) for point in self.points)
+        except TypeError as error:
+            raise ValueError("ClipGeometry points must be two-value coordinates") from error
+
+        minimum_points = 2 if self.kind == "rect" else 3
+        if len(points) < minimum_points:
+            raise ValueError(
+                f"{self.kind} ClipGeometry requires at least {minimum_points} points"
+            )
+
+        frozen_points = []
+        for point in points:
+            if len(point) != 2:
+                raise ValueError("ClipGeometry points must contain exactly two values")
+            try:
+                x, y = float(point[0]), float(point[1])
+            except (TypeError, ValueError) as error:
+                raise ValueError("ClipGeometry points must be finite numbers") from error
+            if not math.isfinite(x) or not math.isfinite(y):
+                raise ValueError("ClipGeometry points must be finite numbers")
+            frozen_points.append((x, y))
+
+        object.__setattr__(self, "points", tuple(frozen_points))
 
 
 def readonly_array(value, dtype=None) -> np.ndarray:

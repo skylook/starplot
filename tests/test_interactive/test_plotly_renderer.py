@@ -476,11 +476,68 @@ def test_renderer_preserves_subpixel_area_for_high_volume_trace(monkeypatch):
 
 
 def test_marker_size_calibration_can_retain_subpixel_diameter():
-    from starplot.interactive.style_converter import calibrate_marker_size
+    from starplot.interactive.style_converter import (
+        calibrate_marker_size,
+        calibrate_marker_sizes_array,
+    )
 
     assert calibrate_marker_size(0.02, min_size=0.0) < 1.0
     assert calibrate_marker_size(0.02) == 1.5
     assert calibrate_marker_size(0.0, min_size=0.0) == 0.0
+
+    mpl_sizes = np.array([0.0, 0.02, 1.0, 50.0], dtype=np.float32)
+    calibrated = calibrate_marker_sizes_array(
+        mpl_sizes,
+        dpi=100.0,
+        target_width=500.0,
+        source_axes_width=400.0,
+        kaleido_scale=1.15,
+    )
+    expected = np.array(
+        [
+            calibrate_marker_size(
+                size,
+                dpi=100.0,
+                width=500.0,
+                source_axes_width=400.0,
+            )
+            * 1.15
+            for size in mpl_sizes
+        ],
+        dtype=np.float32,
+    )
+
+    assert calibrated.dtype == np.float32
+    assert calibrated.flags.c_contiguous
+    assert calibrated.flags.aligned
+    assert not calibrated.flags.writeable
+    np.testing.assert_allclose(calibrated, expected, rtol=2e-6)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"dpi": 0.0}, "dpi"),
+        ({"dpi": float("nan")}, "dpi"),
+        ({"target_width": 0.0}, "target_width"),
+        ({"target_width": "wide"}, "target_width"),
+        ({"source_axes_width": -1.0}, "source_axes_width"),
+    ],
+)
+def test_marker_size_array_rejects_invalid_calibration_dimensions(
+    kwargs, message
+):
+    from starplot.interactive.style_converter import calibrate_marker_sizes_array
+
+    values = {
+        "dpi": 100.0,
+        "target_width": 500.0,
+        "source_axes_width": 400.0,
+    }
+    values.update(kwargs)
+
+    with pytest.raises(ValueError, match=message):
+        calibrate_marker_sizes_array(np.array([1.0], dtype=np.float32), **values)
 
 
 def test_tiny_per_point_alpha_is_valid_plotly_css_color():

@@ -8,6 +8,7 @@ import pytest
 import starplot.interactive.scene as scene_module
 from starplot.interactive.commands import CoordinateSpace
 from starplot.interactive.scene import (
+    ClipGeometry,
     ColumnarData,
     InteractionPolicy,
     SceneCapabilities,
@@ -16,6 +17,45 @@ from starplot.interactive.scene import (
     ScenePackage,
     readonly_array,
 )
+
+
+@pytest.mark.parametrize(
+    ("kind", "points", "expected"),
+    [
+        ("rect", [[0, 0], [1, 1]], ((0.0, 0.0), (1.0, 1.0))),
+        (
+            "polygon",
+            [[0, 0], [1, 0], [0, 1]],
+            ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
+        ),
+    ],
+)
+def test_clip_geometry_freezes_finite_two_dimensional_points(
+    kind, points, expected
+):
+    clip = ClipGeometry(kind=kind, points=points)
+
+    assert clip.kind == kind
+    assert clip.points == expected
+    assert isinstance(clip.points, tuple)
+    assert all(isinstance(point, tuple) for point in clip.points)
+
+
+@pytest.mark.parametrize(
+    ("kind", "points", "message"),
+    [
+        ("none", (), "rect or polygon"),
+        ("rect", ((0, 0),), "at least 2"),
+        ("polygon", ((0, 0), (1, 0)), "at least 3"),
+        ("polygon", ((0, 0), (1, 0), (0, 1, 2)), "two values"),
+        ("polygon", ((0, 0), (1, 0), (0, float("nan"))), "finite"),
+    ],
+)
+def test_clip_geometry_rejects_invalid_kind_shape_and_coordinates(
+    kind, points, message
+):
+    with pytest.raises(ValueError, match=message):
+        ClipGeometry(kind=kind, points=points)
 
 
 def _layer(**overrides):
