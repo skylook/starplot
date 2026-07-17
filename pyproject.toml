@@ -53,6 +53,9 @@ starplot = "starplot.cli:main"
 [tool.flit.sdist]
 include = [
     "src/starplot/data/library/*.parquet",
+    "src/starplot/interactive/assets/*.js",
+    "src/starplot/interactive/assets/*.md",
+    "src/starplot/interactive/assets/vendor/*.js",
 ]
 
 [tool.pytest.ini_options]
