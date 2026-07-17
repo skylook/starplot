@@ -170,7 +170,7 @@ test("loader rejects wrong Arrow field order, type, and nullability", async () =
     });
     await assert.rejects(async () => {
       for await (const _batch of source.loadLayer(fixture.layer)) { /* consume */ }
-    }, /Arrow schema/);
+    }, /Arrow (?:schema|field)/);
   }
 
   const valid = tableWithSceneMetadata({
@@ -256,9 +256,63 @@ test("manifest validation enforces the Python wire model and ordered self-hash",
   }
   const stale = structuredClone(fixture.manifest);
   stale.layers[0].content_hash = `sha256:${"1".repeat(64)}`;
+  const staleJson = fixture.manifestJson.replace(fixture.layer.content_hash, stale.layers[0].content_hash);
   await assert.rejects(
-    new runtime.InlineSceneSource({ manifest: stale, manifestJson: JSON.stringify(stale), layers: {} }).loadManifest(),
+    new runtime.InlineSceneSource({ manifest: stale, manifestJson: staleJson, layers: {} }).loadManifest(),
     /scene content hash/,
+  );
+});
+
+test("manifest text must be exact Python-canonical JSON before self-hashing", async () => {
+  const fixture = await sceneFixture();
+  const runtime = await loadRuntime(["starplot-scene-loader.js"]);
+  assert.match(fixture.manifestJson, /"zorder":5\.0/);
+  assert.match(fixture.manifestJson, /"origin":0\.0/);
+  for (const mutation of [
+    (text) => ` ${text}`,
+    () => JSON.stringify(fixture.manifest),
+    (text) => text.replace('"zorder":5.0', '"zorder":5'),
+    (text) => text.replace('"load_priority":10', '"load_priority":10.0'),
+  ]) {
+    await assert.rejects(
+      new runtime.InlineSceneSource({
+        manifest: fixture.manifest,
+        manifestJson: mutation(fixture.manifestJson),
+        layers: {},
+      }).loadManifest(),
+      /Python-canonical manifest JSON/,
+    );
+  }
+
+  const escaped = structuredClone(fixture.manifest);
+  escaped.scene_id = "café";
+  const escapedJson = await bindManifestHash(escaped);
+  assert.match(escapedJson, /café/);
+  await new runtime.InlineSceneSource({
+    manifest: escaped,
+    manifestJson: escapedJson,
+    layers: {},
+  }).loadManifest();
+  await assert.rejects(
+    new runtime.InlineSceneSource({
+      manifest: escaped,
+      manifestJson: escapedJson.replace("café", "caf\\u00e9"),
+      layers: {},
+    }).loadManifest(),
+    /Python-canonical manifest JSON/,
+  );
+
+  const exponent = structuredClone(fixture.manifest);
+  exponent.layers[0].coordinate_encoding.x.max_error_pixels = 1e-7;
+  const exponentJson = await bindManifestHash(exponent);
+  assert.match(exponentJson, /1e-07/);
+  await assert.rejects(
+    new runtime.InlineSceneSource({
+      manifest: exponent,
+      manifestJson: exponentJson.replace("1e-07", "1e-7"),
+      layers: {},
+    }).loadManifest(),
+    /Python-canonical manifest JSON/,
   );
 });
 
@@ -304,4 +358,23 @@ test("fetch sources resolve document, root, and manifest-relative URLs", async (
   const root = new runtime.StaticSceneSource({ baseUrl: "/assets/scene", documentBaseUrl: "https://example.test/charts/page.html", fetch });
   await root.loadManifest();
   assert.equal(calls.at(-1), "https://example.test/assets/scene/manifest.json");
+});
+
+test("fetch sources resolve layer URLs from the final redirected manifest URL", async () => {
+  const fixture = await sceneFixture();
+  const calls = [];
+  const fetch = async (url) => {
+    calls.push(String(url));
+    return calls.length === 1
+      ? response(fixture.manifestJson, { url: "https://cdn.example.test/scenes/final/manifest.json" })
+      : response(fixture.bytes);
+  };
+  const runtime = await loadRuntime(["starplot-scene-loader.js"], { fetch });
+  const source = new runtime.StaticSceneSource({ baseUrl: "https://example.test/original/", fetch });
+  const manifest = await source.loadManifest();
+  for await (const _batch of source.loadLayer(manifest.layers[0])) { /* consume */ }
+  assert.deepEqual(calls, [
+    "https://example.test/original/manifest.json",
+    "https://cdn.example.test/scenes/final/layers/stars.arrow",
+  ]);
 });

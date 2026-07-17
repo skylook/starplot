@@ -6,11 +6,48 @@ import * as Arrow from "apache-arrow";
 
 export { Arrow, assert };
 
-function canonicalJson(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+const PYTHON_FLOAT_FIELDS = new Set([
+  "zorder", "origin", "scale", "max_error_pixels",
+  "x_min", "x_max", "y_min", "y_max",
+]);
+
+function pythonFloat(value) {
+  if (Object.is(value, -0)) return "-0.0";
+  const source = String(value).toLowerCase();
+  let sign = "";
+  let unsigned = source;
+  if (unsigned.startsWith("-")) { sign = "-"; unsigned = unsigned.slice(1); }
+  let digits;
+  let exponent;
+  if (unsigned.includes("e")) {
+    const [coefficient, rawExponent] = unsigned.split("e");
+    const [whole, fraction = ""] = coefficient.split(".");
+    digits = (whole + fraction).replace(/^0+/, "") || "0";
+    exponent = Number(rawExponent) + whole.length - 1;
+  } else {
+    const [whole, fraction = ""] = unsigned.split(".");
+    const combined = whole + fraction;
+    const first = combined.search(/[1-9]/);
+    if (first < 0) return `${sign}0.0`;
+    digits = combined.slice(first).replace(/0+$/, "");
+    exponent = whole.length - first - 1;
   }
+  if (exponent < -4 || exponent >= 16) {
+    const coefficient = digits.length === 1 ? digits : `${digits[0]}.${digits.slice(1)}`;
+    return `${sign}${coefficient}e${exponent >= 0 ? "+" : "-"}${String(Math.abs(exponent)).padStart(2, "0")}`;
+  }
+  const decimal = exponent + 1;
+  if (decimal <= 0) return `${sign}0.${"0".repeat(-decimal)}${digits}`;
+  if (decimal >= digits.length) return `${sign}${digits}${"0".repeat(decimal - digits.length)}.0`;
+  return `${sign}${digits.slice(0, decimal)}.${digits.slice(decimal)}`;
+}
+
+function canonicalJson(value, field = null) {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key], key)}`).join(",")}}`;
+  }
+  if (typeof value === "number" && PYTHON_FLOAT_FIELDS.has(field)) return pythonFloat(value);
   return JSON.stringify(value);
 }
 
@@ -152,10 +189,11 @@ export async function sceneFixture(columns = {
   return { table, bytes, layer, manifest, manifestJson };
 }
 
-export function response(body, { json = false } = {}) {
+export function response(body, { json = false, url = "" } = {}) {
   return {
     ok: true,
     status: 200,
+    url,
     async json() { return json ? body : JSON.parse(new TextDecoder().decode(body)); },
     async text() { return typeof body === "string" ? body : JSON.stringify(body); },
     async arrayBuffer() {

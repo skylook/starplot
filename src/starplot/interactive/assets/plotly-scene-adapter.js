@@ -25,7 +25,8 @@
     };
   }
 
-  function traceTypeForLayer(layer) {
+  function traceTypeForLayer(layer, forceSvgTracePlane = false) {
+    if (forceSvgTracePlane && ["scatter", "line_collection"].includes(layer.kind)) return "scatter";
     if (layer.kind === "scatter") {
       return layer.group_id === "stars" || Number(layer.row_count || 0) > 1000
         ? "scattergl"
@@ -139,12 +140,15 @@
     return result;
   }
 
-  function scatterTrace(layer, table, scene, style) {
+  function scatterTrace(layer, table, scene, style, forceSvgTracePlane) {
     const palette = paletteFor(style, scene);
     const size = column(table, "size");
     const opacity = column(table, "opacity");
     const colorIndex = column(table, "color_index");
-    const useWebgl = traceTypeForLayer({ ...layer, row_count: layer.row_count ?? table.numRows }) === "scattergl";
+    const useWebgl = traceTypeForLayer(
+      { ...layer, row_count: layer.row_count ?? table.numRows },
+      forceSvgTracePlane,
+    ) === "scattergl";
     const markerSize = new Float32Array(size.length);
     const markerOpacity = useWebgl ? new Float32Array(opacity.length) : opacity;
     for (let index = 0; index < size.length; index += 1) {
@@ -198,13 +202,15 @@
         .join("<br>") + "<extra></extra>";
       trace.hoverinfo = "all";
     }
+    if (!useWebgl) trace.zorder = Number(layer.zorder);
     return trace;
   }
 
-  function lineTrace(layer, table, style) {
+  function lineTrace(layer, table, style, forceSvgTracePlane) {
     const coordinates = pathCoordinates(layer, table);
-    return {
-      type: layer.kind === "line_collection" ? "scattergl" : "scatter",
+    const type = traceTypeForLayer(layer, forceSvgTracePlane);
+    const trace = {
+      type,
       x: coordinates.x,
       y: coordinates.y,
       mode: "lines",
@@ -215,6 +221,8 @@
       legendgroup: layer.group_id,
       showlegend: Boolean(style.legend_label),
     };
+    if (type === "scatter") trace.zorder = Number(layer.zorder);
+    return trace;
   }
 
   function polygonTrace(layer, table, style) {
@@ -222,23 +230,41 @@
     const y = decodeCoordinate(layer, table, "y");
     const polygonIds = column(table, "polygon_id");
     const ringIds = column(table, "ring_id");
-    const ringSets = new Map();
+    const vertexIndices = column(table, "vertex_index");
+    const polygons = new Map();
     for (let index = 0; index < polygonIds.length; index += 1) {
-      const rings = ringSets.get(polygonIds[index]) || new Set();
-      rings.add(ringIds[index]);
-      ringSets.set(polygonIds[index], rings);
+      let rings = polygons.get(polygonIds[index]);
+      if (!rings) { rings = new Map(); polygons.set(polygonIds[index], rings); }
+      let points = rings.get(ringIds[index]);
+      if (!points) { points = []; rings.set(ringIds[index], points); }
+      points.push({ x: x[index], y: y[index], vertex: vertexIndices[index] });
     }
-    if ([...ringSets.values()].some((rings) => rings.size > 1)) {
+    const orderedPolygons = [...polygons.entries()]
+      .sort(([left], [right]) => Number(left) - Number(right))
+      .map(([polygonId, rings]) => ({
+        polygonId,
+        rings: [...rings.entries()]
+          .sort(([left], [right]) => Number(left) - Number(right))
+          .map(([ringId, points], ringIndex) => {
+            const ordered = points.sort((left, right) => Number(left.vertex) - Number(right.vertex));
+            const area = ordered.reduce((sum, point, index) => {
+              const next = ordered[(index + 1) % ordered.length];
+              return sum + point.x * next.y - next.x * point.y;
+            }, 0) / 2;
+            const wantsPositive = ringIndex === 0;
+            return {
+              ringId,
+              points: area !== 0 && (area > 0) !== wantsPositive ? [...ordered].reverse() : ordered,
+            };
+          }),
+      }));
+    const [xref, yref] = coordinateRefs(layer, style);
+    if (xref !== "x" || yref !== "y") {
       const shapes = [];
-      const [xref, yref] = coordinateRefs(layer, style);
-      for (const polygonId of [...ringSets.keys()].sort((a, b) => Number(a) - Number(b))) {
+      for (const polygon of orderedPolygons) {
         let path = "";
-        for (const ringId of [...ringSets.get(polygonId)].sort((a, b) => Number(a) - Number(b))) {
-          const points = [];
-          for (let index = 0; index < x.length; index += 1) {
-            if (polygonIds[index] === polygonId && ringIds[index] === ringId) points.push([x[index], y[index]]);
-          }
-          if (points.length >= 3) path += ` M ${points.map((point) => `${point[0]},${point[1]}`).join(" L ")} Z`;
+        for (const ring of polygon.rings) {
+          if (ring.points.length >= 3) path += ` M ${ring.points.map((point) => `${point.x},${point.y}`).join(" L ")} Z`;
         }
         if (path) shapes.push({
           type: "path", path: path.trim(), xref, yref, fillrule: "evenodd",
@@ -251,26 +277,21 @@
       layoutEffects.set(trace, { shapes });
       return trace;
     }
-    let separators = 0;
-    for (let index = 1; index < x.length; index += 1) {
-      if (polygonIds[index] !== polygonIds[index - 1] || ringIds[index] !== ringIds[index - 1]) separators += 1;
-    }
-    const resultX = new Float64Array(x.length + separators * 2 + 1);
-    const resultY = new Float64Array(y.length + separators * 2 + 1);
+    const pointCount = orderedPolygons.reduce((total, polygon) =>
+      total + polygon.rings.reduce((ringTotal, ring) => ringTotal + ring.points.length + 2, 0), 0);
+    const resultX = new Float64Array(pointCount);
+    const resultY = new Float64Array(pointCount);
     let target = 0;
-    let start = 0;
-    for (let index = 0; index <= x.length; index += 1) {
-      const boundary = index === x.length
-        || (index && (polygonIds[index] !== polygonIds[index - 1] || ringIds[index] !== ringIds[index - 1]));
-      if (!boundary) continue;
-      for (let source = start; source < index; source += 1) {
-        resultX[target] = x[source]; resultY[target] = y[source]; target += 1;
-      }
-      if (index > start) {
-        resultX[target] = x[start]; resultY[target] = y[start]; target += 1;
+    for (const polygon of orderedPolygons) {
+      for (const ring of polygon.rings) {
+        for (const point of ring.points) {
+          resultX[target] = point.x; resultY[target] = point.y; target += 1;
+        }
+        if (ring.points.length) {
+          resultX[target] = ring.points[0].x; resultY[target] = ring.points[0].y; target += 1;
+        }
         resultX[target] = NaN; resultY[target] = NaN; target += 1;
       }
-      start = index;
     }
     return {
       type: "scatter",
@@ -283,6 +304,7 @@
       opacity: style.alpha === undefined ? 1 : Number(style.alpha),
       hoverinfo: "none",
       showlegend: false,
+      zorder: Number(layer.zorder),
     };
   }
 
@@ -456,13 +478,14 @@
     return trace;
   }
 
-  function layerToPlotlyTrace(layer, table, scene) {
+  function layerToPlotlyTrace(layer, table, scene, options) {
     if (!KIND_TYPES[layer.kind]) throw new Error(`unsupported Scene kind: ${layer.kind}`);
+    const settings = options || {};
     const style = styleFor(layer, scene);
     clipFor(layer, scene);
     let trace;
-    if (layer.kind === "scatter") trace = scatterTrace(layer, table, scene, style);
-    else if (layer.kind === "line" || layer.kind === "line_collection") trace = lineTrace(layer, table, style);
+    if (layer.kind === "scatter") trace = scatterTrace(layer, table, scene, style, settings.forceSvgTracePlane);
+    else if (layer.kind === "line" || layer.kind === "line_collection") trace = lineTrace(layer, table, style, settings.forceSvgTracePlane);
     else if (layer.kind === "polygon") trace = polygonTrace(layer, table, style);
     else if (layer.kind === "text") trace = textTrace(layer, table, scene, style);
     else if (layer.kind === "gradient") trace = gradientTrace(layer, scene, style) || hiddenLayerTrace(layer);
@@ -485,9 +508,9 @@
     return trace;
   }
 
-  function placeholder(layer) {
+  function placeholder(layer, forceSvgTracePlane) {
     return {
-      type: traceTypeForLayer(layer),
+      type: traceTypeForLayer(layer, forceSvgTracePlane),
       visible: false,
       meta: { starplot_layer_id: layer.id, starplot_zorder: layer.zorder },
     };
@@ -533,6 +556,18 @@
     }
   }
 
+  function polygonTableHasHoles(table) {
+    const polygonIds = column(table, "polygon_id");
+    const ringIds = column(table, "ring_id");
+    const firstRingByPolygon = new Map();
+    for (let index = 0; index < polygonIds.length; index += 1) {
+      const polygonId = polygonIds[index];
+      if (!firstRingByPolygon.has(polygonId)) firstRingByPolygon.set(polygonId, ringIds[index]);
+      else if (firstRingByPolygon.get(polygonId) !== ringIds[index]) return true;
+    }
+    return false;
+  }
+
   async function renderScene(target, source, options) {
     const settings = options || {};
     const Plotly = settings.Plotly || global.Plotly;
@@ -545,35 +580,66 @@
     assertNotAborted(settings.signal);
     const scene = await source.loadManifest(settings.signal);
     assertNotAborted(settings.signal);
+    const tableCache = new Map();
+    const preloadFailures = new Set();
+    let forceSvgTracePlane = false;
+    for (const layer of scene.layers) {
+      if (layer.kind !== "polygon" || layer.coordinate_space !== "data") continue;
+      try {
+        const table = await global.StarplotScene.collectLayerTable(
+          source, layer, settings.request, settings.signal,
+        );
+        assertNotAborted(settings.signal);
+        tableCache.set(layer.id, table);
+        if (polygonTableHasHoles(table)) forceSvgTracePlane = true;
+      } catch (error) {
+        if (!layer.required && !(settings.signal && settings.signal.aborted)) {
+          preloadFailures.add(layer.id);
+          continue;
+        }
+        throw error;
+      }
+    }
     const slots = [...scene.layers].sort((left, right) =>
       Number(left.zorder) - Number(right.zorder) || String(left.id).localeCompare(String(right.id)));
     const slotById = new Map(slots.map((layer, index) => [layer.id, index]));
-    await Plotly.react(target, slots.map(placeholder), sceneLayout(scene), settings.config || {});
-    const annotations = [];
-    const shapes = [];
+    await Plotly.react(
+      target,
+      slots.map((layer) => placeholder(layer, forceSvgTracePlane)),
+      sceneLayout(scene),
+      settings.config || {},
+    );
+    const effectsById = new Map();
     const loadedSlots = [];
     const loadOrder = [...scene.layers].sort((left, right) =>
       Number(left.load_priority) - Number(right.load_priority)
       || Number(left.zorder) - Number(right.zorder)
       || String(left.id).localeCompare(String(right.id)));
     for (const layer of loadOrder) {
+      if (preloadFailures.has(layer.id)) continue;
       try {
         assertNotAborted(settings.signal);
-        const table = await global.StarplotScene.collectLayerTable(source, layer, settings.request, settings.signal);
+        const table = tableCache.has(layer.id)
+          ? tableCache.get(layer.id)
+          : await global.StarplotScene.collectLayerTable(source, layer, settings.request, settings.signal);
         assertNotAborted(settings.signal);
-        const trace = layerToPlotlyTrace(layer, table, scene);
+        const trace = layerToPlotlyTrace(layer, table, scene, { forceSvgTracePlane });
         assertNotAborted(settings.signal);
         const slot = slotById.get(layer.id);
         await Plotly.restyle(target, restyleUpdate(trace), [slot]);
         loadedSlots.push(slot);
         const effects = layoutEffects.get(trace);
         if (effects) {
-          if (effects.annotations) annotations.push(...effects.annotations);
-          if (effects.shapes) shapes.push(...effects.shapes);
-          const update = { annotations: [...annotations], shapes: [...shapes] };
-          if (effects.marginBottom) {
+          effectsById.set(layer.id, effects);
+          const orderedEffects = slots.map((item) => effectsById.get(item.id)).filter(Boolean);
+          const update = {
+            annotations: orderedEffects.flatMap((item) => item.annotations || []),
+            shapes: orderedEffects.flatMap((item) => item.shapes || []),
+          };
+          const marginBottom = Math.max(0, ...orderedEffects.map((item) => Number(item.marginBottom || 0)));
+          if (marginBottom) {
             const margin = sceneLayout(scene).margin;
-            update.margin = { ...margin, b: Math.max(Number(margin.b || 10), effects.marginBottom) };
+            update.margin = { ...margin, b: Math.max(Number(margin.b || 10), marginBottom) };
           }
           await Plotly.relayout(target, update);
         }

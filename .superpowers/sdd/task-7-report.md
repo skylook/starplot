@@ -104,3 +104,51 @@ Status: DONE
   reproduces on unchanged focused tests as well as the new test. No Task 7 test
   assertion failed, and direct execution of the new Python integration gates
   passed.
+
+## Second review remediation (2026-07-17)
+
+Status: DONE
+
+### Exact fixes
+
+- Added a raw-token canonical manifest parser that rejects whitespace,
+  noncanonical separators and escapes, recursively unsorted keys, and number
+  lexemes that do not match Python `json.dumps` output. Typed Pydantic float
+  paths require float lexemes, while arbitrary JSON mappings retain their raw
+  integer-versus-float distinction. Scene self-hashing now begins only after
+  that exact-text boundary passes.
+- Matched Python float metadata formatting across fixed/scientific thresholds,
+  padded exponents, integer-valued floats, and negative zero. Arrow null policy
+  now checks actual batch column `nullCount` instead of schema nullability, and
+  Utf8 dictionary fields accept all Arrow integer index widths for known and
+  hover-extension columns.
+- Based relative layer URLs on `response.url || requestedUrl`, preserving the
+  final manifest URL across redirects.
+- Kept DATA polygon holes in one SVG Scatter trace, ordered rings by Scene
+  identity/vertex order, normalized outer and hole winding oppositely, closed
+  rings with NaN separators, and retained fill/edge/zorder semantics. Only
+  non-DATA polygon references use even-odd layout shapes. Layout annotations
+  and shapes are rebuilt in stable `(zorder, id)` order regardless of load
+  priority. DATA polygon tables are predecoded once and cached before the
+  initial Plotly reservation; when any contains a hole, scatter, stars, and
+  line-collection traces share the SVG plane so cross-kind zorder remains
+  effective.
+
+### Verification
+
+- `cd web && npm test`: 28 passed.
+- Direct Python cross-runtime gates: real Plotly schema, Python manifest/Arrow
+  authority fixture, UTF-8 canonical strings, exponent/negative-zero metadata,
+  nullable-without-nulls, and Int8/Int16 dictionaries all passed.
+- Randomized formatter comparison matched Python `repr(float)` for 20,000
+  finite IEEE-754 values.
+- `tools/sync_arrow_js_asset.py --check`: Arrow JS, LICENSE, and NOTICE remained
+  synchronized.
+- `python -m build --wheel --sdist --no-isolation`: built both archives; smoke
+  inspection confirmed loader, adapter, Arrow JS, LICENSE, and NOTICE in each.
+- `node --check`, Ruff, Black check, `py_compile`, and `git diff --check` passed.
+
+### Remaining concerns
+
+- The previously documented environment-level pytest collection issue remains;
+  the focused Python test functions were executed directly and passed.

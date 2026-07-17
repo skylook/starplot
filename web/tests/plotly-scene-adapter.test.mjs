@@ -125,12 +125,122 @@ test("path and polygon ring boundaries never connect unrelated geometry", async 
     vertex_index: new Uint32Array([0, 1, 2, 0, 1, 2]),
     x: new Float64Array([0, 4, 0, 1, 2, 1]), y: new Float64Array([0, 0, 4, 1, 1, 2]),
   });
-  const holeTrace = runtime.layerToPlotlyTrace(layer("hole", "polygon", 0), hole, { styles: [], palettes: [] });
+  const holeTrace = runtime.layerToPlotlyTrace(layer("hole", "polygon", 0, { fill_color: "#fff" }), hole, { styles: [], palettes: [] });
   const effects = runtime.layerToPlotlyLayoutEffects(holeTrace);
-  assert.equal(holeTrace.visible, false);
-  assert.equal(effects.shapes.length, 1);
-  assert.equal(effects.shapes[0].fillrule, "evenodd");
-  assert.match(effects.shapes[0].path, /M 0,0 L 4,0 L 0,4 Z M 1,1 L 2,1 L 1,2 Z/);
+  assert.equal(holeTrace.visible, undefined);
+  assert.equal(holeTrace.fill, "toself");
+  assert.equal(holeTrace.zorder, 0);
+  assert.equal(effects.shapes, undefined);
+  const rings = Array.from(holeTrace.x).reduce((count, value) => count + Number(Number.isNaN(value)), 0);
+  assert.equal(rings, 2, "outer and hole rings stay separated in one SVG trace");
+  const finite = (values) => values.filter(Number.isFinite);
+  const area = (xs, ys) => xs.reduce((sum, x, index) => {
+    const next = (index + 1) % xs.length;
+    return sum + x * ys[next] - xs[next] * ys[index];
+  }, 0) / 2;
+  const split = Array.from(holeTrace.x).findIndex(Number.isNaN);
+  const outerX = finite(Array.from(holeTrace.x).slice(0, split));
+  const outerY = finite(Array.from(holeTrace.y).slice(0, split));
+  const holeX = finite(Array.from(holeTrace.x).slice(split + 1));
+  const holeY = finite(Array.from(holeTrace.y).slice(split + 1));
+  assert.ok(area(outerX, outerY) * area(holeX, holeY) < 0, "holes use opposite winding");
+
+  const paperLayer = layer("paper-hole", "polygon", 0);
+  paperLayer.coordinate_space = "paper";
+  const paperTrace = runtime.layerToPlotlyTrace(paperLayer, hole, { styles: [], palettes: [] });
+  assert.equal(paperTrace.visible, false);
+  assert.equal(runtime.layerToPlotlyLayoutEffects(paperTrace).shapes[0].fillrule, "evenodd");
+});
+
+test("layout effects rebuild in stable zorder/id order instead of load order", async () => {
+  const calls = { relayout: [] };
+  const Plotly = {
+    async react() {}, async restyle() {},
+    async relayout(...args) { calls.relayout.push(args); },
+  };
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
+  const foreground = layer("foreground", "text", 20); foreground.load_priority = 0;
+  const backgroundB = layer("background-b", "text", 5); backgroundB.load_priority = 2;
+  const backgroundA = layer("background-a", "text", 5); backgroundA.load_priority = 3;
+  const source = {
+    async loadManifest() { return { viewport: {}, styles: [], palettes: [], clips: [], layers: [foreground, backgroundB, backgroundA] }; },
+    async *loadLayer(current) {
+      const table = Arrow.tableFromArrays({
+        x: new Float64Array([0]), y: new Float64Array([0]), text: [current.id],
+        rotation: new Float32Array([0]), x_offset: new Float32Array([0]),
+        y_offset: new Float32Array([0]), style_id: new Uint16Array([0]),
+      });
+      for (const batch of table.batches) yield batch;
+    },
+  };
+  await runtime.renderScene("chart", source, { Plotly });
+  assert.deepEqual(
+    Array.from(calls.relayout.at(-1)[1].annotations, (annotation) => annotation.text),
+    ["background-a", "background-b", "foreground"],
+  );
+});
+
+test("DATA polygon holes keep their zorder trace plane when load priority is reversed", async () => {
+  const calls = { react: [], restyle: [] };
+  const Plotly = {
+    async react(...args) { calls.react.push(args); },
+    async restyle(...args) { calls.restyle.push(args); },
+    async relayout() {},
+  };
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
+  const hole = layer("hole", "polygon", 5, { fill_color: "#f00" }); hole.load_priority = 100;
+  const foreground = layer("foreground", "line", 10); foreground.load_priority = 0;
+  const holeTable = Arrow.tableFromArrays({
+    polygon_id: new Uint32Array([0, 0, 0, 0, 0, 0]),
+    ring_id: new Uint32Array([0, 0, 0, 1, 1, 1]),
+    vertex_index: new Uint32Array([0, 1, 2, 0, 1, 2]),
+    x: new Float64Array([0, 4, 0, 1, 2, 1]), y: new Float64Array([0, 0, 4, 1, 1, 2]),
+  });
+  const source = {
+    async loadManifest() { return { viewport: {}, styles: [], palettes: [], clips: [], layers: [foreground, hole] }; },
+    async *loadLayer(current) {
+      for (const batch of (current.kind === "polygon" ? holeTable : tables.line()).batches) yield batch;
+    },
+  };
+  await runtime.renderScene("chart", source, { Plotly });
+  assert.deepEqual(Array.from(calls.react[0][1], (trace) => trace.meta.starplot_layer_id), ["hole", "foreground"]);
+  assert.deepEqual(Array.from(calls.restyle, (call) => call[2][0]), [1, 0]);
+  const holeUpdate = calls.restyle[1][1];
+  assert.equal(holeUpdate.type[0], "scatter");
+  assert.equal(holeUpdate.fill[0], "toself");
+  assert.equal(holeUpdate.zorder[0], 5);
+});
+
+test("a DATA hole keeps mixed stars and line collections on one SVG zorder plane", async () => {
+  const calls = { react: [], restyle: [], loads: [] };
+  const Plotly = {
+    async react(...args) { calls.react.push(args); },
+    async restyle(...args) { calls.restyle.push(args); },
+    async relayout() {},
+  };
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
+  const stars = layer("stars", "scatter", 2, { palette_id: "p" }); stars.load_priority = 0;
+  const hole = layer("hole", "polygon", 5, { fill_color: "#f00" }); hole.load_priority = 100;
+  const lines = layer("lines", "line_collection", 8); lines.load_priority = 1;
+  const holeTable = Arrow.tableFromArrays({
+    polygon_id: new Uint32Array([0, 0, 0, 0, 0, 0]),
+    ring_id: new Uint32Array([0, 0, 0, 1, 1, 1]),
+    vertex_index: new Uint32Array([0, 1, 2, 0, 1, 2]),
+    x: new Float64Array([0, 4, 0, 1, 2, 1]), y: new Float64Array([0, 0, 4, 1, 1, 2]),
+  });
+  const source = {
+    async loadManifest() { return { viewport: {}, styles: [], palettes: [{ id: "p", colors: ["#fff"] }], clips: [], layers: [lines, hole, stars] }; },
+    async *loadLayer(current) {
+      calls.loads.push(current.id);
+      const table = current.kind === "polygon" ? holeTable
+        : current.kind === "scatter" ? tables.scatter() : tables.line_collection();
+      for (const batch of table.batches) yield batch;
+    },
+  };
+  await runtime.renderScene("chart", source, { Plotly });
+  assert.deepEqual(Array.from(calls.react[0][1], (trace) => trace.type), ["scatter", "scatter", "scatter"]);
+  assert.deepEqual(Array.from(calls.restyle, (call) => call[1].type[0]), ["scatter", "scatter", "scatter"]);
+  assert.equal(calls.loads.filter((id) => id === "hole").length, 1, "hole detection reuses its decoded table");
 });
 
 test("text preserves coordinate references, rotation, offsets, and per-row styles", async () => {

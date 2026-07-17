@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_browser_layout_only_payloads_pass_real_plotly_schema_validation():
     import plotly.graph_objects as go
-    script = r'''
+
+    script = r"""
 import { Arrow, loadRuntime } from "./tests/test-helpers.mjs";
 const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
 const encoding = {
@@ -37,8 +38,8 @@ const output = cases.map(([current, table]) => {
   const trace = runtime.layerToPlotlyTrace(current, table, { viewport: {}, styles: [], palettes: [], clips: [] });
   return { trace, effects: runtime.layerToPlotlyLayoutEffects(trace) };
 });
-console.log(JSON.stringify(output));
-'''
+console.log(JSON.stringify(output, (_key, value) => ArrayBuffer.isView(value) ? Array.from(value) : value));
+"""
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", script],
         cwd=ROOT / "web",
@@ -81,13 +82,15 @@ def test_python_arrow_and_manifest_authorities_load_in_browser_runtime():
         load_priority=3,
         space=CoordinateSpace.DATA,
         clip_id=None,
-        style={"palette_id": "python-palette"},
+        style={"label": "星", "palette_id": "python-palette"},
         palette=("#fff",),
         group_id="stars",
         interaction=InteractionPolicy.HOVER,
         hover_fields=("name", "object_id"),
         coordinate_encoding={
-            "x": CoordinateEncoding(CoordinateEncodingKind.RELATIVE_F32, 10.0, 2.0, 0.1),
+            "x": CoordinateEncoding(
+                CoordinateEncodingKind.RELATIVE_F32, 10.0, 2.0, 0.1
+            ),
             "y": CoordinateEncoding(CoordinateEncodingKind.ABSOLUTE_F64),
         },
         data=ColumnarData.from_mapping(
@@ -107,13 +110,22 @@ def test_python_arrow_and_manifest_authorities_load_in_browser_runtime():
         scene_id="python-scene",
         layers=[layer],
         layer_bytes={layer.id: arrow_bytes},
-        viewport={"reference_width": 800, "data_bounds": {"x_min": 0.0, "x_max": 1.0, "y_min": 0.0, "y_max": 1.0}},
+        viewport={
+            "reference_width": 800,
+            "data_bounds": {"x_min": 0.0, "x_max": 1.0, "y_min": 0.0, "y_max": 1.0},
+        },
         coordinate_spaces={"data": {"authority": "projected-x-y"}},
         clips=[],
-        capabilities=CapabilitiesModel(viewport_query=False, lod=False, magnitude_filter=False, catalog_detail=False, max_batch_rows=250_000),
+        capabilities=CapabilitiesModel(
+            viewport_query=False,
+            lod=False,
+            magnitude_filter=False,
+            catalog_detail=False,
+            max_batch_rows=250_000,
+        ),
     )
     manifest_json = canonical_manifest_bytes(manifest).decode()
-    script = r'''
+    script = r"""
 import { loadRuntime } from "./tests/test-helpers.mjs";
 const chunks = [];
 for await (const chunk of process.stdin) chunks.push(chunk);
@@ -128,11 +140,157 @@ for await (const batch of source.loadLayer(manifest.layers[0])) {
   if (String(batch.schema.fields.find((field) => field.name === "name").type).startsWith("Dictionary") === false) throw new Error("dictionary policy drift");
 }
 console.log(rows);
-'''
+"""
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", script],
         cwd=ROOT / "web",
-        input=json.dumps({"manifestJson": manifest_json, "arrow": base64.b64encode(arrow_bytes).decode()}),
+        input=json.dumps(
+            {
+                "manifestJson": manifest_json,
+                "arrow": base64.b64encode(arrow_bytes).decode(),
+            }
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout.strip() == "2"
+
+
+def test_python_generated_edge_lexemes_nullability_and_dictionary_indices_load_in_browser():
+    import pyarrow as pa
+
+    from starplot.interactive.arrow_transport import encode_table_stream, layer_to_table
+    from starplot.interactive.commands import CoordinateSpace
+    from starplot.interactive.scene import (
+        ColumnarData,
+        CoordinateEncoding,
+        CoordinateEncodingKind,
+        InteractionPolicy,
+        SceneKind,
+        SceneLayer,
+    )
+    from starplot.interactive.scene_manifest import (
+        CapabilitiesModel,
+        build_scene_manifest,
+        canonical_manifest_bytes,
+    )
+
+    layer = SceneLayer(
+        id="python-edge",
+        kind=SceneKind.SCATTER,
+        zorder=2.0,
+        load_priority=3,
+        space=CoordinateSpace.DATA,
+        clip_id=None,
+        style={"label": "星", "palette_id": "python-palette"},
+        palette=("#fff",),
+        group_id="stars",
+        interaction=InteractionPolicy.HOVER,
+        hover_fields=("name", "catalog"),
+        coordinate_encoding={
+            "x": CoordinateEncoding(
+                CoordinateEncodingKind.RELATIVE_F32, 1e16, 1e-7, -0.0
+            ),
+            "y": CoordinateEncoding(CoordinateEncodingKind.ABSOLUTE_F64),
+        },
+        data=ColumnarData.from_mapping(
+            {
+                "x": np.array([0.0, 1.0], dtype=np.float32),
+                "y": np.array([2.0, 3.0], dtype=np.float64),
+                "size": np.array([1.0, 2.0], dtype=np.float32),
+                "color_index": np.array([0, 0], dtype=np.uint8),
+                "opacity": np.array([1.0, 0.5], dtype=np.float32),
+                "name": np.array(["A", "B"], dtype="U1"),
+                "catalog": np.array(["one", "two"], dtype=object),
+            }
+        ),
+    )
+    canonical = layer_to_table(layer)
+    arrays = []
+    fields = []
+    for field, column in zip(canonical.schema, canonical.columns):
+        if field.name in {"name", "catalog"}:
+            index_type = pa.int8() if field.name == "name" else pa.int16()
+            values = column.to_pylist()
+            dictionary = pa.array(list(dict.fromkeys(values)), type=pa.string())
+            positions = {
+                value: index for index, value in enumerate(dictionary.to_pylist())
+            }
+            array = pa.DictionaryArray.from_arrays(
+                pa.array([positions[value] for value in values], type=index_type),
+                dictionary,
+            )
+            arrays.append(array)
+            fields.append(
+                pa.field(
+                    field.name, array.type, nullable=False, metadata=field.metadata
+                )
+            )
+        else:
+            arrays.append(column.combine_chunks())
+            fields.append(
+                pa.field(
+                    field.name,
+                    field.type,
+                    nullable=True if field.name == "size" else field.nullable,
+                    metadata=field.metadata,
+                )
+            )
+    table = pa.Table.from_arrays(
+        arrays, schema=pa.schema(fields, metadata=canonical.schema.metadata)
+    )
+    arrow_bytes = encode_table_stream(table)
+    manifest = build_scene_manifest(
+        scene_id="python-é-edge-scene",
+        layers=[layer],
+        layer_bytes={layer.id: arrow_bytes},
+        viewport={
+            "data_bounds": {"x_min": 0.0001, "x_max": 1e16, "y_min": -0.0, "y_max": 1.0}
+        },
+        coordinate_spaces={},
+        clips=[],
+        capabilities=CapabilitiesModel(
+            viewport_query=False,
+            lod=False,
+            magnitude_filter=False,
+            catalog_detail=False,
+            max_batch_rows=250_000,
+        ),
+    )
+    manifest_json = canonical_manifest_bytes(manifest).decode()
+    assert "1e-07" in manifest_json
+    assert "1e+16" in manifest_json
+    assert "-0.0" in manifest_json
+    assert "é" in manifest_json
+    assert "星" in manifest_json
+    assert "\\u00e9" not in manifest_json
+    assert "\\u661f" not in manifest_json
+    script = r"""
+import { loadRuntime } from "./tests/test-helpers.mjs";
+const chunks = []; for await (const chunk of process.stdin) chunks.push(chunk);
+const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+const runtime = await loadRuntime(["starplot-scene-loader.js"]);
+const source = new runtime.InlineSceneSource({ manifest: JSON.parse(input.manifestJson), manifestJson: input.manifestJson, layers: { "python-edge": input.arrow } });
+const manifest = await source.loadManifest();
+let rows = 0;
+for await (const batch of source.loadLayer(manifest.layers[0])) {
+  rows += batch.numRows;
+  const fields = Object.fromEntries(batch.schema.fields.map((field) => [field.name, String(field.type)]));
+  if (!fields.name.startsWith("Dictionary<Int8")) throw new Error(`known dictionary index rejected: ${fields.name}`);
+  if (!fields.catalog.startsWith("Dictionary<Int16")) throw new Error(`extension dictionary index rejected: ${fields.catalog}`);
+}
+console.log(rows);
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=ROOT / "web",
+        input=json.dumps(
+            {
+                "manifestJson": manifest_json,
+                "arrow": base64.b64encode(arrow_bytes).decode(),
+            }
+        ),
         check=True,
         capture_output=True,
         text=True,

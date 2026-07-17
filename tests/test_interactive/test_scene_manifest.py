@@ -142,6 +142,11 @@ def test_manifest_canonical_json_is_stable_across_mapping_insertion_order():
     assert b" " not in canonical_manifest_bytes(first)
 
 
+def test_canonical_manifest_bytes_preserve_utf8_with_ensure_ascii_disabled():
+    payload = canonical_manifest_bytes({"scene_id": "café-🌟"})
+    assert payload == '{"scene_id":"café-🌟"}'.encode()
+
+
 def test_canonical_layer_json_omits_runtime_resolved_style_and_palette():
     payload = canonical_manifest_bytes(_layer())
 

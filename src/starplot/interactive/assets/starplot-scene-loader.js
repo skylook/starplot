@@ -77,6 +77,137 @@
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
   }
 
+  function comparePythonStrings(left, right) {
+    const leftPoints = Array.from(left, (value) => value.codePointAt(0));
+    const rightPoints = Array.from(right, (value) => value.codePointAt(0));
+    for (let index = 0; index < Math.min(leftPoints.length, rightPoints.length); index += 1) {
+      if (leftPoints[index] !== rightPoints[index]) return leftPoints[index] - rightPoints[index];
+    }
+    return leftPoints.length - rightPoints.length;
+  }
+
+  function pythonFloat(value) {
+    if (!Number.isFinite(value)) throw new Error("canonical JSON numbers must be finite");
+    if (Object.is(value, -0)) return "-0.0";
+    let source = String(value).toLowerCase();
+    let sign = "";
+    if (source.startsWith("-")) { sign = "-"; source = source.slice(1); }
+    let digits;
+    let exponent;
+    if (source.includes("e")) {
+      const [coefficient, rawExponent] = source.split("e");
+      const [whole, fraction = ""] = coefficient.split(".");
+      digits = (whole + fraction).replace(/^0+/, "") || "0";
+      exponent = Number(rawExponent) + whole.length - 1;
+    } else {
+      const [whole, fraction = ""] = source.split(".");
+      const combined = whole + fraction;
+      const first = combined.search(/[1-9]/);
+      if (first < 0) return `${sign}0.0`;
+      digits = combined.slice(first).replace(/0+$/, "");
+      exponent = whole.length - first - 1;
+    }
+    if (exponent < -4 || exponent >= 16) {
+      const coefficient = digits.length === 1 ? digits : `${digits[0]}.${digits.slice(1)}`;
+      return `${sign}${coefficient}e${exponent >= 0 ? "+" : "-"}${String(Math.abs(exponent)).padStart(2, "0")}`;
+    }
+    const decimal = exponent + 1;
+    if (decimal <= 0) return `${sign}0.${"0".repeat(-decimal)}${digits}`;
+    if (decimal >= digits.length) return `${sign}${digits}${"0".repeat(decimal - digits.length)}.0`;
+    return `${sign}${digits.slice(0, decimal)}.${digits.slice(decimal)}`;
+  }
+
+  function isTypedFloatPath(path) {
+    return (path.length === 3 && path[0] === "layers" && Number.isInteger(path[1]) && path[2] === "zorder")
+      || (path.length === 5 && path[0] === "layers" && Number.isInteger(path[1])
+        && path[2] === "coordinate_encoding" && ["x", "y"].includes(path[3])
+        && ["origin", "scale", "max_error_pixels"].includes(path[4]));
+  }
+
+  function isTypedIntPath(path) {
+    return (path.length === 2 && path[0] === "capabilities" && path[1] === "max_batch_rows")
+      || (path.length === 3 && path[0] === "layers" && Number.isInteger(path[1])
+        && ["load_priority", "row_count", "byte_length"].includes(path[2]));
+  }
+
+  function validateCanonicalManifestText(text) {
+    if (typeof text !== "string") throw new Error("exact canonical manifest JSON is required for self-hash validation");
+    let index = 0;
+    const fail = () => { throw new Error("manifest text must be exact Python-canonical manifest JSON"); };
+    const parseString = () => {
+      const start = index;
+      if (text[index] !== '"') fail();
+      index += 1;
+      let escaped = false;
+      let closed = false;
+      while (index < text.length) {
+        const character = text[index];
+        index += 1;
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') { closed = true; break; }
+        else if (character.charCodeAt(0) < 0x20) fail();
+      }
+      if (!closed) fail();
+      const raw = text.slice(start, index);
+      let value;
+      try { value = JSON.parse(raw); } catch (_error) { fail(); }
+      if (JSON.stringify(value) !== raw) fail();
+      return value;
+    };
+    const parseValue = (path) => {
+      const character = text[index];
+      if (character === '"') { parseString(); return; }
+      if (character === "{") {
+        index += 1;
+        let previous = null;
+        if (text[index] === "}") { index += 1; return; }
+        while (index < text.length) {
+          const key = parseString();
+          if (previous !== null && comparePythonStrings(previous, key) >= 0) fail();
+          previous = key;
+          if (text[index] !== ":") fail();
+          index += 1;
+          parseValue(path.concat(key));
+          if (text[index] === "}") { index += 1; return; }
+          if (text[index] !== ",") fail();
+          index += 1;
+        }
+        fail();
+      }
+      if (character === "[") {
+        index += 1;
+        let item = 0;
+        if (text[index] === "]") { index += 1; return; }
+        while (index < text.length) {
+          parseValue(path.concat(item));
+          item += 1;
+          if (text[index] === "]") { index += 1; return; }
+          if (text[index] !== ",") fail();
+          index += 1;
+        }
+        fail();
+      }
+      for (const literal of ["true", "false", "null"]) {
+        if (text.startsWith(literal, index)) { index += literal.length; return; }
+      }
+      const match = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(text.slice(index));
+      if (!match || match.index !== 0) fail();
+      const raw = match[0];
+      const intToken = isTypedIntPath(path);
+      const floatToken = !intToken && (isTypedFloatPath(path) || raw.includes(".") || /e/i.test(raw));
+      let canonical;
+      if (floatToken) canonical = pythonFloat(Number(raw));
+      else {
+        try { canonical = BigInt(raw).toString(); } catch (_error) { fail(); }
+      }
+      if (raw !== canonical) fail();
+      index += raw.length;
+    };
+    parseValue([]);
+    if (index !== text.length) fail();
+  }
+
   function withoutTopLevelContentHash(text) {
     let depth = 0;
     let inString = false;
@@ -171,7 +302,7 @@
     for (const style of manifest.styles) {
       if (style.value.palette_id !== undefined && !paletteIds.has(style.value.palette_id)) throw new Error(`style ${style.id} references an unknown palette id`);
     }
-    if (typeof canonicalText !== "string") throw new Error("exact canonical manifest JSON is required for self-hash validation");
+    validateCanonicalManifestText(canonicalText);
     let textManifest;
     try { textManifest = JSON.parse(canonicalText); } catch (error) { throw new Error("canonical manifest JSON is invalid", { cause: error }); }
     if (canonicalJson(textManifest) !== canonicalJson(manifest)) throw new Error("canonical manifest JSON does not match the supplied manifest object");
@@ -253,11 +384,6 @@
         `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
     }
     return JSON.stringify(value);
-  }
-
-  function pythonFloat(value) {
-    if (!Number.isFinite(value)) return null;
-    return Number.isInteger(value) ? `${value}.0` : String(value);
   }
 
   function canonicalEncodingJson(value) {
@@ -347,11 +473,19 @@
           `Arrow schema field ${field.name} type ${type} does not match NumPy dtype ${numpyDtype}`,
         );
       }
-      if (field.nullable && !String(numpyDtype).includes("O")) {
-        throw new Error(`Arrow schema field ${field.name} cannot be nullable for dtype ${numpyDtype}`);
-      }
-      if (!expectedTypes && !/^(Bool|U?Int(8|16|32|64)|Float(16|32|64)|Utf8|Dictionary<Int32, Utf8>)$/.test(type)) {
+      if (!expectedTypes && !/^(Bool|U?Int(8|16|32|64)|Float(16|32|64)|Utf8|Dictionary<U?Int(8|16|32|64), Utf8>)$/.test(type)) {
         throw new Error(`Arrow schema extension field ${field.name} has unsupported type ${type}`);
+      }
+    }
+  }
+
+  function validateBatchNullability(batch, layer) {
+    for (const field of batch.schema.fields) {
+      const vector = batch.getChild(field.name);
+      if (!vector || !vector.nullCount) continue;
+      const numpyDtype = field.metadata && field.metadata.get("numpy_dtype");
+      if (!numpyDtype || !/^[<>=|]?O/.test(String(numpyDtype))) {
+        throw new Error(`Arrow field ${field.name} cannot contain nulls for layer ${layer.id}`);
       }
     }
   }
@@ -453,6 +587,7 @@
       let rows = 0;
       for await (const batch of reader) {
         assertNotAborted(signal);
+        validateBatchNullability(batch, layer);
         rows += batch.numRows;
         yield batch;
       }
@@ -516,7 +651,7 @@
       let manifest;
       try { manifest = JSON.parse(text); } catch (error) { throw new Error("Scene manifest is not valid JSON", { cause: error }); }
       this._manifest = await validateManifest(manifest, text);
-      this.manifestUrl = url;
+      this.manifestUrl = response.url || url;
       return this._manifest;
     }
 
