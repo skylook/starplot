@@ -302,6 +302,37 @@ test("manifest text must be exact Python-canonical JSON before self-hashing", as
     /Python-canonical manifest JSON/,
   );
 
+  const astral = structuredClone(fixture.manifest);
+  astral.scene_id = "scene-🌟";
+  const astralJson = await bindManifestHash(astral);
+  await new runtime.InlineSceneSource({
+    manifest: astral,
+    manifestJson: astralJson,
+    layers: {},
+  }).loadManifest();
+  await assert.rejects(
+    new runtime.InlineSceneSource({
+      manifest: astral,
+      manifestJson: astralJson.replace("🌟", "\\ud83c\\udf1f"),
+      layers: {},
+    }).loadManifest(),
+    /Python-canonical manifest JSON/,
+  );
+
+  for (const surrogate of ["\ud800", "\udc00"]) {
+    const unpaired = structuredClone(fixture.manifest);
+    unpaired.scene_id = surrogate;
+    const unpairedJson = await bindManifestHash(unpaired);
+    await assert.rejects(
+      new runtime.InlineSceneSource({
+        manifest: unpaired,
+        manifestJson: unpairedJson,
+        layers: {},
+      }).loadManifest(),
+      /Python-canonical manifest JSON/,
+    );
+  }
+
   const exponent = structuredClone(fixture.manifest);
   exponent.layers[0].coordinate_encoding.x.max_error_pixels = 1e-7;
   const exponentJson = await bindManifestHash(exponent);

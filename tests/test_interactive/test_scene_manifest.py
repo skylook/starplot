@@ -145,6 +145,9 @@ def test_manifest_canonical_json_is_stable_across_mapping_insertion_order():
 def test_canonical_manifest_bytes_preserve_utf8_with_ensure_ascii_disabled():
     payload = canonical_manifest_bytes({"scene_id": "café-🌟"})
     assert payload == '{"scene_id":"café-🌟"}'.encode()
+    for surrogate in ("\ud800", "\udc00"):
+        with pytest.raises(UnicodeEncodeError):
+            canonical_manifest_bytes({"scene_id": surrogate})
 
 
 def test_canonical_layer_json_omits_runtime_resolved_style_and_palette():

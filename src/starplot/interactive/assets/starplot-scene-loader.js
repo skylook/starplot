@@ -152,6 +152,14 @@
       const raw = text.slice(start, index);
       let value;
       try { value = JSON.parse(raw); } catch (_error) { fail(); }
+      for (let offset = 0; offset < value.length; offset += 1) {
+        const code = value.charCodeAt(offset);
+        if (code >= 0xd800 && code <= 0xdbff) {
+          const next = value.charCodeAt(offset + 1);
+          if (!(next >= 0xdc00 && next <= 0xdfff)) fail();
+          offset += 1;
+        } else if (code >= 0xdc00 && code <= 0xdfff) fail();
+      }
       if (JSON.stringify(value) !== raw) fail();
       return value;
     };

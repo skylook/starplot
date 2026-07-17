@@ -152,3 +152,19 @@ Status: DONE
 
 - The previously documented environment-level pytest collection issue remains;
   the focused Python test functions were executed directly and passed.
+
+## Third review remediation (2026-07-17)
+
+Status: DONE
+
+- Canonical string validation now rejects parsed strings containing any
+  unpaired UTF-16 high or low surrogate before `TextEncoder` can replace it
+  with U+FFFD for hashing. Valid non-BMP UTF-8 remains accepted under Python's
+  `ensure_ascii=False` authority, while an escaped surrogate-pair spelling is
+  rejected as noncanonical.
+- Regression coverage exercises isolated high and low surrogates, a real
+  non-BMP character, and the redundant escaped-pair form. The focused Python
+  authority test confirms valid UTF-8 encoding and `UnicodeEncodeError` for
+  both isolated surrogate forms.
+- Verification: 28 Node tests, four direct Python authority/cross-runtime
+  gates, Ruff, Black check, Node syntax, and `git diff --check` passed.
