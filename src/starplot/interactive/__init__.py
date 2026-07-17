@@ -54,6 +54,12 @@ from starplot.interactive.arrow_transport import (
     layer_content_hash,
     layer_to_table,
 )
+from starplot.interactive.web_export import (
+    DataMode,
+    ExportResult,
+    LibraryMode,
+    export_scene_html,
+)
 
 __all__ = [
     "InteractiveMapPlot",
@@ -84,4 +90,8 @@ __all__ = [
     "encode_table_stream",
     "layer_content_hash",
     "layer_to_table",
+    "DataMode",
+    "LibraryMode",
+    "ExportResult",
+    "export_scene_html",
 ]

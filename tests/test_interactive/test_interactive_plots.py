@@ -103,6 +103,15 @@ def test_export_html_creates_file(tmp_path):
     assert "<script" in content
 
 
+def test_export_html_maps_legacy_inline_library_request(tmp_path):
+    p = _make_map_plot()
+    html_path = tmp_path / "legacy.html"
+    with pytest.warns(DeprecationWarning, match="single-file"):
+        result = p.export_html(str(html_path), include_plotlyjs=True)
+    assert result.bundle_path is None
+    assert 'id="starplot-manifest"' in html_path.read_text(encoding="utf-8")
+
+
 def test_matplotlib_output_unchanged():
     """RecordingMixin must not change the matplotlib rendering output."""
     from starplot import MapPlot, Miller

@@ -16,16 +16,43 @@ Usage::
 
 from __future__ import annotations
 
+import warnings
+
 from starplot.interactive.recording_mixin import RecordingMixin
 from starplot.interactive.plotly_renderer import PlotlyRenderer
+from starplot.interactive.scene_compiler import SceneCompiler
+from starplot.interactive.web_export import export_scene_html
 from starplot.plots import MapPlot, ZenithPlot, HorizonPlot, OpticPlot
 
 
 class _InteractiveMixin:
     """Common export methods shared by all Interactive*Plot classes."""
 
+    def _compile_scene(self, width: int = None, height: int = None,
+                       transparent: bool = False):
+        """Compile once using the same final geometry authority as ``to_plotly``."""
+        if hasattr(self, "_record_plot_info"):
+            self._record_plot_info()
+        renderer = PlotlyRenderer(
+            projection_info=self._recorder.projection_info,
+            style_info=self._recorder.style_info,
+            width=width,
+            height=height,
+            transparent=transparent,
+        )
+        reference_width, reference_height = renderer._reference_dimensions()
+        return SceneCompiler().compile(
+            self._recorder.commands,
+            self._recorder.projection_info,
+            self._recorder.style_info,
+            reference_width,
+            reference_height,
+            transparent,
+        )
+
     def export_html(self, filename: str, width: int = None, height: int = None,
-                    transparent: bool = False, **kwargs):
+                    transparent: bool = False, data_mode="external",
+                    library_mode=None, data_url=None, allowed_data_origins=(), **kwargs):
         """Export as an interactive Plotly HTML file.
 
         Args:
@@ -34,21 +61,40 @@ class _InteractiveMixin:
             height: Chart height in pixels (default depends on plot type).
             transparent: If True, the figure and plot background will be
                 transparent (matching matplotlib's ``transparent=True``).
-            **kwargs: Passed to ``plotly.io.write_html``.
-                     By default, uses CDN for Plotly.js to reduce file size.
-                     Set include_plotlyjs=True to embed the full library.
+            data_mode: ``external`` (default), ``inline``, or ``remote``.
+            library_mode: ``cdn``, ``directory``, or ``inline``.
+            data_url: Required manifest URL for ``remote`` mode.
+            allowed_data_origins: Explicit remote layer-origin allow-list.
         """
-        fig = self.to_plotly(width=width, height=height, transparent=transparent)
-        if width or height:
-            fig.update_layout(
-                width=width or fig.layout.width,
-                height=height or fig.layout.height,
-            )
-        # Use CDN by default to reduce file size from ~5MB to ~200KB
-        # Users can override with include_plotlyjs=True if needed
-        if 'include_plotlyjs' not in kwargs:
-            kwargs['include_plotlyjs'] = 'cdn'
-        fig.write_html(filename, **kwargs)
+        include_plotlyjs = kwargs.pop("include_plotlyjs", None)
+        for legacy_name in ("full_html", "auto_open", "config", "post_script"):
+            if legacy_name in kwargs:
+                kwargs.pop(legacy_name)
+                warnings.warn(
+                    f"export_html({legacy_name}=...) is ignored by the Scene exporter; "
+                    "use data_mode and library_mode instead",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+        if include_plotlyjs is not None:
+            if library_mode is None:
+                library_mode = "inline" if include_plotlyjs is True else "cdn"
+            if include_plotlyjs is True and data_mode == "external":
+                warnings.warn(
+                    "include_plotlyjs=True requested the former direct-open single-file "
+                    "behavior; using data_mode='inline' instead",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                data_mode = "inline"
+        if kwargs:
+            unknown = ", ".join(sorted(kwargs))
+            raise TypeError(f"unsupported export_html options: {unknown}")
+        scene = self._compile_scene(width=width, height=height, transparent=transparent)
+        return export_scene_html(
+            scene, filename, data_mode=data_mode, library_mode=library_mode,
+            data_url=data_url, allowed_data_origins=tuple(allowed_data_origins),
+        )
 
     def to_plotly(self, width: int = None, height: int = None,
                   transparent: bool = False):
@@ -99,8 +145,8 @@ class InteractiveMapPlot(_InteractiveMixin, RecordingMixin, MapPlot):
 
     def export_html(self, filename: str, width: int = 1200, height: int = 900,
                     transparent: bool = False, **kwargs):
-        super().export_html(filename, width=width, height=height,
-                            transparent=transparent, **kwargs)
+        return super().export_html(filename, width=width, height=height,
+                                   transparent=transparent, **kwargs)
 
 
 class InteractiveZenithPlot(_InteractiveMixin, RecordingMixin, ZenithPlot):
@@ -108,8 +154,8 @@ class InteractiveZenithPlot(_InteractiveMixin, RecordingMixin, ZenithPlot):
 
     def export_html(self, filename: str, width: int = 1000, height: int = 1000,
                     transparent: bool = False, **kwargs):
-        super().export_html(filename, width=width, height=height,
-                            transparent=transparent, **kwargs)
+        return super().export_html(filename, width=width, height=height,
+                                   transparent=transparent, **kwargs)
 
 
 class InteractiveHorizonPlot(_InteractiveMixin, RecordingMixin, HorizonPlot):
@@ -117,8 +163,8 @@ class InteractiveHorizonPlot(_InteractiveMixin, RecordingMixin, HorizonPlot):
 
     def export_html(self, filename: str, width: int = 1200, height: int = 900,
                     transparent: bool = False, **kwargs):
-        super().export_html(filename, width=width, height=height,
-                            transparent=transparent, **kwargs)
+        return super().export_html(filename, width=width, height=height,
+                                   transparent=transparent, **kwargs)
 
 
 class InteractiveOpticPlot(_InteractiveMixin, RecordingMixin, OpticPlot):
@@ -126,5 +172,5 @@ class InteractiveOpticPlot(_InteractiveMixin, RecordingMixin, OpticPlot):
 
     def export_html(self, filename: str, width: int = 1000, height: int = 1000,
                     transparent: bool = False, **kwargs):
-        super().export_html(filename, width=width, height=height,
-                            transparent=transparent, **kwargs)
+        return super().export_html(filename, width=width, height=height,
+                                   transparent=transparent, **kwargs)

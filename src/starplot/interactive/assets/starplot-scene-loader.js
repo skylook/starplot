@@ -646,6 +646,9 @@
         resolved = new URL(options.baseUrl, documentBase).href;
       }
       this.baseUrl = resolved.endsWith("/") ? resolved : `${resolved}/`;
+      this.allowedDataOrigins = Array.isArray(options.allowedDataOrigins)
+        ? options.allowedDataOrigins.map((origin) => new URL(origin).origin)
+        : [];
       this.fetch = options.fetch || global.fetch;
       if (typeof this.fetch !== "function") throw new Error("fetch is required");
     }
@@ -665,6 +668,13 @@
 
     async _readLayer(layer, request, signal) {
       const url = appendRequest(new URL(layer.data_source.uri, this.manifestUrl || this.baseUrl).href, request);
+      const manifestOrigin = new URL(this.manifestUrl || this.baseUrl).origin;
+      const allowedOrigins = this.allowedDataOrigins.length
+        ? this.allowedDataOrigins
+        : [manifestOrigin];
+      if (!allowedOrigins.includes(new URL(url).origin)) {
+        throw new Error(`layer URL origin is not allowed for layer ${layer.id}`);
+      }
       const response = checkedResponse(await this.fetch(url, { signal }), url);
       return new Uint8Array(await response.arrayBuffer());
     }
@@ -673,6 +683,20 @@
   class StaticSceneSource extends FetchSceneSource {
     async loadManifest(signal) {
       return this._manifest || this._fetchManifest(new URL("manifest.json", this.baseUrl).href, signal);
+    }
+  }
+
+  class RemoteSceneSource extends FetchSceneSource {
+    constructor(options) {
+      super(options);
+      if (!options || typeof options.manifestUrl !== "string" || !options.manifestUrl) {
+        throw new Error("manifestUrl is required");
+      }
+      this.remoteManifestUrl = new URL(options.manifestUrl, this.baseUrl).href;
+    }
+
+    async loadManifest(signal) {
+      return this._manifest || this._fetchManifest(this.remoteManifestUrl, signal);
     }
   }
 
@@ -704,6 +728,7 @@
     BaseSceneSource,
     InlineSceneSource,
     StaticSceneSource,
+    RemoteSceneSource,
     ApiSceneSource,
     collectLayerTable,
     validateManifest,

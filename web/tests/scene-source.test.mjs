@@ -409,3 +409,24 @@ test("fetch sources resolve layer URLs from the final redirected manifest URL", 
     "https://cdn.example.test/scenes/final/layers/stars.arrow",
   ]);
 });
+
+test("fetch sources fail closed for layer origins outside the explicit allow-list", async () => {
+  const fixture = await sceneFixture();
+  const calls = [];
+  const fetch = async (url) => {
+    calls.push(String(url));
+    return String(url).endsWith("manifest.json") ? response(fixture.manifestJson) : response(fixture.bytes);
+  };
+  const runtime = await loadRuntime(["starplot-scene-loader.js"], { fetch });
+  const source = new runtime.RemoteSceneSource({
+    baseUrl: "https://example.test/scene/manifest.json",
+    manifestUrl: "https://example.test/scene/manifest.json",
+    fetch,
+  });
+  const manifest = await source.loadManifest();
+  const foreignLayer = { ...manifest.layers[0], data_source: { ...manifest.layers[0].data_source, uri: "https://evil.test/stars.arrow" } };
+  await assert.rejects(async () => {
+    for await (const _batch of source.loadLayer(foreignLayer)) { /* consume */ }
+  }, /origin is not allowed/);
+  assert.equal(calls.length, 1);
+});
