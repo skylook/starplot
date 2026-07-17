@@ -29,6 +29,10 @@ VENDORED_PATH = (
 )
 EXPECTED_VERSION = "21.1.0"
 EXPECTED_SHA256 = "d3f0ded2a2bdd1208232b942f8e4810f7a402564fac3c78b4574158cd542acb9"
+UPSTREAM_LEGAL = {
+    "LICENSE.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "NOTICE.txt": "f4cdb3db59bdaccc1447eae829905cde61dfd7508dca5c4ebff98a998c036ae6",
+}
 
 
 def _sha256(path: Path) -> str:
@@ -75,6 +79,13 @@ def synchronize(*, check: bool) -> None:
             )
         if VENDORED_PATH.read_bytes() != UPSTREAM_PATH.read_bytes():
             raise RuntimeError("vendored Arrow bytes differ from the official distribution")
+        for filename, expected_hash in UPSTREAM_LEGAL.items():
+            upstream = UPSTREAM_PATH.parent / filename
+            vendored = VENDORED_PATH.parent / filename
+            if not upstream.is_file() or _sha256(upstream) != expected_hash:
+                raise RuntimeError(f"official Arrow {filename} checksum changed")
+            if not vendored.is_file() or _sha256(vendored) != expected_hash or vendored.read_bytes() != upstream.read_bytes():
+                raise RuntimeError(f"vendored Arrow {filename} is not synchronized")
         print(f"Arrow JS {version} asset is synchronized ({vendored_hash})")
         return
 
@@ -92,6 +103,13 @@ def synchronize(*, check: bool) -> None:
         os.replace(temporary_path, VENDORED_PATH)
     finally:
         temporary_path.unlink(missing_ok=True)
+    for filename, expected_hash in UPSTREAM_LEGAL.items():
+        upstream = UPSTREAM_PATH.parent / filename
+        if not upstream.is_file() or _sha256(upstream) != expected_hash:
+            raise RuntimeError(f"official Arrow {filename} checksum changed")
+        destination = VENDORED_PATH.parent / filename
+        shutil.copyfile(upstream, destination)
+        destination.chmod(0o644)
     print(f"Synchronized Arrow JS {version} asset ({EXPECTED_SHA256})")
 
 

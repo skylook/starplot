@@ -50,7 +50,7 @@ test("layerToPlotlyTrace covers every Scene kind and keeps numeric typed arrays"
   };
   const expectedTypes = {
     scatter: "scatter", line: "scatter", line_collection: "scattergl",
-    polygon: "scatter", text: "scatter", gradient: "heatmap", info_table: "table",
+    polygon: "scatter", text: "scatter", gradient: "heatmap", info_table: "scatter",
   };
   for (const [kind, makeTable] of Object.entries(tables)) {
     const current = layer(kind, kind, 1, kind === "scatter"
@@ -58,8 +58,8 @@ test("layerToPlotlyTrace covers every Scene kind and keeps numeric typed arrays"
       : kind === "gradient" ? { direction: "linear", color_stops: [[0, "#000"], [1, "#fff"]] } : {});
     const trace = runtime.layerToPlotlyTrace(current, makeTable(), scene);
     assert.equal(trace.type, expectedTypes[kind], kind);
-    if (trace.x) assert.ok(ArrayBuffer.isView(trace.x), `${kind} x must stay typed`);
-    if (trace.y) assert.ok(ArrayBuffer.isView(trace.y), `${kind} y must stay typed`);
+    if (["scatter", "line", "line_collection", "polygon", "gradient"].includes(kind) && trace.x) assert.ok(ArrayBuffer.isView(trace.x), `${kind} x must stay typed`);
+    if (["scatter", "line", "line_collection", "polygon", "gradient"].includes(kind) && trace.y) assert.ok(ArrayBuffer.isView(trace.y), `${kind} y must stay typed`);
   }
 });
 
@@ -68,6 +68,7 @@ test("renderScene reserves stable zorder slots and updates each completed layer 
   const Plotly = {
     async react(...args) { calls.react.push(args); },
     async restyle(...args) { calls.restyle.push(args); },
+    async relayout() {},
   };
   const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
   const sceneLayers = [layer("late", "line", 20), layer("early-b", "line", 10), layer("early-a", "line", 10)];
@@ -124,10 +125,12 @@ test("path and polygon ring boundaries never connect unrelated geometry", async 
     vertex_index: new Uint32Array([0, 1, 2, 0, 1, 2]),
     x: new Float64Array([0, 4, 0, 1, 2, 1]), y: new Float64Array([0, 0, 4, 1, 1, 2]),
   });
-  assert.throws(
-    () => runtime.layerToPlotlyTrace(layer("hole", "polygon", 0), hole, { styles: [], palettes: [] }),
-    /polygon holes are not supported/,
-  );
+  const holeTrace = runtime.layerToPlotlyTrace(layer("hole", "polygon", 0), hole, { styles: [], palettes: [] });
+  const effects = runtime.layerToPlotlyLayoutEffects(holeTrace);
+  assert.equal(holeTrace.visible, false);
+  assert.equal(effects.shapes.length, 1);
+  assert.equal(effects.shapes[0].fillrule, "evenodd");
+  assert.match(effects.shapes[0].path, /M 0,0 L 4,0 L 0,4 Z M 1,1 L 2,1 L 1,2 Z/);
 });
 
 test("text preserves coordinate references, rotation, offsets, and per-row styles", async () => {
@@ -147,24 +150,20 @@ test("text preserves coordinate references, rotation, offsets, and per-row style
   const trace = runtime.layerToPlotlyTrace(current, table, {
     viewport: { reference_width: 1000, reference_height: 500 }, styles: [], palettes: [],
   });
-  assert.equal(trace.meta.xref, "x domain");
-  assert.equal(trace.meta.yref, "y domain");
-  assert.equal(trace.xaxis, "x2");
-  assert.equal(trace.yaxis, "y2");
-  assert.equal(trace.cliponaxis, false);
-  assert.deepEqual(Array.from(trace.textangle), [15, 30]);
-  assert.deepEqual(Array.from(trace.textfont.size), [10, 14]);
-  assert.deepEqual(Array.from(trace.x), [0.51, 0.74]);
-  assert.deepEqual(Array.from(trace.y), [0.51, 0.74]);
+  const effects = runtime.layerToPlotlyLayoutEffects(trace);
+  assert.equal(trace.visible, false);
+  assert.equal(effects.annotations[0].xref, "x domain");
+  assert.equal(effects.annotations[0].yref, "y domain");
+  assert.deepEqual(Array.from(effects.annotations, (item) => item.textangle), [15, 30]);
+  assert.deepEqual(Array.from(effects.annotations, (item) => item.font.size), [10, 14]);
+  assert.deepEqual(Array.from(effects.annotations, (item) => item.xshift), [10, -10]);
+  assert.deepEqual(Array.from(effects.annotations, (item) => item.yshift), [5, -5]);
 
   const paperLayer = { ...current, id: "paper-labels", coordinate_space: "paper" };
   const paper = runtime.layerToPlotlyTrace(paperLayer, table, {
     viewport: { reference_width: 1000, reference_height: 500 }, styles: [], palettes: [],
   });
-  assert.equal(paper.xaxis, "x3");
-  assert.equal(paper.yaxis, "y3");
-  assert.equal(paper.meta.xref, "paper");
-  assert.equal(paper.cliponaxis, false);
+  assert.equal(runtime.layerToPlotlyLayoutEffects(paper).annotations[0].xref, "paper");
 });
 
 test("interactive scatter binds hover fields and retains calibrated WebGL marker arrays", async () => {
@@ -294,7 +293,7 @@ test("gradient sampling honors radial center and radius plus Galactic Mollweide 
 
 test("info table widths and viewport layout remain exact in initial Plotly reservation", async () => {
   const calls = [];
-  const Plotly = { async react(...args) { calls.push(args); }, async restyle() {} };
+  const Plotly = { async react(...args) { calls.push(args); }, async restyle() {}, async relayout() {} };
   const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
   const table = tables.info_table();
   const source = {
@@ -318,6 +317,74 @@ test("info table widths and viewport layout remain exact in initial Plotly reser
   assert.equal(layout.paper_bgcolor, "#456");
   assert.equal(layout.showlegend, true);
   assert.deepEqual({ ...layout.margin }, { l: 20, r: 21, t: 22, b: 23 });
-  const trace = runtime.layerToPlotlyTrace(layer("table", "info_table", 1), table, { styles: [], palettes: [] });
-  assert.ok(trace.columnwidth instanceof Float32Array);
+  const trace = runtime.layerToPlotlyTrace(layer("table", "info_table", 1), table, { viewport: {}, styles: [], palettes: [] });
+  const effects = runtime.layerToPlotlyLayoutEffects(trace);
+  assert.equal(trace.visible, false);
+  assert.equal(effects.shapes[0].type, "rect");
+  assert.equal(effects.annotations.length, 2);
+});
+
+test("layout-only layers keep one trace slot and emit valid annotations and footer shapes", async () => {
+  const calls = { react: [], restyle: [], relayout: [] };
+  const Plotly = {
+    async react(...args) { calls.react.push(args); },
+    async restyle(...args) { calls.restyle.push(args); },
+    async relayout(...args) { calls.relayout.push(args); },
+  };
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
+  const layers = [layer("label", "text", 1, { ha: "right", va: "top", font_weight: "bold" }), layer("footer", "info_table", 2, { background_color: "#abc", line_color: "#def" })];
+  const source = {
+    async loadManifest() { return { viewport: { margin: { l: 1, r: 2, t: 3, b: 4 } }, styles: [], palettes: [], clips: [], layers }; },
+    async *loadLayer(current) { for (const batch of (current.kind === "text" ? tables.text() : tables.info_table()).batches) yield batch; },
+  };
+  await runtime.renderScene("chart", source, { Plotly });
+  assert.equal(calls.react.length, 1);
+  assert.equal(calls.restyle.length, 2);
+  assert.deepEqual(Array.from(calls.react[0][1], (trace) => trace.type), ["scatter", "scatter"]);
+  assert.equal(calls.relayout.length, 2);
+  const final = calls.relayout.at(-1)[1];
+  assert.equal(final.annotations.length, 3);
+  assert.equal(final.annotations[0].xanchor, "right");
+  assert.equal(final.annotations[0].yanchor, "top");
+  assert.equal(final.annotations[0].textangle, 15);
+  assert.equal(final.shapes[0].fillcolor, "#abc");
+  assert.equal(final.margin.b, 105);
+});
+
+test("hover is bounded, invalid gradient bounds skip closed, and radial defaults precede overrides", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const hoverLayer = layer("large", "scatter", 0, { palette_id: "p" });
+  hoverLayer.interactive = true; hoverLayer.interaction = "hover"; hoverLayer.hover_fields = ["magnitude"]; hoverLayer.row_count = 100001;
+  const hoverTable = Arrow.tableFromArrays({
+    x: new Float64Array([0]), y: new Float64Array([0]), size: new Float32Array([1]),
+    color_index: new Uint8Array([0]), opacity: new Float32Array([1]), magnitude: new Float32Array([1]),
+  });
+  const hover = runtime.layerToPlotlyTrace(hoverLayer, hoverTable, { styles: [], palettes: [{ id: "p", colors: ["#fff"] }] });
+  assert.equal(hover.customdata, undefined);
+  assert.equal(hover.hovertemplate, undefined);
+  assert.equal(hover.hoverinfo, "skip");
+
+  const missing = runtime.layerToPlotlyTrace(layer("missing", "gradient", 0, { direction: "linear", color_stops: [[0, "#000"], [1, "#fff"]] }), tables.gradient(), { viewport: { data_bounds: { x_min: 0, x_max: NaN, y_min: 0, y_max: 1 } }, styles: [], palettes: [], clips: [] });
+  assert.equal(missing.type, "heatmap"); assert.equal(missing.visible, false);
+
+  const radial = runtime.layerToPlotlyTrace(layer("radial-default", "gradient", 0, { direction: "radial", center: [9, 0], color_stops: [[0, "#000"], [1, "#fff"]] }), tables.gradient(), { viewport: { data_bounds: { x_min: -10, x_max: 10, y_min: -10, y_max: 10 } }, styles: [], palettes: [], clips: [] });
+  const centerRow = Math.round((0 - radial.y[0]) / (radial.y.at(-1) - radial.y[0]) * (radial.y.length - 1));
+  const nearOriginCol = Math.round((0 - radial.x[0]) / (radial.x.at(-1) - radial.x[0]) * (radial.x.length - 1));
+  assert.ok(Number.isFinite(radial.z[centerRow][nearOriginCol]), "implicit radius must be based on the default center");
+});
+
+test("optional layer failures stay hidden while required failures purge partial rendering", async () => {
+  const calls = { restyle: [], relayout: [] };
+  const Plotly = { async react() {}, async restyle(...args) { calls.restyle.push(args); }, async relayout(...args) { calls.relayout.push(args); } };
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
+  const good = layer("good", "line", 0); const optional = layer("optional", "line", 1); optional.required = false; const required = layer("required", "line", 2);
+  const source = {
+    async loadManifest() { return { viewport: {}, styles: [], palettes: [], clips: [], layers: [good, optional, required] }; },
+    async *loadLayer(current) { if (current.id !== "good") throw new Error(`${current.id} failed`); for (const batch of tables.line().batches) yield batch; },
+  };
+  await assert.rejects(runtime.renderScene("chart", source, { Plotly }), /required failed/);
+  assert.equal(calls.restyle.length, 2, "one completed update plus one required-failure purge");
+  assert.deepEqual(Array.from(calls.restyle.at(-1)[2]), [0]);
+  assert.equal(calls.relayout.at(-1)[1].annotations.length, 0);
+  assert.equal(calls.relayout.at(-1)[1].shapes.length, 0);
 });

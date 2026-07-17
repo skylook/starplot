@@ -14,6 +14,22 @@ function canonicalJson(value) {
   return JSON.stringify(value);
 }
 
+export async function bindManifestHash(manifest) {
+  const value = structuredClone(manifest);
+  delete value.content_hash;
+  const payload = new TextEncoder().encode(canonicalJson(value) + manifest.layers.map((layer) => layer.content_hash).join(""));
+  manifest.content_hash = await sha256(payload);
+  return canonicalJson(manifest);
+}
+
+function canonicalEncodingJson(value) {
+  const number = (item) => Number.isInteger(item) ? `${item}.0` : String(item);
+  return `{${Object.keys(value).sort().map((axis) => {
+    const item = value[axis];
+    return `${JSON.stringify(axis)}:{"kind":${JSON.stringify(item.kind)},"max_error_pixels":${number(item.max_error_pixels)},"origin":${number(item.origin)},"scale":${number(item.scale)}}`;
+  }).join(",")}}`;
+}
+
 export function tableWithSceneMetadata(columns, { id, kind, coordinateEncoding = {} }) {
   const plainTable = Arrow.tableFromArrays(columns);
   const numpyDtype = (type) => ({
@@ -29,10 +45,10 @@ export function tableWithSceneMetadata(columns, { id, kind, coordinateEncoding =
     ["starplot_schema_version", "1.0"],
     ["layer_id", id],
     ["kind", kind],
-    ["coordinate_encoding", canonicalJson(coordinateEncoding)],
+    ["coordinate_encoding", canonicalEncodingJson(coordinateEncoding)],
     ...Object.entries(coordinateEncoding).flatMap(([axis, encoding]) =>
       encoding.kind === "relative-f32"
-        ? [[`origin_${axis}`, String(encoding.origin)], [`scale_${axis}`, String(encoding.scale)]]
+        ? [[`origin_${axis}`, Number.isInteger(encoding.origin) ? `${encoding.origin}.0` : String(encoding.origin)], [`scale_${axis}`, Number.isInteger(encoding.scale) ? `${encoding.scale}.0` : String(encoding.scale)]]
         : []),
   ]));
   return new Arrow.Table(
@@ -132,7 +148,8 @@ export async function sceneFixture(columns = {
     },
     extensions: {},
   };
-  return { table, bytes, layer, manifest };
+  const manifestJson = await bindManifestHash(manifest);
+  return { table, bytes, layer, manifest, manifestJson };
 }
 
 export function response(body, { json = false } = {}) {
@@ -140,6 +157,7 @@ export function response(body, { json = false } = {}) {
     ok: true,
     status: 200,
     async json() { return json ? body : JSON.parse(new TextDecoder().decode(body)); },
+    async text() { return typeof body === "string" ? body : JSON.stringify(body); },
     async arrayBuffer() {
       const bytes = body instanceof Uint8Array ? body : new TextEncoder().encode(JSON.stringify(body));
       return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);

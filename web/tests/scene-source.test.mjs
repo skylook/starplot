@@ -1,6 +1,6 @@
 import test from "node:test";
 import {
-  Arrow, assert, loadRuntime, response, sceneFixture, sha256, tableWithSceneMetadata,
+  Arrow, assert, bindManifestHash, loadRuntime, response, sceneFixture, sha256, tableWithSceneMetadata,
 } from "./test-helpers.mjs";
 
 test("all SceneSources expose one contract and yield validated Arrow RecordBatches", async () => {
@@ -9,7 +9,7 @@ test("all SceneSources expose one contract and yield validated Arrow RecordBatch
   const fetch = async (url) => {
     fetchCalls.push(String(url));
     return String(url).endsWith("manifest") || String(url).endsWith("manifest.json")
-      ? response(fixture.manifest, { json: true })
+      ? response(fixture.manifestJson)
       : response(fixture.bytes);
   };
   const runtime = await loadRuntime(["starplot-scene-loader.js"], { fetch });
@@ -17,6 +17,7 @@ test("all SceneSources expose one contract and yield validated Arrow RecordBatch
   const sources = [
     new InlineSceneSource({
       manifest: fixture.manifest,
+      manifestJson: fixture.manifestJson,
       layers: { stars: Buffer.from(fixture.bytes).toString("base64") },
     }),
     new StaticSceneSource({ baseUrl: "https://example.test/chart.scene/", fetch }),
@@ -53,6 +54,7 @@ test("all SceneSources reject incompatible manifests and corrupt layer payloads"
   corrupt[corrupt.length - 1] ^= 1;
   const source = new runtime.InlineSceneSource({
     manifest: fixture.manifest,
+    manifestJson: fixture.manifestJson,
     layers: { stars: Buffer.from(corrupt).toString("base64") },
   });
   await source.loadManifest();
@@ -91,7 +93,6 @@ test("loader rejects Arrow IPC File containers and streams without canonical EOS
       manifest: { ...fixture.manifest, layers: [currentLayer] },
       layers: { stars: Buffer.from(bytes).toString("base64") },
     });
-    await source.loadManifest();
     await assert.rejects(async () => {
       for await (const _batch of source.loadLayer(currentLayer)) { /* consume */ }
     }, /canonical Arrow IPC Stream/);
@@ -228,9 +229,79 @@ test("loader binds Arrow schema metadata to manifest layer identity and encoding
       manifest: { ...fixture.manifest, layers: [layer] },
       layers: { [layer.id]: Buffer.from(fixture.bytes).toString("base64") },
     });
-    await source.loadManifest();
     await assert.rejects(async () => {
       for await (const _batch of source.loadLayer(layer)) { /* consume */ }
     }, /schema metadata/);
   }
+});
+
+test("manifest validation enforces the Python wire model and ordered self-hash", async () => {
+  const fixture = await sceneFixture();
+  const runtime = await loadRuntime(["starplot-scene-loader.js"]);
+  for (const mutate of [
+    (manifest) => { manifest.extra = true; },
+    (manifest) => { delete manifest.capabilities.lod; },
+    (manifest) => { manifest.layers[0].interaction = "hover"; },
+    (manifest) => { manifest.layers[0].coordinate_encoding.x.scale = 0; },
+    (manifest) => { manifest.extensions.future = true; },
+    (manifest) => { manifest.styles[0].id = "other"; },
+  ]) {
+    const manifest = structuredClone(fixture.manifest);
+    mutate(manifest);
+    const manifestJson = await bindManifestHash(manifest);
+    await assert.rejects(
+      new runtime.InlineSceneSource({ manifest, manifestJson, layers: {} }).loadManifest(),
+      /fields|interaction|encoding|extension|style id/,
+    );
+  }
+  const stale = structuredClone(fixture.manifest);
+  stale.layers[0].content_hash = `sha256:${"1".repeat(64)}`;
+  await assert.rejects(
+    new runtime.InlineSceneSource({ manifest: stale, manifestJson: JSON.stringify(stale), layers: {} }).loadManifest(),
+    /scene content hash/,
+  );
+});
+
+test("loader rejects a second valid Arrow stream and noncanonical metadata bytes", async () => {
+  const fixture = await sceneFixture();
+  const runtime = await loadRuntime(["starplot-scene-loader.js"]);
+  const concatenated = new Uint8Array(fixture.bytes.length * 2);
+  concatenated.set(fixture.bytes); concatenated.set(fixture.bytes, fixture.bytes.length);
+  const layer = { ...fixture.layer, byte_length: concatenated.length, content_hash: await sha256(concatenated) };
+  const source = new runtime.InlineSceneSource({ manifest: fixture.manifest, manifestJson: fixture.manifestJson, layers: { stars: Buffer.from(concatenated).toString("base64") } });
+  await assert.rejects(async () => {
+    for await (const _batch of source.loadLayer(layer)) { /* consume */ }
+  }, /one exact canonical Arrow IPC Stream/);
+
+  const schema = new Arrow.Schema(fixture.table.schema.fields, new Map([
+    ...fixture.table.schema.metadata,
+    ["coordinate_encoding", JSON.stringify(fixture.layer.coordinate_encoding)],
+  ]));
+  const table = new Arrow.Table(schema, fixture.table.batches.map((batch) => new Arrow.RecordBatch(schema, batch.data)));
+  const bytes = Arrow.tableToIPC(table, "stream");
+  const metadataLayer = { ...fixture.layer, byte_length: bytes.length, content_hash: await sha256(bytes) };
+  const metadataSource = new runtime.InlineSceneSource({ manifest: fixture.manifest, manifestJson: fixture.manifestJson, layers: { stars: Buffer.from(bytes).toString("base64") } });
+  await assert.rejects(async () => {
+    for await (const _batch of metadataSource.loadLayer(metadataLayer)) { /* consume */ }
+  }, /schema metadata/);
+});
+
+test("fetch sources resolve document, root, and manifest-relative URLs", async () => {
+  const fixture = await sceneFixture();
+  const calls = [];
+  const fetch = async (url) => {
+    calls.push(String(url));
+    return String(url).endsWith("manifest.json") ? response(fixture.manifestJson) : response(fixture.bytes);
+  };
+  const runtime = await loadRuntime(["starplot-scene-loader.js"], { fetch });
+  const source = new runtime.StaticSceneSource({ baseUrl: "../scene", documentBaseUrl: "https://example.test/charts/page.html", fetch });
+  const manifest = await source.loadManifest();
+  for await (const _batch of source.loadLayer(manifest.layers[0])) { /* consume */ }
+  assert.deepEqual(calls, [
+    "https://example.test/scene/manifest.json",
+    "https://example.test/scene/layers/stars.arrow",
+  ]);
+  const root = new runtime.StaticSceneSource({ baseUrl: "/assets/scene", documentBaseUrl: "https://example.test/charts/page.html", fetch });
+  await root.loadManifest();
+  assert.equal(calls.at(-1), "https://example.test/assets/scene/manifest.json");
 });

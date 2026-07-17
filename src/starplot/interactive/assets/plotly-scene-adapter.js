@@ -12,6 +12,18 @@
   });
   const LINE_DASH = Object.freeze({ solid: "solid", dashed: "dash", dotted: "dot", dashdot: "dashdot" });
   const MARKER_SYMBOL = Object.freeze({ circle: "circle", square: "square", triangle: "triangle-up", star: "star", diamond: "diamond" });
+  const MAX_INTERACTIVE_HOVER_POINTS = 100000;
+  const layoutEffects = new WeakMap();
+
+  function hiddenLayerTrace(layer) {
+    if (traceTypeForLayer(layer) === "heatmap") {
+      return { type: "heatmap", z: [[null]], hoverinfo: "skip", showscale: false, visible: false };
+    }
+    return {
+      type: "scatter", x: [null], y: [null], mode: "markers",
+      hoverinfo: "skip", showlegend: false, visible: false,
+    };
+  }
 
   function traceTypeForLayer(layer) {
     if (layer.kind === "scatter") {
@@ -19,6 +31,7 @@
         ? "scattergl"
         : "scatter";
     }
+    if (layer.kind === "info_table") return "scatter";
     return KIND_TYPES[layer.kind];
   }
 
@@ -143,6 +156,8 @@
       }
     }
     const transparent = String(style.fill || "").toLowerCase() === "none";
+    const hoverAllowed = layer.interactive
+      && Number(layer.row_count ?? table.numRows) <= MAX_INTERACTIVE_HOVER_POINTS;
     const trace = {
       type: useWebgl ? "scattergl" : "scatter",
       x: decodeCoordinate(layer, table, "x"),
@@ -164,12 +179,13 @@
           showscale: false,
         }),
       },
-      hoverinfo: layer.interactive ? "text" : "skip",
+      hoverinfo: hoverAllowed ? "text" : "skip",
       name: String(style.legend_label || layer.group_id || layer.id),
       legendgroup: layer.group_id,
       showlegend: Boolean(style.legend_label),
     };
-    if (layer.interactive && layer.hover_fields && layer.hover_fields.length) {
+    if (hoverAllowed
+        && layer.hover_fields && layer.hover_fields.length) {
       const values = layer.hover_fields.map((name) => {
         const result = column(table, name, false);
         if (!result) throw new Error(`interactive layer ${layer.id} is missing hover field ${name}`);
@@ -213,10 +229,27 @@
       ringSets.set(polygonIds[index], rings);
     }
     if ([...ringSets.values()].some((rings) => rings.size > 1)) {
-      throw new Error(
-        "polygon holes are not supported by the one-trace browser adapter; " +
-        "refusing to render rather than silently filling holes",
-      );
+      const shapes = [];
+      const [xref, yref] = coordinateRefs(layer, style);
+      for (const polygonId of [...ringSets.keys()].sort((a, b) => Number(a) - Number(b))) {
+        let path = "";
+        for (const ringId of [...ringSets.get(polygonId)].sort((a, b) => Number(a) - Number(b))) {
+          const points = [];
+          for (let index = 0; index < x.length; index += 1) {
+            if (polygonIds[index] === polygonId && ringIds[index] === ringId) points.push([x[index], y[index]]);
+          }
+          if (points.length >= 3) path += ` M ${points.map((point) => `${point[0]},${point[1]}`).join(" L ")} Z`;
+        }
+        if (path) shapes.push({
+          type: "path", path: path.trim(), xref, yref, fillrule: "evenodd",
+          fillcolor: style.fill_color && String(style.fill_color).toLowerCase() !== "none" ? style.fill_color : "rgba(0,0,0,0)",
+          line: { color: style.edge_color || "rgba(0,0,0,0)", width: Math.max(0, Number(style.edge_width || 0)) },
+          opacity: style.alpha === undefined ? 1 : Number(style.alpha),
+        });
+      }
+      const trace = hiddenLayerTrace(layer);
+      layoutEffects.set(trace, { shapes });
+      return trace;
     }
     let separators = 0;
     for (let index = 1; index < x.length; index += 1) {
@@ -264,54 +297,32 @@
     const variants = Array.isArray(style.text_styles) && style.text_styles.length
       ? style.text_styles
       : [style];
-    const fontSize = new Float32Array(text.length);
-    const fontColor = new Array(text.length);
-    const fontFamily = new Array(text.length);
-    const outputX = new Float64Array(x.length);
-    const outputY = new Float64Array(y.length);
-    const viewport = scene.viewport || {};
-    const bounds = viewport.data_bounds || {};
     const [xref, yref] = coordinateRefs(layer, style);
-    const width = Math.max(1, Number(viewport.reference_width || 1));
-    const height = Math.max(1, Number(viewport.reference_height || 1));
-    const xScale = xref === "x" ? Number(bounds.x_max - bounds.x_min || 1) / width : 1 / width;
-    const yScale = yref === "y" ? Number(bounds.y_max - bounds.y_min || 1) / height : 1 / height;
+    const annotations = [];
     for (let index = 0; index < text.length; index += 1) {
       const variant = variants[styleIds[index]];
       if (!variant) throw new Error(`text style_id ${styleIds[index]} is not defined for layer ${layer.id}`);
-      fontSize[index] = Math.max(8, Number(variant.font_size || style.font_size || 12));
-      fontColor[index] = variant.font_color || style.font_color || "#ffffff";
-      fontFamily[index] = variant.font_name || style.font_name || "Inter, Arial, sans-serif";
-      outputX[index] = x[index] + xOffset[index] * xScale;
-      outputY[index] = y[index] + yOffset[index] * yScale;
+      const horizontal = variant.ha || style.ha || "center";
+      const vertical = variant.va || style.va || "center";
+      const weight = String(variant.font_weight || style.font_weight || "normal").toLowerCase();
+      annotations.push({
+        x: x[index], y: y[index], text: weight === "bold" ? `<b>${text[index]}</b>` : text[index],
+        showarrow: false, xref, yref,
+        xanchor: ["left", "right", "center"].includes(horizontal) ? horizontal : "center",
+        yanchor: ({ center: "middle", baseline: "bottom", bottom: "bottom", top: "top" })[vertical] || "middle",
+        xshift: Number(variant.xshift ?? style.xshift ?? xOffset[index]),
+        yshift: Number(variant.yshift ?? style.yshift ?? yOffset[index]),
+        textangle: Number(rotation[index]),
+        font: {
+          size: Math.max(8, Number(variant.font_size || style.font_size || 12)),
+          color: variant.font_color || style.font_color || "#ffffff",
+          family: weight === "bold" ? "Arial Black, Arial, sans-serif" : (variant.font_name || style.font_name || "Inter, Arial, sans-serif"),
+        },
+        opacity: Number(variant.font_alpha ?? style.font_alpha ?? style.alpha ?? 1),
+      });
     }
-    const trace = {
-      type: "scatter",
-      x: outputX,
-      y: outputY,
-      mode: "text",
-      text,
-      textposition: "middle center",
-      textfont: {
-        size: fontSize,
-        color: fontColor,
-        family: fontFamily,
-      },
-      textangle: rotation,
-      opacity: style.font_alpha === undefined ? (style.alpha === undefined ? 1 : Number(style.alpha)) : Number(style.font_alpha),
-      hoverinfo: "skip",
-      showlegend: false,
-    };
-    if (xref !== "x" || yref !== "y") {
-      trace.xaxis = "x2";
-      trace.yaxis = "y2";
-      if (xref === "paper" && yref === "paper") {
-        trace.xaxis = "x3";
-        trace.yaxis = "y3";
-      }
-    }
-    trace.cliponaxis = false;
-    trace.meta = { xref, yref };
+    const trace = hiddenLayerTrace(layer);
+    layoutEffects.set(trace, { annotations });
     return trace;
   }
 
@@ -337,8 +348,9 @@
 
   function gradientTrace(layer, scene, style) {
     const bounds = (scene.viewport && scene.viewport.data_bounds) || {};
-    const xMin = Number(bounds.x_min || 0), xMax = Number(bounds.x_max || 1);
-    const yMin = Number(bounds.y_min || 0), yMax = Number(bounds.y_max || 1);
+    const rawBounds = [bounds.x_min, bounds.x_max, bounds.y_min, bounds.y_max];
+    if (rawBounds.some((value) => typeof value !== "number" || !Number.isFinite(value))) return null;
+    const [xMin, xMax, yMin, yMax] = rawBounds;
     const direction = style.direction || "linear";
     if (!["linear", "radial", "mollweide"].includes(direction)) {
       throw new Error(`unsupported gradient direction: ${direction}`);
@@ -364,13 +376,13 @@
           const clipYs = clip ? clip.points.map((point) => Number(point[1])) : [yMin, yMax];
           const clipXMin = Math.min(...clipXs), clipXMax = Math.max(...clipXs);
           const clipYMin = Math.min(...clipYs), clipYMax = Math.max(...clipYs);
-          const center = style.center || [(clipXMin + clipXMax) / 2, (clipYMin + clipYMax) / 2];
+          const defaultCenter = [(clipXMin + clipXMax) / 2, (clipYMin + clipYMax) / 2];
           const defaultRadius = clip
             ? Math.min(clipXMax - clipXMin, clipYMax - clipYMin) / 2
             : Math.max(
-              Math.abs(xMax - center[0]), Math.abs(xMin - center[0]),
-              Math.abs(yMax - center[1]), Math.abs(yMin - center[1]),
+              Math.abs(xMax - defaultCenter[0]), Math.abs(yMax - defaultCenter[1]),
             );
+          const center = style.center || defaultCenter;
           const resolvedRadius = Math.max(
             Number(style.radius === undefined || style.radius === null ? defaultRadius : style.radius),
             1e-9,
@@ -418,20 +430,30 @@
     };
   }
 
-  function infoTableTrace(table, style) {
-    return {
-      type: "table",
-      header: {
-        values: Array.from(column(table, "column"), String),
-        font: { color: style.font_color || "#111111", size: Number(style.font_size || 12) * 1.2 },
-      },
-      cells: {
-        values: [Array.from(column(table, "value"), String)],
-        font: { color: style.font_color || "#111111", size: Number(style.font_size || 12) },
-      },
-      columnwidth: column(table, "width"),
-      showlegend: false,
-    };
+  function infoTableTrace(layer, table, style, scene) {
+    const columns = Array.from(column(table, "column"), String);
+    const values = Array.from(column(table, "value"), String);
+    const widths = Array.from(column(table, "width"), (value) => Math.max(0, Number(value)));
+    const count = Math.min(columns.length, values.length);
+    if (!count) return hiddenLayerTrace(layer);
+    const total = widths.slice(0, count).reduce((sum, value) => sum + value, 0);
+    const normalized = widths.slice(0, count).map((value) => total > 0 ? value / total : 1 / count);
+    const lineColor = style.line_color || "#999999";
+    const background = style.background_color || (scene.viewport && scene.viewport.paper_background) || "#ffffff";
+    const shapes = [{ type: "rect", xref: "paper", yref: "paper", x0: 0, x1: 1, y0: -0.09, y1: -0.01, line: { color: lineColor, width: 1 }, fillcolor: background, layer: "above" }];
+    const annotations = [];
+    let left = 0;
+    for (let index = 0; index < count; index += 1) {
+      const right = left + normalized[index];
+      if (index) shapes.push({ type: "line", xref: "paper", yref: "paper", x0: left, x1: left, y0: -0.09, y1: -0.01, line: { color: lineColor, width: 1 }, layer: "above" });
+      for (const [text, y, size] of [[`<b>${columns[index]}</b>`, -0.03, Math.max(11, Number(style.font_size || 12) * 1.2)], [values[index], -0.068, Math.max(10, Number(style.font_size || 12))]]) {
+        annotations.push({ x: (left + right) / 2, y, xref: "paper", yref: "paper", text, showarrow: false, xanchor: "center", yanchor: "middle", font: { size, color: style.font_color || "#111111", family: style.font_name || "Inter, Arial, sans-serif" }, opacity: Number(style.font_alpha ?? 1) });
+      }
+      left = right;
+    }
+    const trace = hiddenLayerTrace(layer);
+    layoutEffects.set(trace, { shapes, annotations, marginBottom: 105 });
+    return trace;
   }
 
   function layerToPlotlyTrace(layer, table, scene) {
@@ -443,10 +465,10 @@
     else if (layer.kind === "line" || layer.kind === "line_collection") trace = lineTrace(layer, table, style);
     else if (layer.kind === "polygon") trace = polygonTrace(layer, table, style);
     else if (layer.kind === "text") trace = textTrace(layer, table, scene, style);
-    else if (layer.kind === "gradient") trace = gradientTrace(layer, scene, style);
-    else trace = infoTableTrace(table, style);
+    else if (layer.kind === "gradient") trace = gradientTrace(layer, scene, style) || hiddenLayerTrace(layer);
+    else trace = infoTableTrace(layer, table, style, scene);
     const [xref, yref] = coordinateRefs(layer, style);
-    if (["scatter", "line", "line_collection", "polygon", "text"].includes(layer.kind)
+    if (["scatter", "line", "line_collection", "polygon"].includes(layer.kind)
         && (xref !== "x" || yref !== "y")) {
       trace.xaxis = xref === "paper" ? "x3" : "x2";
       trace.yaxis = yref === "paper" ? "y3" : "y2";
@@ -491,49 +513,83 @@
       yaxis3: { range: [0, 1], domain: [0, 1], overlaying: "y", visible: false, fixedrange: true },
       showlegend: Boolean(viewport.showlegend),
       margin: viewport.margin || { l: 10, r: 10, t: 10, b: 10 },
+      annotations: [],
+      shapes: [],
     };
   }
 
   function restyleUpdate(trace) {
     const update = {};
     for (const [name, value] of Object.entries(trace)) update[name] = [value];
-    update.visible = [true];
+    update.visible = [trace.visible === false ? false : true];
     return update;
+  }
+
+  function assertNotAborted(signal) {
+    if (signal && signal.aborted) {
+      const error = new Error("The operation was aborted");
+      error.name = "AbortError";
+      throw signal.reason || error;
+    }
   }
 
   async function renderScene(target, source, options) {
     const settings = options || {};
     const Plotly = settings.Plotly || global.Plotly;
-    if (!Plotly || typeof Plotly.react !== "function" || typeof Plotly.restyle !== "function") {
+    if (!Plotly || typeof Plotly.react !== "function" || typeof Plotly.restyle !== "function" || typeof Plotly.relayout !== "function") {
       throw new Error("Plotly 3.x must be loaded before rendering a Starplot Scene");
     }
     if (!source || typeof source.loadManifest !== "function" || typeof source.loadLayer !== "function") {
       throw new Error("source must implement the SceneSource contract");
     }
+    assertNotAborted(settings.signal);
     const scene = await source.loadManifest(settings.signal);
+    assertNotAborted(settings.signal);
     const slots = [...scene.layers].sort((left, right) =>
       Number(left.zorder) - Number(right.zorder) || String(left.id).localeCompare(String(right.id)));
     const slotById = new Map(slots.map((layer, index) => [layer.id, index]));
     await Plotly.react(target, slots.map(placeholder), sceneLayout(scene), settings.config || {});
+    const annotations = [];
+    const shapes = [];
+    const loadedSlots = [];
     const loadOrder = [...scene.layers].sort((left, right) =>
       Number(left.load_priority) - Number(right.load_priority)
       || Number(left.zorder) - Number(right.zorder)
       || String(left.id).localeCompare(String(right.id)));
     for (const layer of loadOrder) {
-      const table = await global.StarplotScene.collectLayerTable(
-        source,
-        layer,
-        settings.request,
-        settings.signal,
-      );
-      const trace = layerToPlotlyTrace(layer, table, scene);
-      await Plotly.restyle(target, restyleUpdate(trace), [slotById.get(layer.id)]);
+      try {
+        assertNotAborted(settings.signal);
+        const table = await global.StarplotScene.collectLayerTable(source, layer, settings.request, settings.signal);
+        assertNotAborted(settings.signal);
+        const trace = layerToPlotlyTrace(layer, table, scene);
+        assertNotAborted(settings.signal);
+        const slot = slotById.get(layer.id);
+        await Plotly.restyle(target, restyleUpdate(trace), [slot]);
+        loadedSlots.push(slot);
+        const effects = layoutEffects.get(trace);
+        if (effects) {
+          if (effects.annotations) annotations.push(...effects.annotations);
+          if (effects.shapes) shapes.push(...effects.shapes);
+          const update = { annotations: [...annotations], shapes: [...shapes] };
+          if (effects.marginBottom) {
+            const margin = sceneLayout(scene).margin;
+            update.margin = { ...margin, b: Math.max(Number(margin.b || 10), effects.marginBottom) };
+          }
+          await Plotly.relayout(target, update);
+        }
+      } catch (error) {
+        if (!layer.required && !(settings.signal && settings.signal.aborted)) continue;
+        if (loadedSlots.length) await Plotly.restyle(target, { visible: false }, loadedSlots);
+        await Plotly.relayout(target, { annotations: [], shapes: [] });
+        throw error;
+      }
     }
     return target;
   }
 
   global.StarplotScene = Object.assign(global.StarplotScene || {}, {
     layerToPlotlyTrace,
+    layerToPlotlyLayoutEffects(trace) { return layoutEffects.get(trace) || {}; },
     renderScene,
     traceTypeForLayer,
   });
