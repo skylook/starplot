@@ -14,6 +14,7 @@
 - ☄️ **Comets and Satellites** - easy trajectory plotting
 - 🎨 **Custom Styles** - for all objects and with 8+ built-in themes
 - 📥 **Export** - png, svg, jpeg
+- 🌐 **Interactive web export** - Plotly 6 charts backed by compact Arrow Scene bundles
 - 🚀 **Data Backend** - powered by DuckDB + Ibis for fast object lookup
 - 📓 **Custom Data Catalogs** - with helpers for building and optimizing
 - 🧭 **Label Collision Avoidance** - ensuring all labels are readable
@@ -62,6 +63,35 @@ p.constellation_labels()
 p.horizon()
 p.export("starchart.png")
 ```
+
+## Interactive web charts
+
+The interactive plot classes compile the final Matplotlib geometry into one
+backend-neutral Scene. `to_plotly()` returns a Plotly figure for notebooks,
+while `export_html()` writes a web chart. External Scene bundles are the
+default: serve them over HTTP with `starplot serve`.
+
+```python
+from starplot.interactive import InteractiveMapPlot
+
+# Build and draw an InteractiveMapPlot as usual, then:
+plot.export_html("chart.html")  # chart.html and chart.scene/
+plot.export_html("chart-inline.html", data_mode="inline")  # works with file://
+plot.export_html(
+    "chart-api.html", data_mode="remote",
+    data_url="https://example.org/api/scenes/orion",
+)
+figure = plot.to_plotly()
+```
+
+```bash
+starplot serve . --port 8000
+```
+
+See [interactive web export](docs/reference/interactive-web-export.md) for
+remote `SceneProvider` integration, caching, viewport/LOD behavior, and
+security limits. Users upgrading an existing Plotly workflow should also read
+the [Plotly 6 and Arrow migration notes](docs/migrations/plotly-6-arrow-export.md).
 
 ## Documentation
 

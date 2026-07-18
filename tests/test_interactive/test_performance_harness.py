@@ -99,6 +99,48 @@ def test_benchmark_summary_reports_median_and_p95():
     }
 
 
+def test_compare_results_reports_every_missed_performance_gate():
+    before = complete_result()
+    after = {
+        **complete_result(),
+        "environment": ENVIRONMENT,
+        "scene_compile": {"median_seconds": 0.75, "p95_seconds": 0.8},
+        "peak_rss_mb": 7.0,
+        "arrow_payload_bytes": 31 * 1024 * 1024,
+        "external_html_bytes": 2 * 1024 * 1024,
+        "browser": {"complete_render_median_ms": 80.0},
+        "ordinary_chart": {"median_seconds": 1.2},
+        "viewport_warm": {"median_ms": 501.0, "p95_ms": 1001.0},
+    }
+    before["ordinary_chart"] = {"median_seconds": 1.0}
+
+    failures = benchmark.compare_results(before, after)
+
+    assert len(failures) == 8
+    assert any("scene_compile" in failure for failure in failures)
+    assert any("peak_rss" in failure for failure in failures)
+    assert any("arrow_payload" in failure for failure in failures)
+    assert any("external_html" in failure for failure in failures)
+    assert any("browser_complete" in failure for failure in failures)
+    assert any("ordinary_chart" in failure for failure in failures)
+    assert any("viewport_warm_median" in failure for failure in failures)
+    assert any("viewport_warm_p95" in failure for failure in failures)
+
+
+def test_compare_results_rejects_unmeasured_metrics_and_host_mismatch():
+    before = complete_result()
+    after = complete_result()
+    after["environment"] = {**ENVIRONMENT, "host_fingerprint": "other-host"}
+
+    failures = benchmark.compare_results(before, after)
+
+    assert any("host_fingerprint" in failure for failure in failures)
+    assert any("arrow_payload_bytes is missing" in failure for failure in failures)
+    assert any("external_html_bytes is missing" in failure for failure in failures)
+    assert any("ordinary_chart is missing" in failure for failure in failures)
+    assert any("viewport_warm is missing" in failure for failure in failures)
+
+
 @pytest.mark.parametrize(
     ("column", "dtype"),
     [
@@ -121,11 +163,14 @@ def test_scatter_command_columns_are_contiguous_read_only_arrays(column, dtype):
 
 def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch, capsys):
     worker_result = {
+        "arrow_payload_bytes": 900,
+        "external_html_bytes": 100,
         "legacy_renderer_preparation_seconds": 0.25,
         "legacy_renderer_total_seconds": 1.5,
         "payload_bytes": 1000,
         "peak_rss_mb": 20.0,
         "plotly_construction_seconds": 1.25,
+        "viewport_warm_ms": [1.0, 1.0],
     }
     calls = []
 
@@ -158,6 +203,9 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch, capsys)
     assert result["legacy_renderer_preparation"]["median_seconds"] == 0.25
     assert result["plotly_construction"]["median_seconds"] == 1.25
     assert result["peak_rss_mb"] == 20.0
+    assert result["arrow_payload_bytes"] == 900
+    assert result["external_html_bytes"] == 100
+    assert result["viewport_warm"] == {"median_ms": 1.0, "p95_ms": 1.0}
     output = capsys.readouterr().out
     assert "Python warm-up: starting" in output
     assert "Python repeat 1/1: complete" in output

@@ -20,6 +20,7 @@ import platform
 import resource
 import subprocess
 import sys
+import tempfile
 import time
 
 import numpy as np
@@ -53,6 +54,19 @@ REQUIRED_ENVIRONMENT_KEYS = {
     "python",
     "shapely",
     "starplot",
+}
+
+# These are release gates, not tuning targets.  A missing measurement fails the
+# gate so a benchmark record cannot turn an unavailable dependency into a pass.
+PERFORMANCE_GATES = {
+    "scene_compile_ratio_max": 0.50,
+    "peak_rss_ratio_max": 0.60,
+    "arrow_payload_bytes_max": 30 * 1024 * 1024,
+    "external_html_bytes_max": 1 * 1024 * 1024,
+    "browser_complete_render_ratio_max": 0.60,
+    "ordinary_chart_regression_ratio_max": 1.10,
+    "viewport_warm_median_ms_max": 500,
+    "viewport_warm_p95_ms_max": 1000,
 }
 
 _SEED = 20260716
@@ -159,6 +173,69 @@ def summarize(values: list[float]) -> dict[str, float]:
     }
 
 
+def _metric(mapping: dict, path: str) -> float | None:
+    value: object = mapping
+    for key in path.split("."):
+        if not isinstance(value, dict) or key not in value:
+            return None
+        value = value[key]
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def compare_results(before: dict, after: dict) -> list[str]:
+    """Return one auditable failure for each missed final-performance gate."""
+    failures: list[str] = []
+    before_environment = before.get("environment", {})
+    after_environment = after.get("environment", {})
+    if before_environment.get("host_fingerprint") != after_environment.get("host_fingerprint"):
+        failures.append(
+            "environment.host_fingerprint differs; regenerate baseline and final "
+            "measurements together on this machine"
+        )
+
+    def ratio_gate(label: str, before_path: str, after_path: str, maximum: float) -> None:
+        baseline = _metric(before, before_path)
+        current = _metric(after, after_path)
+        if baseline is None:
+            failures.append(f"{label} baseline is missing ({before_path})")
+        elif current is None:
+            failures.append(f"{label} result is missing ({after_path})")
+        elif current / baseline > maximum:
+            failures.append(
+                f"{label} ratio {current / baseline:.3f} exceeds {maximum:.3f} "
+                f"({current:.6g} / {baseline:.6g})"
+            )
+
+    def maximum_gate(label: str, path: str, maximum: float) -> None:
+        current = _metric(after, path)
+        if current is None:
+            failures.append(f"{label} is missing ({path})")
+        elif current > maximum:
+            failures.append(f"{label} {current:.6g} exceeds {maximum:.6g}")
+
+    ratio_gate("scene_compile", "scene_compile.median_seconds", "scene_compile.median_seconds",
+               PERFORMANCE_GATES["scene_compile_ratio_max"])
+    ratio_gate("peak_rss", "peak_rss_mb", "peak_rss_mb", PERFORMANCE_GATES["peak_rss_ratio_max"])
+    maximum_gate("arrow_payload_bytes", "arrow_payload_bytes", PERFORMANCE_GATES["arrow_payload_bytes_max"])
+    maximum_gate("external_html_bytes", "external_html_bytes", PERFORMANCE_GATES["external_html_bytes_max"])
+    ratio_gate("browser_complete_render", "browser.complete_render_median_ms",
+               "browser.complete_render_median_ms",
+               PERFORMANCE_GATES["browser_complete_render_ratio_max"])
+    ratio_gate("ordinary_chart", "ordinary_chart.median_seconds", "ordinary_chart.median_seconds",
+               PERFORMANCE_GATES["ordinary_chart_regression_ratio_max"])
+    maximum_gate("viewport_warm_median", "viewport_warm.median_ms",
+                 PERFORMANCE_GATES["viewport_warm_median_ms_max"])
+    maximum_gate("viewport_warm_p95", "viewport_warm.p95_ms",
+                 PERFORMANCE_GATES["viewport_warm_p95_ms_max"])
+    return failures
+
+
 def _read_only_contiguous(values, dtype=None) -> np.ndarray:
     result = np.ascontiguousarray(values, dtype=dtype)
     result.setflags(write=False)
@@ -252,8 +329,13 @@ def _peak_rss_mb() -> float:
 
 def _run_python_worker(point_count: int) -> dict:
     """Run one isolated Scene compilation and Plotly construction sample."""
+    from starplot.interactive.arrow_transport import encode_layer_stream
     from starplot.interactive.plotly_adapter import PlotlySceneAdapter
     from starplot.interactive.scene_compiler import SceneCompiler
+    from starplot.interactive.scene import ViewportRequest
+    from starplot.interactive.scene_manifest import parse_scene_manifest
+    from starplot.interactive.scene_provider import SceneProvider
+    from starplot.interactive.web_export import export_scene_html
 
     command, projection_info, style_info = _renderer_inputs(point_count)
 
@@ -272,6 +354,31 @@ def _run_python_worker(point_count: int) -> dict:
     figure = PlotlySceneAdapter().render(scene)
     plotly_seconds = time.perf_counter() - construction_started
     peak_rss_mb = _peak_rss_mb()
+    arrow_payload_bytes = sum(len(encode_layer_stream(layer)) for layer in scene.layers)
+    with tempfile.TemporaryDirectory(prefix="starplot-scene-benchmark-") as directory:
+        output = Path(directory) / "scene.html"
+        exported = export_scene_html(scene, output)
+        external_html_bytes = output.stat().st_size
+        provider = SceneProvider(
+            parse_scene_manifest(exported.manifest_bytes),
+            exported.manifest_bytes,
+            exported.layer_bytes,
+        )
+        request = ViewportRequest(
+            x_min=-math.pi / 2,
+            x_max=math.pi / 2,
+            y_min=-math.pi / 4,
+            y_max=math.pi / 4,
+            pixel_width=1000,
+            pixel_height=500,
+            lod=1,
+        )
+        provider.layer(scene.layers[0].id, request)  # populate the dynamic cache
+        viewport_warm_ms = []
+        for _ in range(5):
+            started = time.perf_counter()
+            provider.layer(scene.layers[0].id, request).body_bytes()
+            viewport_warm_ms.append((time.perf_counter() - started) * 1000.0)
     payload_bytes = len(figure.to_json().encode("utf-8"))
     return {
         # Task 13 will migrate the persisted artifact schema. Keep these old
@@ -279,8 +386,11 @@ def _run_python_worker(point_count: int) -> dict:
         "legacy_renderer_preparation_seconds": preparation_seconds,
         "legacy_renderer_total_seconds": preparation_seconds + plotly_seconds,
         "payload_bytes": payload_bytes,
+        "arrow_payload_bytes": arrow_payload_bytes,
+        "external_html_bytes": external_html_bytes,
         "peak_rss_mb": peak_rss_mb,
         "plotly_construction_seconds": plotly_seconds,
+        "viewport_warm_ms": viewport_warm_ms,
     }
 
 
@@ -476,10 +586,40 @@ def _summarize_worker_results(results: list[dict], key: str) -> dict[str, float]
     return summarize([float(result[key]) for result in results])
 
 
+def _run_python_samples(
+    point_count: int,
+    repeats: int,
+    repeat_timeout_seconds: float,
+    *,
+    label: str,
+) -> list[dict]:
+    print(f"{label} warm-up: starting", flush=True)
+    warmup = _run_python_repeat(point_count, repeat_timeout_seconds)
+    print(
+        f"{label} warm-up: complete "
+        f"({warmup['legacy_renderer_total_seconds']:.3f} s, "
+        f"{warmup['peak_rss_mb']:.3f} MiB peak RSS)",
+        flush=True,
+    )
+    measured: list[dict] = []
+    for iteration in range(1, repeats + 1):
+        print(f"{label} repeat {iteration}/{repeats}: starting", flush=True)
+        result = _run_python_repeat(point_count, repeat_timeout_seconds)
+        measured.append(result)
+        print(
+            f"{label} repeat {iteration}/{repeats}: complete "
+            f"({result['legacy_renderer_total_seconds']:.3f} s, "
+            f"{result['peak_rss_mb']:.3f} MiB peak RSS)",
+            flush=True,
+        )
+    return measured
+
+
 def run_python_benchmark(
     point_count: int,
     repeats: int,
     repeat_timeout_seconds: float = _DEFAULT_REPEAT_TIMEOUT_SECONDS,
+    ordinary_points: int | None = None,
 ) -> dict:
     if point_count <= 0:
         raise ValueError("point_count must be positive")
@@ -488,30 +628,17 @@ def run_python_benchmark(
     if repeat_timeout_seconds <= 0:
         raise ValueError("repeat_timeout_seconds must be positive")
 
-    print("Python warm-up: starting", flush=True)
-    warmup = _run_python_repeat(point_count, repeat_timeout_seconds)
-    print(
-        "Python warm-up: complete "
-        f"({warmup['legacy_renderer_total_seconds']:.3f} s, "
-        f"{warmup['peak_rss_mb']:.3f} MiB peak RSS)",
-        flush=True,
+    measured = _run_python_samples(
+        point_count, repeats, repeat_timeout_seconds, label="Python"
     )
-
-    measured: list[dict] = []
-    for iteration in range(1, repeats + 1):
-        print(f"Python repeat {iteration}/{repeats}: starting", flush=True)
-        result = _run_python_repeat(point_count, repeat_timeout_seconds)
-        measured.append(result)
-        print(
-            f"Python repeat {iteration}/{repeats}: complete "
-            f"({result['legacy_renderer_total_seconds']:.3f} s, "
-            f"{result['peak_rss_mb']:.3f} MiB peak RSS)",
-            flush=True,
-        )
 
     payload_sizes = {int(result["payload_bytes"]) for result in measured}
     if len(payload_sizes) != 1:
         raise RuntimeError(f"Python repeat payload sizes differ: {sorted(payload_sizes)}")
+    for metric in ("arrow_payload_bytes", "external_html_bytes"):
+        values = {int(result[metric]) for result in measured}
+        if len(values) != 1:
+            raise RuntimeError(f"Python repeat {metric} values differ: {sorted(values)}")
 
     preparation = _summarize_worker_results(
         measured, "legacy_renderer_preparation_seconds"
@@ -526,8 +653,10 @@ def run_python_benchmark(
 
     browser = run_browser_benchmark(repeats)
     result = {
+        "arrow_payload_bytes": int(measured[0]["arrow_payload_bytes"]),
         "browser": browser,
         "environment": _environment(browser),
+        "external_html_bytes": int(measured[0]["external_html_bytes"]),
         "legacy_renderer_preparation": preparation,
         "legacy_renderer_total": legacy_total,
         "payload_bytes": payload_sizes.pop(),
@@ -535,7 +664,27 @@ def run_python_benchmark(
         "plotly_construction": plotly_construction,
         "point_count": point_count,
         "scene_compile": scene_compile,
+        "raw_repetitions": measured,
+        "viewport_warm": {
+            "median_ms": percentile(
+                [value for item in measured for value in item["viewport_warm_ms"]], 50
+            ),
+            "p95_ms": percentile(
+                [value for item in measured for value in item["viewport_warm_ms"]], 95
+            ),
+        },
     }
+    if ordinary_points is not None:
+        if ordinary_points <= 0:
+            raise ValueError("ordinary_points must be positive")
+        ordinary = _run_python_samples(
+            ordinary_points, repeats, repeat_timeout_seconds, label="Ordinary chart"
+        )
+        result["ordinary_chart"] = {
+            **_summarize_worker_results(ordinary, "legacy_renderer_total_seconds"),
+            "point_count": ordinary_points,
+            "raw_repetitions": ordinary,
+        }
     validate_benchmark_artifact(result)
     return result
 
@@ -544,6 +693,9 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--points", type=int, default=974_153)
     parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument("--ordinary-points", type=int)
+    parser.add_argument("--baseline", type=Path)
+    parser.add_argument("--enforce", action="store_true")
     parser.add_argument("--repeat-timeout-seconds", type=float, default=300.0)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--python-worker", action="store_true", help=argparse.SUPPRESS)
@@ -561,6 +713,7 @@ def main() -> None:
         args.points,
         args.repeats,
         repeat_timeout_seconds=args.repeat_timeout_seconds,
+        ordinary_points=args.ordinary_points,
     )
     validate_benchmark_artifact(result)
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -568,6 +721,14 @@ def main() -> None:
         json.dumps(result, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    if args.baseline is not None:
+        before = json.loads(args.baseline.read_text(encoding="utf-8"))
+        failures = compare_results(before, result)
+        if failures:
+            print("Performance gate failures:", file=sys.stderr)
+            print("\n".join(f"- {failure}" for failure in failures), file=sys.stderr)
+            if args.enforce:
+                raise SystemExit(1)
     print(json.dumps(result, indent=2, sort_keys=True))
 
 
