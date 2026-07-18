@@ -60,6 +60,12 @@ from starplot.interactive.web_export import (
     LibraryMode,
     export_scene_html,
 )
+from starplot.interactive.scene_provider import (
+    CatalogDetailProvider,
+    LayerRequest,
+    SceneProvider,
+    SceneResponse,
+)
 
 __all__ = [
     "InteractiveMapPlot",
@@ -94,4 +100,8 @@ __all__ = [
     "LibraryMode",
     "ExportResult",
     "export_scene_html",
+    "CatalogDetailProvider",
+    "LayerRequest",
+    "SceneResponse",
+    "SceneProvider",
 ]
