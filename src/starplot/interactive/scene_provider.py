@@ -124,9 +124,10 @@ class SceneProvider:
             )
             names = set(decoded.data.columns)
             if wire_layer.interaction is InteractionPolicy.NONE:
-                forbidden = names.intersection(
-                    {"object_id", "name", "magnitude", "ra", "dec"}
-                )
+                # Magnitude is a rendering/LOD ordering input, not hover
+                # metadata. It remains available to generic policies even
+                # when the browser exposes no hover interaction.
+                forbidden = names.intersection({"object_id", "name", "ra", "dec"})
                 if forbidden:
                     raise ValueError(
                         "NONE interaction layers cannot retain hover or object metadata"

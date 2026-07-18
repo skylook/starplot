@@ -8,6 +8,7 @@ import pytest
 
 from starplot.interactive import (
     ColumnarData,
+    FullResolutionPolicy,
     MagnitudeLodPolicy,
     SceneKind,
     SceneLayer,
@@ -125,3 +126,29 @@ def test_viewport_request_validates_bounds_and_has_generic_cache_parts():
         ViewportRequest(x_min=2, x_max=1)
     request = ViewportRequest(x_min=0, x_max=1, pixel_width=100, lod=2)
     assert request.cache_key_parts() == (0.0, 1.0, None, None, 100, None, 2, None, None)
+
+
+def test_viewport_filter_decodes_relative_transport_coordinates_before_cropping():
+    layer = _layer(
+        "relative",
+        {
+            "x": np.array([0.0, 1.0], dtype=np.float32),
+            "y": np.array([0.0, 0.0], dtype=np.float32),
+            "size": np.ones(2, dtype=np.float32),
+            "color_index": np.zeros(2, dtype=np.uint8),
+            "opacity": np.ones(2, dtype=np.float32),
+        },
+    )
+    layer = SceneLayer(
+        **{
+            **layer.__dict__,
+            "coordinate_encoding": {
+                "x": CoordinateEncoding(CoordinateEncodingKind.RELATIVE_F32, origin=100, scale=10),
+                "y": CoordinateEncoding(CoordinateEncodingKind.RELATIVE_F32, origin=0, scale=1),
+            },
+        }
+    )
+    selected = FullResolutionPolicy().select(
+        layer, ViewportRequest(x_min=109, x_max=111, y_min=-1, y_max=1)
+    )
+    assert selected.tolist() == [False, True]

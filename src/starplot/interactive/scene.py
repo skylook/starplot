@@ -303,6 +303,17 @@ def viewport_mask(x: np.ndarray, y: np.ndarray, request: ViewportRequest) -> np.
     return mask
 
 
+def final_scene_coordinates(layer: "SceneLayer") -> tuple[np.ndarray, np.ndarray]:
+    """Decode transport columns into final projected Scene coordinates."""
+    try:
+        return (
+            layer.coordinate_encoding["x"].decode(layer.data["x"]),
+            layer.coordinate_encoding["y"].decode(layer.data["y"]),
+        )
+    except KeyError as error:
+        raise ValueError("viewport filtering requires x/y Scene coordinates") from error
+
+
 class FullResolutionPolicy:
     """Crop a final-coordinate layer but never apply data reduction."""
 
@@ -313,7 +324,8 @@ class FullResolutionPolicy:
             or "y" not in layer.data.columns
         ):
             return np.ones(layer.data.row_count, dtype=np.bool_)
-        return viewport_mask(layer.data["x"], layer.data["y"], request)
+        x, y = final_scene_coordinates(layer)
+        return viewport_mask(x, y, request)
 
 
 class MagnitudeLodPolicy:
@@ -324,7 +336,8 @@ class MagnitudeLodPolicy:
             return np.ones(layer.data.row_count, dtype=np.bool_)
         if "magnitude" not in layer.data.columns:
             raise ValueError("MagnitudeLodPolicy requires a magnitude Scene column")
-        visible = viewport_mask(layer.data["x"], layer.data["y"], request)
+        x, y = final_scene_coordinates(layer)
+        visible = viewport_mask(x, y, request)
         magnitude = layer.data["magnitude"]
         if request.magnitude_max is not None:
             visible &= magnitude <= request.magnitude_max
