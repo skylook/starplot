@@ -25,6 +25,7 @@ from starplot.interactive.scene_manifest import (
     DataSourceModel,
     build_scene_manifest,
     canonical_manifest_bytes,
+    parse_scene_manifest,
 )
 
 
@@ -229,6 +230,9 @@ def export_scene_html(
         data_sources=sources,
     )
     manifest_bytes = canonical_manifest_bytes(manifest)
+    # Exercise the same bounded decoder that framework/API consumers use before
+    # writing an export.  This is deliberately validation, not reserialization.
+    parse_scene_manifest(manifest_bytes)
     manifest_value = json.loads(manifest_bytes)
     if mode is DataMode.EXTERNAL:
         temporary = Path(tempfile.mkdtemp(prefix=f".{bundle.name}.", dir=bundle.parent))

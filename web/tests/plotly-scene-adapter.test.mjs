@@ -483,7 +483,7 @@ test("hover is bounded, invalid gradient bounds skip closed, and radial defaults
   assert.ok(Number.isFinite(radial.z[centerRow][nearOriginCol]), "implicit radius must be based on the default center");
 });
 
-test("optional layer failures stay hidden while required failures purge partial rendering", async () => {
+test("optional layer failures do not block safe layers and required failures preserve them", async () => {
   const calls = { restyle: [], relayout: [] };
   const Plotly = { async react() {}, async restyle(...args) { calls.restyle.push(args); }, async relayout(...args) { calls.relayout.push(args); } };
   const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
@@ -493,8 +493,6 @@ test("optional layer failures stay hidden while required failures purge partial 
     async *loadLayer(current) { if (current.id !== "good") throw new Error(`${current.id} failed`); for (const batch of tables.line().batches) yield batch; },
   };
   await assert.rejects(runtime.renderScene("chart", source, { Plotly }), /required failed/);
-  assert.equal(calls.restyle.length, 2, "one completed update plus one required-failure purge");
+  assert.equal(calls.restyle.length, 1, "the completed safe layer remains visible");
   assert.deepEqual(Array.from(calls.restyle.at(-1)[2]), [0]);
-  assert.equal(calls.relayout.at(-1)[1].annotations.length, 0);
-  assert.equal(calls.relayout.at(-1)[1].shapes.length, 0);
 });

@@ -489,6 +489,22 @@ def canonical_manifest_bytes(
     ).encode("utf-8")
 
 
+def parse_scene_manifest(
+    payload: bytes,
+    *,
+    limits=None,
+) -> SceneManifestModel:
+    """Parse untrusted manifest bytes with the transport resource limits applied."""
+    from starplot.interactive.scene_validation import (
+        DEFAULT_LOADER_LIMITS,
+        validate_manifest_bytes,
+    )
+
+    return validate_manifest_bytes(
+        payload, DEFAULT_LOADER_LIMITS if limits is None else limits
+    )
+
+
 def scene_content_hash(
     manifest: SceneManifestModel,
     layers: Mapping[str, bytes | str] | Sequence[bytes | str],

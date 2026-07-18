@@ -15,6 +15,44 @@
   const MAX_INTERACTIVE_HOVER_POINTS = 100000;
   const layoutEffects = new WeakMap();
 
+  function escapePlotlyText(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function safePlotlyText(value) {
+    return escapePlotlyText(value).replaceAll("\n", "<br>");
+  }
+
+  function layerFailureMessage(layer, error) {
+    const message = error && error.message ? String(error.message) : "layer could not be loaded";
+    return `Layer ${String(layer.id)} could not be loaded: ${message.replace(/https?:\/\/[^\s)]+/g, "remote data")}`;
+  }
+
+  function showLayerFailure(target, layer, error, retry, optional) {
+    if (!target || !target.ownerDocument || typeof target.ownerDocument.createElement !== "function") return;
+    const document = target.ownerDocument;
+    const id = `starplot-layer-error-${String(layer.id).replace(/[^A-Za-z0-9_-]/g, "-")}`;
+    let notice = document.getElementById(id);
+    if (!notice) {
+      notice = document.createElement("div"); notice.id = id; notice.setAttribute("role", "alert");
+      notice.style.cssText = "position:absolute;left:1rem;right:1rem;bottom:1rem;padding:.75rem;background:#300;color:#fff;z-index:10";
+      target.parentNode && target.parentNode.appendChild(notice);
+    }
+    notice.replaceChildren();
+    const text = document.createElement("span");
+    text.textContent = `${optional ? "Warning: " : "Error: "}${layerFailureMessage(layer, error)}`;
+    notice.appendChild(text);
+    if (typeof retry === "function") {
+      const button = document.createElement("button"); button.type = "button"; button.textContent = "Retry";
+      button.addEventListener("click", retry, { once: true }); notice.appendChild(document.createTextNode(" ")); notice.appendChild(button);
+    }
+  }
+
   function hiddenLayerTrace(layer) {
     if (traceTypeForLayer(layer) === "heatmap") {
       return { type: "heatmap", z: [[null]], hoverinfo: "skip", showscale: false, visible: false };
@@ -196,9 +234,9 @@
         return result;
       });
       trace.customdata = Array.from({ length: table.numRows }, (_, row) =>
-        values.map((items) => items[row]));
+        values.map((items) => typeof items[row] === "string" ? escapePlotlyText(items[row]) : items[row]));
       trace.hovertemplate = layer.hover_fields
-        .map((name, index) => `${name}: %{customdata[${index}]}`)
+        .map((name, index) => `${escapePlotlyText(name)}: %{customdata[${index}]}`)
         .join("<br>") + "<extra></extra>";
       trace.hoverinfo = "all";
     }
@@ -309,7 +347,7 @@
   }
 
   function textTrace(layer, table, scene, style) {
-    const text = Array.from(column(table, "text"), (value) => String(value).replaceAll("\n", "<br>"));
+    const text = Array.from(column(table, "text"), safePlotlyText);
     const x = decodeCoordinate(layer, table, "x");
     const y = decodeCoordinate(layer, table, "y");
     const xOffset = column(table, "x_offset");
@@ -595,6 +633,7 @@
       } catch (error) {
         if (!layer.required && !(settings.signal && settings.signal.aborted)) {
           preloadFailures.add(layer.id);
+          showLayerFailure(target, layer, error, () => renderScene(target, source, settings), true);
           continue;
         }
         throw error;
@@ -644,9 +683,13 @@
           await Plotly.relayout(target, update);
         }
       } catch (error) {
-        if (!layer.required && !(settings.signal && settings.signal.aborted)) continue;
-        if (loadedSlots.length) await Plotly.restyle(target, { visible: false }, loadedSlots);
-        await Plotly.relayout(target, { annotations: [], shapes: [] });
+        if (!layer.required && !(settings.signal && settings.signal.aborted)) {
+          showLayerFailure(target, layer, error, () => renderScene(target, source, settings), true);
+          continue;
+        }
+        if (!(settings.signal && settings.signal.aborted)) {
+          showLayerFailure(target, layer, error, () => renderScene(target, source, settings), false);
+        }
         throw error;
       }
     }
@@ -658,5 +701,6 @@
     layerToPlotlyLayoutEffects(trace) { return layoutEffects.get(trace) || {}; },
     renderScene,
     traceTypeForLayer,
+    escapePlotlyText,
   });
 })(typeof window !== "undefined" ? window : globalThis);

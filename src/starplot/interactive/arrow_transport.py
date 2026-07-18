@@ -20,6 +20,7 @@ from starplot.interactive.scene_manifest import (
     LayerManifestModel,
     _ResolvedLayerContext,
 )
+from starplot.interactive.scene_validation import DEFAULT_LOADER_LIMITS, LoaderLimits, validate_layer_bytes
 
 
 _STREAM_PREFIX = b"\xff\xff\xff\xff"
@@ -150,7 +151,10 @@ def encode_layer_stream(layer: SceneLayer, max_chunksize: int = 250_000) -> byte
 
 
 def decode_layer_stream(
-    data: bytes, resolved_layer: _ResolvedLayerContext
+    data: bytes,
+    resolved_layer: _ResolvedLayerContext,
+    *,
+    limits: LoaderLimits = DEFAULT_LOADER_LIMITS,
 ) -> SceneLayer:
     """Validate exact IPC bytes and reconstruct one immutable Scene layer."""
     if not isinstance(data, bytes):
@@ -160,6 +164,7 @@ def decode_layer_stream(
             "manifest layer must be resolved by SceneManifestModel.resolve_layer()"
         )
     manifest_layer = resolved_layer.wire
+    validate_layer_bytes(data, manifest_layer, limits)
     if len(data) != manifest_layer.byte_length:
         raise ValueError("Arrow payload byte_length does not match the manifest")
     if layer_content_hash(data) != manifest_layer.content_hash:
@@ -195,6 +200,7 @@ def decode_layer_stream(
     if table.num_rows != manifest_layer.row_count:
         raise ValueError("Arrow row count does not match the manifest")
     _validate_arrow_schema(table.schema, manifest_layer)
+    _validate_string_columns(table, limits)
 
     columns = {}
     for field, column in zip(table.schema, table.columns):
@@ -232,6 +238,19 @@ def decode_layer_stream(
     )
     _validate_layer_columns(scene_layer)
     return scene_layer
+
+
+def _validate_string_columns(table: pa.Table, limits: LoaderLimits) -> None:
+    """Avoid materializing an unbounded string cell after IPC decoding."""
+    for field, column in zip(table.schema, table.columns):
+        if not (pa.types.is_string(field.type) or pa.types.is_dictionary(field.type)):
+            continue
+        for chunk in column.iterchunks():
+            for value in chunk.to_pylist():
+                if value is not None and len(str(value).encode("utf-8")) > limits.max_string_bytes:
+                    raise ValueError(
+                        f"Arrow field {field.name!r} contains a string exceeding the configured byte limit"
+                    )
 
 
 def layer_content_hash(data: bytes) -> str:

@@ -49,6 +49,7 @@ from starplot.interactive.scene_manifest import (
     SceneManifestModel,
     build_scene_manifest,
     canonical_manifest_bytes,
+    parse_scene_manifest,
     scene_content_hash,
 )
 from starplot.interactive.arrow_transport import (
@@ -70,6 +71,7 @@ from starplot.interactive.scene_provider import (
     SceneProvider,
     SceneResponse,
 )
+from starplot.interactive.scene_validation import LoaderLimits
 
 __all__ = [
     "InteractiveMapPlot",
@@ -98,6 +100,7 @@ __all__ = [
     "SceneManifestModel",
     "build_scene_manifest",
     "canonical_manifest_bytes",
+    "parse_scene_manifest",
     "scene_content_hash",
     "decode_layer_stream",
     "encode_layer_stream",
@@ -112,4 +115,5 @@ __all__ = [
     "LayerRequest",
     "SceneResponse",
     "SceneProvider",
+    "LoaderLimits",
 ]

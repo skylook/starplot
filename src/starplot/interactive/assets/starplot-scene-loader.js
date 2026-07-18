@@ -5,6 +5,13 @@
   const HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
   const STREAM_PREFIX = [255, 255, 255, 255];
   const STREAM_EOS = [255, 255, 255, 255, 0, 0, 0, 0];
+  const DEFAULT_LOADER_LIMITS = Object.freeze({
+    max_manifest_bytes: 4 * 1024 * 1024,
+    max_layer_bytes: 512 * 1024 * 1024,
+    max_layer_rows: 10_000_000,
+    max_string_bytes: 64 * 1024,
+    max_geometry_depth: 8,
+  });
   const SCENE_FIELDS = ["schema_version", "scene_id", "content_hash", "minimum_loader_version", "viewport", "coordinate_spaces", "clips", "styles", "palettes", "layers", "capabilities", "extensions"];
   const LAYER_FIELDS = ["id", "kind", "group_id", "required", "zorder", "load_priority", "coordinate_space", "clip_id", "style_id", "interactive", "interaction", "hover_fields", "row_count", "byte_length", "content_hash", "coordinate_encoding", "data_source"];
   const CANONICAL_COLUMNS = Object.freeze({
@@ -75,6 +82,34 @@
 
   function isPlainObject(value) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function loaderLimits(value) {
+    const limits = { ...DEFAULT_LOADER_LIMITS, ...(value || {}) };
+    for (const [name, limit] of Object.entries(limits)) {
+      if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error(`invalid loader limit ${name}`);
+    }
+    return Object.freeze(limits);
+  }
+
+  function utf8Length(value) { return new TextEncoder().encode(value).byteLength; }
+
+  function validateJsonLimits(value, limits, depth = 0) {
+    if (depth > limits.max_geometry_depth) throw new Error("Scene manifest exceeds the configured geometry depth");
+    if (typeof value === "string") {
+      if (utf8Length(value) > limits.max_string_bytes) throw new Error("Scene manifest contains a string exceeding the configured byte limit");
+      return;
+    }
+    if (typeof value === "number" && !Number.isFinite(value)) throw new Error("Scene manifest contains non-finite numeric bounds");
+    if (Array.isArray(value)) value.forEach((item) => validateJsonLimits(item, limits, depth + 1));
+    else if (isPlainObject(value)) Object.entries(value).forEach(([key, item]) => {
+      validateJsonLimits(key, limits, depth + 1); validateJsonLimits(item, limits, depth + 1);
+    });
+  }
+
+  function validateLayerLimits(layer, limits) {
+    if (layer.byte_length > limits.max_layer_bytes) throw new Error(`layer ${layer.id} exceeds the configured byte limit`);
+    if (layer.row_count > limits.max_layer_rows) throw new Error(`layer ${layer.id} exceeds the configured row limit`);
   }
 
   function comparePythonStrings(left, right) {
@@ -244,7 +279,8 @@
     throw new Error("canonical manifest JSON is missing top-level content_hash");
   }
 
-  async function validateManifest(manifest, canonicalText) {
+  async function validateManifest(manifest, canonicalText, limits = DEFAULT_LOADER_LIMITS) {
+    limits = loaderLimits(limits);
     if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
       throw new Error("Scene manifest must be an object");
     }
@@ -253,6 +289,10 @@
     if (schema[0] !== 1) {
       throw new Error(`unsupported Scene schema major version ${schema[0]}`);
     }
+    if (typeof canonicalText !== "string" || utf8Length(canonicalText) > limits.max_manifest_bytes) {
+      throw new Error("Scene manifest exceeds the configured byte limit");
+    }
+    validateJsonLimits(manifest, limits);
     const minimum = parseVersion(
       manifest.minimum_loader_version,
       "minimum_loader_version",
@@ -303,6 +343,7 @@
     }
     for (const layer of manifest.layers) {
       validateLayer(layer);
+      validateLayerLimits(layer, limits);
       if (layerIds.has(layer.id)) throw new Error(`duplicate Scene layer id: ${layer.id}`);
       layerIds.add(layer.id);
       if (layer.style_id !== null && !styleIds.has(layer.style_id)) throw new Error(`layer ${layer.id} references an unknown style id`);
@@ -541,6 +582,36 @@
     return response;
   }
 
+  function externalFileError() {
+    return new Error('External Scene data cannot be loaded from file://. Use starplot serve <directory> or data_mode="inline".');
+  }
+
+  function safeRequestError(error, url) {
+    if (error && error.name === "AbortError") throw error;
+    if (String(url).startsWith("file:")) throw externalFileError();
+    const origin = (() => { try { return new URL(url).origin; } catch (_error) { return "unknown origin"; } })();
+    const message = error && error.message ? String(error.message) : "network request failed";
+    if (/cors|failed to fetch|network/i.test(message)) {
+      return new Error(`Scene request failed for ${origin}; configure CORS for the chart origin.`);
+    }
+    return new Error(`Scene request failed for ${origin}: ${message.replace(/https?:\/\/[^\s)]+/g, origin)}`);
+  }
+
+  async function fetchWithRetry(fetchImpl, url, signal) {
+    const delays = [0, 250, 500];
+    let lastError;
+    for (let attempt = 0; attempt < delays.length; attempt += 1) {
+      assertNotAborted(signal);
+      if (delays[attempt]) await new Promise((resolve) => global.setTimeout(resolve, delays[attempt]));
+      try { return checkedResponse(await fetchImpl(url, { signal }), url); }
+      catch (error) {
+        if (error && error.name === "AbortError") throw error;
+        lastError = error;
+      }
+    }
+    throw safeRequestError(lastError, url);
+  }
+
   function appendRequest(url, request) {
     if (!request) return url;
     const result = new URL(url);
@@ -560,6 +631,7 @@
   class BaseSceneSource {
     constructor(options) {
       this.options = options || {};
+      this.limits = loaderLimits(this.options.loaderLimits);
       this._manifest = null;
     }
 
@@ -573,9 +645,11 @@
 
     async *loadLayer(layer, request, signal) {
       validateLayer(layer);
+      validateLayerLimits(layer, this.limits);
       assertNotAborted(signal);
       const bytes = asBytes(await this._readLayer(layer, request, signal));
       assertNotAborted(signal);
+      if (bytes.byteLength > this.limits.max_layer_bytes) throw new Error(`layer ${layer.id} exceeds the configured byte limit`);
       const isViewportResponse = hasViewportParameters(request);
       if (!isViewportResponse && bytes.byteLength !== layer.byte_length) {
         throw new Error(`Arrow byte length does not match manifest for layer ${layer.id}`);
@@ -605,6 +679,18 @@
         assertNotAborted(signal);
         validateBatchNullability(batch, layer);
         rows += batch.numRows;
+        if (rows > this.limits.max_layer_rows) throw new Error(`layer ${layer.id} exceeds the configured row limit`);
+        for (const field of batch.schema.fields) {
+          const values = batch.getChild(field.name);
+          if (values && /Utf8/.test(String(field.type))) {
+            for (let index = 0; index < values.length; index += 1) {
+              const value = values.get(index);
+              if (value !== null && value !== undefined && utf8Length(String(value)) > this.limits.max_string_bytes) {
+                throw new Error(`Arrow field ${field.name} contains a string exceeding the configured byte limit`);
+              }
+            }
+          }
+        }
         yield batch;
       }
       if (!isViewportResponse && rows !== layer.row_count) {
@@ -625,7 +711,7 @@
 
     async loadManifest(_signal) {
       assertNotAborted(_signal);
-      if (!this._manifest) this._manifest = await validateManifest(this.options.manifest, this.options.manifestJson);
+      if (!this._manifest) this._manifest = await validateManifest(this.options.manifest, this.options.manifestJson, this.limits);
       return this._manifest;
     }
 
@@ -663,19 +749,23 @@
 
     async _fetchManifest(url, signal) {
       assertNotAborted(signal);
-      const response = checkedResponse(await this.fetch(url, { signal }), url);
+      if (new URL(url).protocol === "file:") throw externalFileError();
+      const response = await fetchWithRetry(this.fetch, url, signal);
       assertNotAborted(signal);
       if (typeof response.text !== "function") throw new Error("Scene manifest response must expose exact text bytes");
       const text = await response.text();
       let manifest;
       try { manifest = JSON.parse(text); } catch (error) { throw new Error("Scene manifest is not valid JSON", { cause: error }); }
-      this._manifest = await validateManifest(manifest, text);
+      this._manifest = await validateManifest(manifest, text, this.limits);
       this.manifestUrl = response.url || url;
       return this._manifest;
     }
 
     async _readLayer(layer, request, signal) {
       const url = appendRequest(new URL(layer.data_source.uri, this.manifestUrl || this.baseUrl).href, request);
+      const protocol = new URL(url).protocol;
+      if (protocol === "file:") throw externalFileError();
+      if (protocol !== "http:" && protocol !== "https:") throw new Error(`layer URL must use HTTP(S) for layer ${layer.id}`);
       const manifestOrigin = new URL(this.manifestUrl || this.baseUrl).origin;
       const allowedOrigins = this.allowedDataOrigins.length
         ? this.allowedDataOrigins
@@ -683,7 +773,7 @@
       if (!allowedOrigins.includes(new URL(url).origin)) {
         throw new Error(`layer URL origin is not allowed for layer ${layer.id}`);
       }
-      const response = checkedResponse(await this.fetch(url, { signal }), url);
+      const response = await fetchWithRetry(this.fetch, url, signal);
       return new Uint8Array(await response.arrayBuffer());
     }
   }
