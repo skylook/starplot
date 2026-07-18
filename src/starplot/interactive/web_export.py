@@ -109,6 +109,15 @@ def _json_script(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
 
 
+def _scene_id(layer_bytes: Mapping[str, bytes]) -> str:
+    """Stable transport identity, deliberately independent of the output path."""
+    digest = hashlib.sha256()
+    for layer_id in sorted(layer_bytes):
+        digest.update(layer_id.encode("utf-8"))
+        digest.update(layer_bytes[layer_id])
+    return f"scene-{digest.hexdigest()[:16]}"
+
+
 def _libraries(mode: LibraryMode, bundle: Path | None) -> tuple[str, str]:
     try:
         from plotly.offline import get_plotlyjs, get_plotlyjs_version
@@ -217,7 +226,7 @@ def export_scene_html(
         for layer in scene.layers
     }
     manifest = build_scene_manifest(
-        scene_id=output.stem,
+        scene_id=_scene_id(layer_bytes),
         layers=scene.layers,
         layer_bytes=layer_bytes,
         viewport=scene.viewport,
