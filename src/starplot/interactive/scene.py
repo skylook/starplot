@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import astuple, dataclass, field
 from enum import StrEnum
 import math
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 import numpy as np
 
@@ -225,6 +225,121 @@ class SceneCapabilities:
     def __post_init__(self):
         if self.max_batch_rows <= 0:
             raise ValueError("max_batch_rows must be greater than zero")
+
+
+@dataclass(frozen=True)
+class ViewportRequest:
+    """A renderer-neutral request expressed in final Scene coordinates."""
+
+    x_min: float | None = None
+    x_max: float | None = None
+    y_min: float | None = None
+    y_max: float | None = None
+    pixel_width: int | None = None
+    pixel_height: int | None = None
+    lod: int | None = None
+    magnitude_max: float | None = None
+    point_budget: int | None = None
+
+    def __post_init__(self):
+        for name in ("x_min", "x_max", "y_min", "y_max", "magnitude_max"):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, (int, float)) or not math.isfinite(value)
+            ):
+                raise ValueError(f"{name} must be a finite number or None")
+            if value is not None:
+                object.__setattr__(self, name, float(value))
+        for lower, upper in (("x_min", "x_max"), ("y_min", "y_max")):
+            if (
+                getattr(self, lower) is not None
+                and getattr(self, upper) is not None
+                and getattr(self, lower) > getattr(self, upper)
+            ):
+                raise ValueError(f"{lower} must be less than or equal to {upper}")
+        for name in ("pixel_width", "pixel_height", "lod", "point_budget"):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+            ):
+                raise ValueError(f"{name} must be a non-negative integer or None")
+        if self.pixel_width == 0 or self.pixel_height == 0:
+            raise ValueError("pixel dimensions must be greater than zero")
+
+    @classmethod
+    def full(cls) -> "ViewportRequest":
+        return cls()
+
+    @property
+    def is_full(self) -> bool:
+        return all(value is None for value in astuple(self))
+
+    def cache_key_parts(self) -> tuple[object, ...]:
+        """Canonical, data-independent request identity for provider caches."""
+
+        def quantize(value: object) -> object:
+            return round(value, 8) if isinstance(value, float) else value
+
+        return tuple(quantize(value) for value in astuple(self))
+
+
+class LodPolicy(Protocol):
+    """Select rows from a final, compiled Scene layer for one request."""
+
+    def select(self, layer: "SceneLayer", request: ViewportRequest) -> np.ndarray: ...
+
+
+def viewport_mask(x: np.ndarray, y: np.ndarray, request: ViewportRequest) -> np.ndarray:
+    """Filter only final Scene coordinates; never catalog RA/Dec or projection data."""
+    mask = np.ones(len(x), dtype=np.bool_)
+    if request.x_min is not None:
+        mask &= x >= request.x_min
+    if request.x_max is not None:
+        mask &= x <= request.x_max
+    if request.y_min is not None:
+        mask &= y >= request.y_min
+    if request.y_max is not None:
+        mask &= y <= request.y_max
+    return mask
+
+
+class FullResolutionPolicy:
+    """Crop a final-coordinate layer but never apply data reduction."""
+
+    def select(self, layer: "SceneLayer", request: ViewportRequest) -> np.ndarray:
+        if (
+            request.is_full
+            or "x" not in layer.data.columns
+            or "y" not in layer.data.columns
+        ):
+            return np.ones(layer.data.row_count, dtype=np.bool_)
+        return viewport_mask(layer.data["x"], layer.data["y"], request)
+
+
+class MagnitudeLodPolicy:
+    """Crop then retain a stable bright-first subset of a scatter layer."""
+
+    def select(self, layer: "SceneLayer", request: ViewportRequest) -> np.ndarray:
+        if "x" not in layer.data.columns or "y" not in layer.data.columns:
+            return np.ones(layer.data.row_count, dtype=np.bool_)
+        if "magnitude" not in layer.data.columns:
+            raise ValueError("MagnitudeLodPolicy requires a magnitude Scene column")
+        visible = viewport_mask(layer.data["x"], layer.data["y"], request)
+        magnitude = layer.data["magnitude"]
+        if request.magnitude_max is not None:
+            visible &= magnitude <= request.magnitude_max
+        if request.point_budget is None or visible.sum() <= request.point_budget:
+            return visible
+        candidates = np.flatnonzero(visible)
+        # mergesort preserves original row order for equal magnitudes. Non-finite
+        # values sort last, so an unknown magnitude is never promoted as bright.
+        ordering = np.argsort(
+            np.where(np.isfinite(magnitude[candidates]), magnitude[candidates], np.inf),
+            kind="stable",
+        )
+        selected = np.zeros(layer.data.row_count, dtype=np.bool_)
+        selected[candidates[ordering[: request.point_budget]]] = True
+        return selected
 
 
 @dataclass(frozen=True)

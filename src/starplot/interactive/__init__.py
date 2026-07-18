@@ -28,11 +28,15 @@ from starplot.interactive.commands import DrawingCommand
 from starplot.interactive.recorder import DrawingRecorder
 from starplot.interactive.scene import (
     ColumnarData,
+    FullResolutionPolicy,
     InteractionPolicy,
+    LodPolicy,
+    MagnitudeLodPolicy,
     SceneCapabilities,
     SceneKind,
     SceneLayer,
     ScenePackage,
+    ViewportRequest,
     readonly_array,
 )
 from starplot.interactive.recording_mixin import RecordingMixin
@@ -76,6 +80,10 @@ __all__ = [
     "DrawingRecorder",
     "readonly_array",
     "ColumnarData",
+    "ViewportRequest",
+    "LodPolicy",
+    "FullResolutionPolicy",
+    "MagnitudeLodPolicy",
     "InteractionPolicy",
     "SceneCapabilities",
     "SceneKind",

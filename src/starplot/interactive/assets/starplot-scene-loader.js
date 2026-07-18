@@ -550,6 +550,13 @@
     return result.href;
   }
 
+  function hasViewportParameters(request) {
+    return Boolean(request) && [
+      "x_min", "x_max", "y_min", "y_max", "pixel_width", "pixel_height",
+      "lod", "magnitude_max", "point_budget",
+    ].some((name) => request[name] !== undefined && request[name] !== null);
+  }
+
   class BaseSceneSource {
     constructor(options) {
       this.options = options || {};
@@ -569,10 +576,11 @@
       assertNotAborted(signal);
       const bytes = asBytes(await this._readLayer(layer, request, signal));
       assertNotAborted(signal);
-      if (bytes.byteLength !== layer.byte_length) {
+      const isViewportResponse = hasViewportParameters(request);
+      if (!isViewportResponse && bytes.byteLength !== layer.byte_length) {
         throw new Error(`Arrow byte length does not match manifest for layer ${layer.id}`);
       }
-      if (await sha256(bytes) !== layer.content_hash) {
+      if (!isViewportResponse && await sha256(bytes) !== layer.content_hash) {
         throw new Error(`Arrow SHA-256 does not match manifest for layer ${layer.id}`);
       }
       if (
@@ -599,7 +607,7 @@
         rows += batch.numRows;
         yield batch;
       }
-      if (rows !== layer.row_count) {
+      if (!isViewportResponse && rows !== layer.row_count) {
         throw new Error(`Arrow row count does not match manifest for layer ${layer.id}`);
       }
     }
@@ -724,12 +732,78 @@
     return new (arrow().Table)(batches);
   }
 
+  class ViewportRequestScheduler {
+    // Debounce and atomically apply capability-negotiated layer replacements.
+
+    constructor(options) {
+      const { source, manifest, applyLayer, debounceMs = 150 } = options || {};
+      if (!source || typeof source.loadLayer !== "function") throw new Error("source must implement loadLayer");
+      if (!manifest || !manifest.capabilities || !manifest.capabilities.viewport_query) {
+        this.enabled = false;
+        return;
+      }
+      if (typeof applyLayer !== "function") throw new Error("applyLayer is required");
+      this.enabled = true;
+      this.source = source;
+      this.manifest = manifest;
+      this.applyLayer = applyLayer;
+      this.debounceMs = debounceMs;
+      this._setTimeout = options.setTimeout || global.setTimeout;
+      this._clearTimeout = options.clearTimeout || global.clearTimeout;
+      this._AbortController = options.AbortController || global.AbortController;
+      if (typeof this._setTimeout !== "function" || typeof this._clearTimeout !== "function") {
+        throw new Error("viewport scheduling requires timer functions");
+      }
+      if (typeof this._AbortController !== "function") throw new Error("viewport scheduling requires AbortController");
+      this._states = new Map();
+    }
+
+    schedule(request) {
+      if (!this.enabled || !hasViewportParameters(request)) return;
+      for (const layer of this.manifest.layers) {
+        if (layer.coordinate_space !== "data") continue;
+        let state = this._states.get(layer.id);
+        if (!state) {
+          state = { generation: 0, controller: null, timer: null };
+          this._states.set(layer.id, state);
+        }
+        state.generation += 1;
+        const generation = state.generation;
+        if (state.timer !== null) this._clearTimeout(state.timer);
+        if (state.controller) state.controller.abort();
+        state.timer = this._setTimeout(async () => {
+          state.timer = null;
+          const controller = new this._AbortController();
+          state.controller = controller;
+          try {
+            const table = await collectLayerTable(this.source, layer, request, controller.signal);
+            if (state.generation === generation && !controller.signal.aborted) {
+              await this.applyLayer(layer, table, request);
+            }
+          } catch (error) {
+            if (!(error && error.name === "AbortError")) throw error;
+          } finally {
+            if (state.controller === controller) state.controller = null;
+          }
+        }, this.debounceMs);
+      }
+    }
+
+    cancel() {
+      for (const state of this._states.values()) {
+        if (state.timer !== null) this._clearTimeout(state.timer);
+        if (state.controller) state.controller.abort();
+      }
+    }
+  }
+
   global.StarplotScene = Object.assign(global.StarplotScene || {}, {
     BaseSceneSource,
     InlineSceneSource,
     StaticSceneSource,
     RemoteSceneSource,
     ApiSceneSource,
+    ViewportRequestScheduler,
     collectLayerTable,
     validateManifest,
   });

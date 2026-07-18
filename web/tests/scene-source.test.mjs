@@ -77,6 +77,46 @@ test("loadLayer combines no batches and preserves abort signals", async () => {
   assert.equal(receivedSignal, controller.signal);
 });
 
+test("viewport scheduling debounces, aborts, and ignores stale layer generations", async () => {
+  const runtime = await loadRuntime(["starplot-scene-loader.js"]);
+  const table = Arrow.tableFromArrays({ x: new Float64Array([0]), y: new Float64Array([0]) });
+  const layer = { id: "stars", coordinate_space: "data" };
+  const source = {
+    async *loadLayer(_layer, request) {
+      await new Promise((resolve) => setTimeout(resolve, request.x_min === 1 ? 25 : 1));
+      for (const batch of table.batches) yield batch;
+    },
+  };
+  const Plotly = { calls: [], async react(_target, _table, request) { this.calls.push(request.x_min); } };
+  const scheduler = new runtime.ViewportRequestScheduler({
+    source,
+    manifest: { capabilities: { viewport_query: true }, layers: [layer] },
+    debounceMs: 1,
+    setTimeout,
+    clearTimeout,
+    AbortController,
+    applyLayer: async (_layer, current, request) => Plotly.react({}, current, request),
+  });
+  scheduler.schedule({ x_min: 1, x_max: 2 });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  scheduler.schedule({ x_min: 3, x_max: 4 });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.deepEqual(Plotly.calls, [3]);
+});
+
+test("viewport scheduling keeps complete layers when capability is absent", async () => {
+  const runtime = await loadRuntime(["starplot-scene-loader.js"]);
+  let loads = 0;
+  const scheduler = new runtime.ViewportRequestScheduler({
+    source: { async *loadLayer() { loads += 1; } },
+    manifest: { capabilities: { viewport_query: false }, layers: [] },
+    applyLayer() { throw new Error("must not render viewport response"); },
+  });
+  scheduler.schedule({ x_min: 0, x_max: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 160));
+  assert.equal(loads, 0);
+});
+
 test("loader rejects Arrow IPC File containers and streams without canonical EOS", async () => {
   const fixture = await sceneFixture();
   const runtime = await loadRuntime(["starplot-scene-loader.js"]);
