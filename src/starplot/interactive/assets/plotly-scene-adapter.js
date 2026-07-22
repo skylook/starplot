@@ -375,6 +375,12 @@
       }));
     const [xref, yref] = coordinateRefs(layer, style);
     if (xref !== "x" || yref !== "y") {
+      // Use axis references (x3/y3) instead of "paper" so coordinates are
+      // relative to the axes area (matching matplotlib's transAxes), not the
+      // full figure.  Plotly "paper" coords include margins, which displaces
+      // paper-space polygons like arrows.
+      const shapeXref = xref === "paper" ? "x3" : xref;
+      const shapeYref = yref === "paper" ? "y3" : yref;
       const shapes = [];
       for (const polygon of orderedPolygons) {
         let path = "";
@@ -382,7 +388,7 @@
           if (ring.points.length >= 3) path += ` M ${ring.points.map((point) => `${point.x},${point.y}`).join(" L ")} Z`;
         }
         if (path) shapes.push({
-          type: "path", path: path.trim(), xref, yref, fillrule: "evenodd",
+          type: "path", path: path.trim(), xref: shapeXref, yref: shapeYref, fillrule: "evenodd",
           fillcolor: style.fill_color && String(style.fill_color).toLowerCase() !== "none" ? style.fill_color : "rgba(0,0,0,0)",
           line: { ...lineStyle(style), color: style.edge_color || "rgba(0,0,0,0)" },
           opacity: style.alpha === undefined ? 1 : Number(style.alpha),

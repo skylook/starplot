@@ -875,6 +875,24 @@
           2.0
         ]
       },
+      "xaxis3": {
+        "range": [
+          0,
+          1
+        ],
+        "overlaying": "x",
+        "visible": false,
+        "fixedrange": true
+      },
+      "yaxis3": {
+        "range": [
+          0,
+          1
+        ],
+        "overlaying": "y",
+        "visible": false,
+        "fixedrange": true
+      },
       "legend": {
         "font": {
           "color": "#ffffff",
@@ -1741,6 +1759,24 @@
           -2.0,
           2.0
         ]
+      },
+      "xaxis3": {
+        "range": [
+          0,
+          1
+        ],
+        "overlaying": "x",
+        "visible": false,
+        "fixedrange": true
+      },
+      "yaxis3": {
+        "range": [
+          0,
+          1
+        ],
+        "overlaying": "y",
+        "visible": false,
+        "fixedrange": true
       },
       "legend": {
         "font": {
@@ -2616,6 +2652,24 @@
           2.0
         ]
       },
+      "xaxis3": {
+        "range": [
+          0,
+          1
+        ],
+        "overlaying": "x",
+        "visible": false,
+        "fixedrange": true
+      },
+      "yaxis3": {
+        "range": [
+          0,
+          1
+        ],
+        "overlaying": "y",
+        "visible": false,
+        "fixedrange": true
+      },
       "legend": {
         "font": {
           "color": "#ffffff",
@@ -3481,6 +3535,24 @@
           2.0
         ]
       },
+      "xaxis3": {
+        "range": [
+          0,
+          1
+        ],
+        "overlaying": "x",
+        "visible": false,
+        "fixedrange": true
+      },
+      "yaxis3": {
+        "range": [
+          0,
+          1
+        ],
+        "overlaying": "y",
+        "visible": false,
+        "fixedrange": true
+      },
       "legend": {
         "font": {
           "color": "#ffffff",
@@ -4318,6 +4390,24 @@
           -2.0,
           2.0
         ]
+      },
+      "xaxis3": {
+        "range": [
+          0,
+          1
+        ],
+        "overlaying": "x",
+        "visible": false,
+        "fixedrange": true
+      },
+      "yaxis3": {
+        "range": [
+          0,
+          1
+        ],
+        "overlaying": "y",
+        "visible": false,
+        "fixedrange": true
       },
       "legend": {
         "font": {
@@ -15208,6 +15298,24 @@
           2.0
         ]
       },
+      "xaxis3": {
+        "range": [
+          0,
+          1
+        ],
+        "overlaying": "x",
+        "visible": false,
+        "fixedrange": true
+      },
+      "yaxis3": {
+        "range": [
+          0,
+          1
+        ],
+        "overlaying": "y",
+        "visible": false,
+        "fixedrange": true
+      },
       "legend": {
         "font": {
           "color": "#ffffff",
@@ -16045,6 +16153,24 @@
           -2.0,
           2.0
         ]
+      },
+      "xaxis3": {
+        "range": [
+          0,
+          1
+        ],
+        "overlaying": "x",
+        "visible": false,
+        "fixedrange": true
+      },
+      "yaxis3": {
+        "range": [
+          0,
+          1
+        ],
+        "overlaying": "y",
+        "visible": false,
+        "fixedrange": true
       },
       "legend": {
         "font": {

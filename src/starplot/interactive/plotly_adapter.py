@@ -307,6 +307,15 @@ class _PlotlyRenderContext:
             paper_bgcolor=paper_background,
             xaxis=xaxis,
             yaxis=yaxis,
+            # Auxiliary axes for paper-coordinate shapes.  Range [0, 1] with
+            # domain [0, 1] maps matplotlib transAxes coordinates to the axes
+            # area (after margins), not the full figure.
+            xaxis3=dict(
+                range=[0, 1], overlaying="x", visible=False, fixedrange=True,
+            ),
+            yaxis3=dict(
+                range=[0, 1], overlaying="y", visible=False, fixedrange=True,
+            ),
             hovermode="closest",
             dragmode="pan",
             showlegend=self.style_info.get("show_legend", False),
@@ -812,11 +821,16 @@ class _PlotlyRenderContext:
             if not rings:
                 continue
             if use_shapes:
+                # Use x3/y3 axes for paper-coordinate shapes so they map to
+                # the axes area (matching matplotlib transAxes), not the full
+                # figure (which includes margins).
+                shape_xref = "x3" if xref == "paper" else xref
+                shape_yref = "y3" if yref == "paper" else yref
                 self.fig.add_shape(
                     type="path",
                     path=path.strip(),
-                    xref=xref,
-                    yref=yref,
+                    xref=shape_xref,
+                    yref=shape_yref,
                     fillcolor=fill_color if has_fill else "rgba(0,0,0,0)",
                     fillrule="evenodd",
                     line=dict(color=edge_color, width=edge_width),
