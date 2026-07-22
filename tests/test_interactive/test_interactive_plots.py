@@ -155,9 +155,12 @@ def test_ecliptic_records_line():
     p = _make_map_plot()
     p.ecliptic()
 
-    line_cmds = [c for c in p._recorder.commands if c.kind == "line" and c.gid == "ecliptic-line"]
+    line_cmds = [c for c in p._recorder.commands if c.gid == "ecliptic-line"]
     assert len(line_cmds) == 1
-    assert len(line_cmds[0].data["x"]) > 10
+    # line_collection commands store segments under "lines"
+    segments = line_cmds[0].data["lines"]
+    assert len(segments) >= 1
+    assert len(segments[0]) > 10
 
 
 def test_celestial_equator_records_line():
@@ -165,9 +168,11 @@ def test_celestial_equator_records_line():
     p.celestial_equator()
 
     line_cmds = [c for c in p._recorder.commands
-                 if c.kind == "line" and c.gid == "celestial-equator-line"]
+                 if c.gid == "celestial-equator-line"]
     assert len(line_cmds) == 1
-    assert len(line_cmds[0].data["x"]) > 10
+    segments = line_cmds[0].data["lines"]
+    assert len(segments) >= 1
+    assert len(segments[0]) > 10
 
 
 def test_text_labels_recorded():
