@@ -21,7 +21,9 @@ import resource
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 
 import numpy as np
 
@@ -74,12 +76,6 @@ _DEFAULT_REPEAT_TIMEOUT_SECONDS = 300.0
 _BROWSER_TIMEOUT_MS = 300_000
 _SCENE_COMPILE_SEMANTICS = "Native SceneCompiler.compile timing."
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-_MILLION_STAR_HTML_CANDIDATES = (
-    Path("comparison_outputs/map_milky_way_stars/plotly.html"),
-    Path("map_milky_way_stars.html"),
-    Path("comparison_outputs/map_milky_way_stars.html"),
-)
-
 _PLOTLY_COMPLETION_INIT_SCRIPT = r"""
 (() => {
   const state = window.__starplotBenchmark = {
@@ -224,9 +220,27 @@ def compare_results(before: dict, after: dict) -> list[str]:
     ratio_gate("peak_rss", "peak_rss_mb", "peak_rss_mb", PERFORMANCE_GATES["peak_rss_ratio_max"])
     maximum_gate("arrow_payload_bytes", "arrow_payload_bytes", PERFORMANCE_GATES["arrow_payload_bytes_max"])
     maximum_gate("external_html_bytes", "external_html_bytes", PERFORMANCE_GATES["external_html_bytes_max"])
-    ratio_gate("browser_complete_render", "browser.complete_render_median_ms",
-               "browser.complete_render_median_ms",
-               PERFORMANCE_GATES["browser_complete_render_ratio_max"])
+    paired_browser = after.get("browser", {}).get("legacy_same_scene")
+    if isinstance(paired_browser, dict):
+        legacy = _metric(paired_browser, "complete_render_median_ms")
+        current = _metric(after, "browser.complete_render_median_ms")
+        if paired_browser.get("scene_hash") != after.get("browser", {}).get("scene_hash"):
+            failures.append("browser_complete_render paired legacy fixture scene_hash differs")
+        elif legacy is None:
+            failures.append("browser_complete_render paired legacy result is missing")
+        elif current is None:
+            failures.append("browser_complete_render result is missing (browser.complete_render_median_ms)")
+        elif current / legacy > PERFORMANCE_GATES["browser_complete_render_ratio_max"]:
+            failures.append(
+                "browser_complete_render ratio "
+                f"{current / legacy:.3f} exceeds "
+                f"{PERFORMANCE_GATES['browser_complete_render_ratio_max']:.3f} "
+                f"({current:.6g} / {legacy:.6g})"
+            )
+    else:
+        ratio_gate("browser_complete_render", "browser.complete_render_median_ms",
+                   "browser.complete_render_median_ms",
+                   PERFORMANCE_GATES["browser_complete_render_ratio_max"])
     ratio_gate("ordinary_chart", "ordinary_chart.median_seconds", "ordinary_chart.median_seconds",
                PERFORMANCE_GATES["ordinary_chart_regression_ratio_max"])
     maximum_gate("viewport_warm_median", "viewport_warm.median_ms",
@@ -473,14 +487,6 @@ def _environment(browser_result: dict) -> dict[str, object]:
     }
 
 
-def _million_star_html() -> Path | None:
-    for relative_path in _MILLION_STAR_HTML_CANDIDATES:
-        candidate = _REPOSITORY_ROOT / relative_path
-        if candidate.is_file():
-            return candidate
-    return None
-
-
 def _system_chrome_executable() -> Path | None:
     candidates = (
         Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
@@ -515,51 +521,95 @@ def _measure_browser_page(page, uri: str, timeout_ms: int) -> float:
     return (time.perf_counter() - started) * 1000.0
 
 
-def run_browser_benchmark(repeats: int) -> dict:
-    """Measure complete rendering of the existing million-star HTML, if usable."""
-    html_path = _million_star_html()
-    if html_path is None:
-        return {
-            "complete_render_median_ms": None,
-            "complete_render_p95_ms": None,
-            "status": "not_available",
-        }
+@contextmanager
+def _external_browser_fixture(point_count: int):
+    """Serve one real external Arrow export outside measured browser repeats."""
+    from starplot.cli import create_server
+    from starplot.interactive.scene_compiler import SceneCompiler
+    from starplot.interactive.web_export import (
+        DataMode,
+        LibraryMode,
+        export_scene_html,
+    )
 
-    relative_source = str(html_path.relative_to(_REPOSITORY_ROOT))
+    command, projection_info, style_info = _renderer_inputs(point_count)
+    scene = SceneCompiler().compile(
+        [command], projection_info, style_info, 1000, 500, False
+    )
+    with tempfile.TemporaryDirectory(prefix="starplot-arrow-browser-") as directory:
+        root = Path(directory)
+        exported = export_scene_html(
+            scene,
+            root / "scene.html",
+            data_mode=DataMode.EXTERNAL,
+            library_mode=LibraryMode.DIRECTORY,
+        )
+        # This legacy page uses the exact same Scene and local Plotly library as
+        # the Arrow page. It is only a like-for-like browser baseline, never a
+        # public delivery mode.
+        from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+        PlotlySceneAdapter().render(scene).write_html(
+            root / "legacy.html", include_plotlyjs="directory"
+        )
+        server = create_server(root, host="127.0.0.1", port=0)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        host, port = server.server_address[:2]
+        try:
+            yield {
+                "arrow_payload_bytes": sum(len(value) for value in exported.layer_bytes.values()),
+                "scene_hash": exported.scene_hash,
+                "source_kind": "external-arrow-http",
+                "source_url": f"http://{host}:{port}/scene.html",
+                "legacy_source_kind": "direct-plotly-same-scene-http",
+                "legacy_source_url": f"http://{host}:{port}/legacy.html",
+            }
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5)
+
+
+def run_browser_benchmark(point_count: int, repeats: int) -> dict:
+    """Measure a real external Arrow bundle over the supported HTTP server."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         return {
             "complete_render_median_ms": None,
             "complete_render_p95_ms": None,
-            "source_html": relative_source,
+            "source_kind": "external-arrow-http",
             "status": "playwright_not_installed",
         }
 
     measurements: list[float] = []
+    legacy_measurements: list[float] = []
     try:
-        with sync_playwright() as playwright:
+        with _external_browser_fixture(point_count) as fixture, sync_playwright() as playwright:
             browser = _launch_browser(playwright)
             try:
                 browser_version = browser.version
                 for iteration in range(repeats + 1):
                     label = "warm-up" if iteration == 0 else f"repeat {iteration}/{repeats}"
-                    print(f"Browser {label}: starting", flush=True)
-                    page = browser.new_page(viewport={"width": 1000, "height": 500})
-                    try:
-                        elapsed_ms = _measure_browser_page(
-                            page,
-                            html_path.as_uri(),
-                            _BROWSER_TIMEOUT_MS,
+                    for name, url, values in (
+                        ("external Arrow", fixture["source_url"], measurements),
+                        ("legacy direct", fixture["legacy_source_url"], legacy_measurements),
+                    ):
+                        print(f"Browser {name} {label}: starting", flush=True)
+                        page = browser.new_page(viewport={"width": 1000, "height": 500})
+                        try:
+                            elapsed_ms = _measure_browser_page(
+                                page, url, _BROWSER_TIMEOUT_MS,
+                            )
+                        finally:
+                            page.close()
+                        print(
+                            f"Browser {name} {label}: complete ({elapsed_ms:.3f} ms)",
+                            flush=True,
                         )
-                    finally:
-                        page.close()
-                    print(
-                        f"Browser {label}: complete ({elapsed_ms:.3f} ms)",
-                        flush=True,
-                    )
-                    if iteration:
-                        measurements.append(elapsed_ms)
+                        if iteration:
+                            values.append(elapsed_ms)
             finally:
                 browser.close()
     except Exception as error:
@@ -567,7 +617,7 @@ def run_browser_benchmark(repeats: int) -> dict:
             "complete_render_median_ms": None,
             "complete_render_p95_ms": None,
             "error": f"{type(error).__name__}: {error}",
-            "source_html": relative_source,
+            "source_kind": "external-arrow-http",
             "status": "measurement_failed",
         }
 
@@ -577,7 +627,13 @@ def run_browser_benchmark(repeats: int) -> dict:
         "completion_signal": "Plotly newPlot/react promise plus two animation frames",
         "engine": "chromium",
         "engine_version": browser_version,
-        "source_html": relative_source,
+        "legacy_same_scene": {
+            "complete_render_median_ms": percentile(legacy_measurements, 50),
+            "complete_render_p95_ms": percentile(legacy_measurements, 95),
+            "scene_hash": fixture["scene_hash"],
+            "source_kind": fixture["legacy_source_kind"],
+        },
+        **fixture,
         "status": "measured",
     }
 
@@ -651,7 +707,7 @@ def run_python_benchmark(
     )
     scene_compile = {**preparation, "semantics": _SCENE_COMPILE_SEMANTICS}
 
-    browser = run_browser_benchmark(repeats)
+    browser = run_browser_benchmark(point_count, repeats)
     result = {
         "arrow_payload_bytes": int(measured[0]["arrow_payload_bytes"]),
         "browser": browser,

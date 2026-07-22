@@ -93,7 +93,8 @@ class DrawingRecorder:
         if len({len(x), len(y), len(sizes), len(colors), len(alphas)}) > 1:
             raise ValueError("Scatter columns must have the same row count")
 
-        self.commands.append(DrawingCommand(
+        metadata = tuple(metadata)
+        command = DrawingCommand(
             kind="scatter",
             data={
                 "x": x,
@@ -103,12 +104,69 @@ class DrawingRecorder:
                 "alphas": alphas,
             },
             style=dict(style_dict) if style_dict else {},
-            metadata=tuple(metadata),
+            metadata=metadata,
             gid=gid,
             zorder=zorder,
             space=space,
             clip_id=clip_id,
-        ))
+        )
+        self.commands.append(command)
+
+    def coalesced_scatter_commands(self):
+        """Return commands with adjacent equivalent scatters concatenated once.
+
+        Recording must remain O(n): some large charts issue one scatter call
+        per object, so concatenating on every call would copy an ever-growing
+        array quadratically.  Scene consumers call this finalization pass once
+        after Matplotlib has finished drawing.
+        """
+        result = []
+        pending = []
+
+        def flush_pending():
+            if not pending:
+                return
+            if len(pending) == 1:
+                result.append(pending[0])
+            else:
+                first = pending[0]
+                result.append(DrawingCommand(
+                    kind="scatter",
+                    data={
+                        name: _seal_owned_array(np.concatenate([item.data[name] for item in pending]))
+                        for name in ("x", "y", "sizes", "colors", "alphas")
+                    },
+                    style=dict(first.style),
+                    metadata=tuple(item for command in pending for item in command.metadata),
+                    gid=first.gid,
+                    zorder=first.zorder,
+                    space=first.space,
+                    clip_id=first.clip_id,
+                ))
+            pending.clear()
+
+        for command in self.commands:
+            if pending and not self._can_coalesce_scatter(pending[-1], command):
+                flush_pending()
+            if command.kind == "scatter":
+                pending.append(command)
+            else:
+                flush_pending()
+                result.append(command)
+        flush_pending()
+        return tuple(result)
+
+    @staticmethod
+    def _can_coalesce_scatter(previous, current):
+        """Return whether two adjacent recorded scatter calls share semantics."""
+        return (
+            previous.kind == current.kind == "scatter"
+            and previous.style == current.style
+            and previous.gid == current.gid
+            and previous.zorder == current.zorder
+            and previous.space == current.space
+            and previous.clip_id == current.clip_id
+        )
 
     def record_line(
         self, x, y, style_dict, gid, zorder, *,
@@ -128,7 +186,11 @@ class DrawingRecorder:
         self, points, style_dict, gid, zorder, *, rings=None,
         space=CoordinateSpace.DATA, clip_id="plot",
     ):
-        data = {"points": list(points)}
+        # These coordinates come from final Matplotlib artists.  Unlike the
+        # low-level public DrawingCommand contract, a legal Matplotlib Path may
+        # be self-intersecting and rely on its fill rule; preserve that origin
+        # so the Scene compiler can normalize it before geometric clipping.
+        data = {"points": list(points), "final_artist": True}
         if rings is not None:
             data["rings"] = [list(ring) for ring in rings]
         self.commands.append(DrawingCommand(

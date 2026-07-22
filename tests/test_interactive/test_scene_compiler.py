@@ -775,6 +775,8 @@ def test_compile_builds_frozen_viewport_clips_and_context_mappings():
         "axes_background": "#101820",
         "transparent": True,
         "target_axes_width": 1200.0,
+        "source_axes_width": None,
+        "dpi": 100.0,
     }
     assert scene.projection_info["x_min"] == 0.0
     assert scene.style_info["background_color"] == "#101820"
@@ -1241,6 +1243,13 @@ def test_encode_palette_accepts_homogeneous_string_specs_only():
 
     assert encoded.palette == ("#0000ff", "#ff0000")
     assert encoded.color_index.tolist() == [1, 0, 1]
+
+
+def test_encode_palette_accepts_recorder_emitted_css_rgba_strings():
+    encoded = encode_palette(np.array(["rgba(0,0,0,0)", "rgba(255,128,0,0.5)"]), 1.0)
+
+    assert encoded.palette == ("#000000", "#ff8000")
+    assert encoded.opacity.tolist() == pytest.approx([0.0, 0.5])
 
 
 def test_encode_palette_rejects_plain_mixed_list_with_stable_message():

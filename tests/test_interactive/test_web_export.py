@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 import json
+import re
 
 import numpy as np
 import pytest
@@ -94,6 +96,47 @@ def test_inline_embeds_exact_arrow_payload(tmp_path):
     payload = base64.b64encode(result.layer_bytes["stars"]).decode("ascii")
     assert payload in html
     assert 'application/vnd.apache.arrow.stream' in html
+
+
+def test_inline_payload_indexes_follow_manifest_order_not_opaque_layer_id_order(tmp_path):
+    first = _scene("z-layer").layers[0]
+    second = replace(
+        first,
+        id="a-layer",
+        zorder=0,
+        data=ColumnarData.from_mapping({
+            **first.data.columns,
+            "x": np.array([42.0]),
+        }),
+    )
+    scene = replace(_scene("z-layer"), layers=(first, second))
+    result = export_scene_html(
+        scene, tmp_path / "inline.html", data_mode="inline", library_mode="cdn"
+    )
+    manifest = json.loads(result.manifest_bytes)
+    payloads = re.findall(
+        r'id="starplot-layer-\d+" type="application/vnd.apache.arrow.stream">([^<]+)</script>',
+        result.html_path.read_text(encoding="utf-8"),
+    )
+    assert [base64.b64decode(value) for value in payloads] == [
+        result.layer_bytes[layer["id"]] for layer in manifest["layers"]
+    ]
+
+
+@pytest.mark.parametrize("data_mode", [DataMode.INLINE, DataMode.EXTERNAL, DataMode.REMOTE])
+def test_every_export_shell_has_full_viewport_and_render_completion_signal(tmp_path, data_mode):
+    result = export_scene_html(
+        _scene(),
+        tmp_path / f"{data_mode}.html",
+        data_mode=data_mode,
+        library_mode=LibraryMode.CDN,
+        data_url="https://example.test/api/scenes/rigel",
+    )
+    html = result.html_path.read_text(encoding="utf-8")
+    assert "html,body,#starplot-chart{width:100%;height:100%;margin:0;overflow:hidden}" in html
+    assert "window.__starplotRenderPromise=StarplotScene.renderScene" in html
+    assert "document.body.dataset.starplotRendered='true'" in html
+    assert "document.body.dataset.starplotError=error.message" in html
 
 
 def test_remote_requires_safe_absolute_url(tmp_path):

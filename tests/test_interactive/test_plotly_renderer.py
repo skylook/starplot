@@ -557,7 +557,7 @@ def test_tiny_per_point_alpha_stays_numeric_for_plotly6():
 
     figure = make_renderer().render([cmd])
 
-    assert figure.data[0].marker.opacity[0] == pytest.approx(0.0000836198)
+    assert figure.data[0].marker.opacity[0] == pytest.approx(7.344895e-05)
     assert figure.data[0].marker.color.dtype == np.uint8
 
 

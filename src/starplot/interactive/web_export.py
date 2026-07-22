@@ -171,7 +171,10 @@ def _html_shell(*, mode: DataMode, libraries: LibraryMode, manifest: dict | None
         payload_tags = f'<script id="starplot-manifest" type="application/json">{safe_manifest}</script>'
         payload_tags += "".join(
             f'<script id="starplot-layer-{index}" type="application/vnd.apache.arrow.stream">{base64.b64encode(data).decode("ascii")}</script>'
-            for index, (_layer_id, data) in enumerate(sorted(layers.items()))
+            # The browser pairs indexes with canonical manifest order. Layer ids
+            # are opaque and are not guaranteed to sort in that same order.
+            for index, layer in enumerate(manifest["layers"])
+            for data in (layers[layer["id"]],)
         )
         bootstrap = """const manifestJson=document.getElementById('starplot-manifest').textContent.split("<"+String.fromCharCode(92)+"/").join("</");
 const manifest=JSON.parse(manifestJson); const layers={};
@@ -187,9 +190,10 @@ const source=new StarplotScene.InlineSceneSource({manifest,manifestJson,layers})
             f"const source=new StarplotScene.{source_type}({{baseUrl:{_json_script(base_url)}"
             f"{manifest_option},allowedDataOrigins:{_json_script(allowed_data_origins)}}});"
         )
-    return f"""<!doctype html><html><head><meta charset=\"utf-8\"><title>Starplot chart</title></head>
-<body><div id=\"starplot-chart\" style=\"width:100%;height:100vh\"></div>{payload_tags}{library_tags}{runtime_tags}
-<script>{bootstrap} StarplotScene.renderScene(document.getElementById('starplot-chart'),source).catch(error=>{{console.error(error);document.body.dataset.starplotError=error.message;}});</script>
+    return f"""<!doctype html><html><head><meta charset=\"utf-8\"><title>Starplot chart</title>
+<style>html,body,#starplot-chart{{width:100%;height:100%;margin:0;overflow:hidden}}</style></head>
+<body><div id=\"starplot-chart\"></div>{payload_tags}{library_tags}{runtime_tags}
+<script>{bootstrap} window.__starplotRenderPromise=StarplotScene.renderScene(document.getElementById('starplot-chart'),source).then(()=>{{document.body.dataset.starplotRendered='true';}}).catch(error=>{{console.error(error);document.body.dataset.starplotError=error.message;throw error;}});</script>
 </body></html>"""
 
 

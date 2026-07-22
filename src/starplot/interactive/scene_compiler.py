@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import re
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -40,6 +41,25 @@ COMMAND_COMPILERS = {
 
 _METADATA_SUPPRESSION_THRESHOLD = 100_000
 _GRADIENT_DIRECTIONS = frozenset({"linear", "radial", "mollweide"})
+_CSS_RGBA = re.compile(
+    r"^rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*"
+    r"(\d+(?:\.\d+)?)\s*(?:,\s*(\d*\.?\d+))?\s*\)$",
+    re.IGNORECASE,
+)
+
+
+def _rgba_color(value: str) -> tuple[float, float, float, float] | None:
+    """Parse recorder-emitted CSS rgb(a) colors into Matplotlib RGBA values."""
+    match = _CSS_RGBA.fullmatch(value)
+    if match is None:
+        return None
+    red, green, blue = (float(component) for component in match.group(1, 2, 3))
+    alpha = 1.0 if match.group(4) is None else float(match.group(4))
+    if not all(math.isfinite(component) and 0.0 <= component <= 255.0 for component in (red, green, blue)):
+        return None
+    if not math.isfinite(alpha) or not 0.0 <= alpha <= 1.0:
+        return None
+    return red / 255.0, green / 255.0, blue / 255.0, alpha
 
 
 def _validated_opacity_values(
@@ -223,7 +243,8 @@ def encode_palette(colors, opacity) -> PaletteEncoding:
     source_alpha = np.empty(palette_size, dtype=np.float32)
     for index, color in enumerate(unique_colors):
         try:
-            red, green, blue, alpha = to_rgba(color)
+            parsed_css = _rgba_color(str(color))
+            red, green, blue, alpha = parsed_css if parsed_css is not None else to_rgba(color)
         except (TypeError, ValueError) as error:
             raise ValueError(f"Invalid Matplotlib color spec {str(color)!r}") from error
         palette.append(to_hex((red, green, blue), keep_alpha=False))
@@ -394,6 +415,10 @@ class SceneCompiler:
             "axes_background": style.get("background_color", "#ffffff"),
             "transparent": bool(transparent),
             "target_axes_width": context.target_axes_width,
+            # Browser adapters need the same final-artwork scale inputs as the
+            # Python Plotly adapter; they must not infer font metrics from CSS.
+            "source_axes_width": style.get("source_axes_width"),
+            "dpi": style.get("dpi", 100.0),
         }
         return ScenePackage(
             layers=tuple(layer for _, layer in indexed_layers),
@@ -594,7 +619,9 @@ class SceneCompiler:
         polygons = _polygon_groups(command.data)
         clip = _command_clip(command, context)
         if clip is not None:
-            polygons = _clip_polygons(polygons, clip)
+            polygons = _clip_polygons(
+                polygons, clip, repair_final_artist=bool(command.data.get("final_artist"))
+            )
         columns = _polygon_columns(polygons)
         coordinate_encoding = _encode_xy(columns, context)
         return _CompiledParts(columns, command.style, coordinate_encoding)
@@ -1065,11 +1092,13 @@ def _polygon_groups(data) -> list[list[list[tuple[float, float]]]]:
     return polygons
 
 
-def _clip_polygons(polygons, clip: ClipGeometry):
+def _clip_polygons(polygons, clip: ClipGeometry, *, repair_final_artist: bool = False):
     clip_shape = _clip_shape(clip)
     result = []
     for rings in polygons:
         polygon = Polygon(rings[0], holes=rings[1:])
+        if repair_final_artist and not polygon.is_valid:
+            polygon = shapely.make_valid(polygon)
         if polygon.is_empty or not polygon.is_valid or polygon.area <= 0:
             raise ValueError("polygon must be non-empty, valid, positive-area geometry")
         clipped = polygon.intersection(clip_shape)

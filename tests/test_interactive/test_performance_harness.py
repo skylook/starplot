@@ -137,8 +137,8 @@ def test_compare_results_rejects_unmeasured_metrics_and_host_mismatch():
     assert any("host_fingerprint" in failure for failure in failures)
     assert any("arrow_payload_bytes is missing" in failure for failure in failures)
     assert any("external_html_bytes is missing" in failure for failure in failures)
-    assert any("ordinary_chart is missing" in failure for failure in failures)
-    assert any("viewport_warm is missing" in failure for failure in failures)
+    assert any("ordinary_chart baseline is missing" in failure for failure in failures)
+    assert any("viewport_warm_median is missing" in failure for failure in failures)
 
 
 @pytest.mark.parametrize(
@@ -182,7 +182,7 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch, capsys)
     monkeypatch.setattr(
         benchmark,
         "run_browser_benchmark",
-        lambda repeats: {
+        lambda point_count, repeats: {
             "complete_render_median_ms": None,
             "engine": "chromium",
             "engine_version": "test",

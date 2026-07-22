@@ -13,6 +13,14 @@
   const LINE_DASH = Object.freeze({ solid: "solid", dashed: "dash", dotted: "dot", dashdot: "dashdot" });
   const MARKER_SYMBOL = Object.freeze({ circle: "circle", square: "square", triangle: "triangle-up", star: "star", diamond: "diamond" });
   const MAX_INTERACTIVE_HOVER_POINTS = 100000;
+  const MAX_SVG_ZORDER_POINTS = 100000;
+  // Plotly ScatterGL spends most of its large-scene setup time materializing a
+  // per-point colorscale.  Astronomy catalogs normally use a small discrete
+  // palette, so split only genuinely dense, non-hoverable layers into a
+  // bounded set of colour batches.  Coordinates, sizes, and opacities remain
+  // per point; this changes neither Scene nor Arrow data.
+  const MIN_DENSE_PALETTE_BATCH_ROWS = 100000;
+  const MAX_DENSE_PALETTE_BATCHES = 64;
   const layoutEffects = new WeakMap();
 
   function escapePlotlyText(value) {
@@ -155,13 +163,23 @@
     return { x: resultX, y: resultY };
   }
 
-  function lineStyle(style) {
-    const dash = Array.isArray(style.line_style)
-      ? "solid"
-      : (LINE_DASH[String(style.line_style || "solid")] || "solid");
+  function plotlyLineDash(lineStyle) {
+    if (Array.isArray(lineStyle)) return "dash";
+    const raw = String(lineStyle || "solid").trim().toLowerCase();
+    if (LINE_DASH[raw]) return LINE_DASH[raw];
+    // Matplotlib serializes custom dash patterns obtained from an artist as
+    // strings such as "(1, [2, 3])".  Plotly cannot represent arbitrary dash
+    // arrays, but its named dash is the semantic nearest supported stroke;
+    // treating it as solid loses the essential visual distinction.
+    if (/^\([^)]*\[[^\]]+\]\)$/.test(raw)) return "dash";
+    return "solid";
+  }
+
+  function lineStyle(style, strokeScale = 1) {
+    const dash = plotlyLineDash(style.line_style);
     return {
       color: style.color || "#777777",
-      width: Math.max(0.25, Number(style.width || 1)),
+      width: Math.max(0.25, Number(style.width || 1) * strokeScale),
       dash,
     };
   }
@@ -190,7 +208,7 @@
     const markerSize = new Float32Array(size.length);
     const markerOpacity = useWebgl ? new Float32Array(opacity.length) : opacity;
     for (let index = 0; index < size.length; index += 1) {
-      const scaled = size[index] * 1.15;
+      const scaled = size[index] * 1.0;
       markerSize[index] = Math.max(scaled, useWebgl ? 1 : 1.5);
       if (useWebgl) {
         const coverage = Math.min(1, scaled * scaled * 6);
@@ -212,7 +230,7 @@
         symbol: MARKER_SYMBOL[style.symbol || "circle"] || style.symbol || "circle",
         line: {
           color: style.edge_color || "rgba(0,0,0,0)",
-          width: useWebgl ? 0 : Math.max(0, Number(style.edge_width || 0) * 2),
+          width: useWebgl ? 0 : Math.max(0, Number(style.edge_width || 0) * 1),
         },
         ...(transparent ? {} : {
           colorscale: discreteColorscale(palette),
@@ -244,7 +262,66 @@
     return trace;
   }
 
-  function lineTrace(layer, table, style, forceSvgTracePlane) {
+  function densePaletteScatterTraces(layer, table, scene, style, forceSvgTracePlane) {
+    const trace = scatterTrace(layer, table, scene, style, forceSvgTracePlane);
+    const rowCount = Number(layer.row_count ?? table.numRows);
+    const palette = paletteFor(style, scene);
+    const transparent = String(style.fill || "").toLowerCase() === "none";
+    // SVG layers need their literal trace ordering, and sparse/hoverable data
+    // benefits more from one trace than from a palette split.
+    if (trace.type !== "scattergl" || transparent || rowCount < MIN_DENSE_PALETTE_BATCH_ROWS
+        || table.numRows < MIN_DENSE_PALETTE_BATCH_ROWS || !palette.length
+        || palette.length > MAX_DENSE_PALETTE_BATCHES) return [trace];
+
+    const colorIndex = column(table, "color_index");
+    const counts = new Uint32Array(palette.length);
+    for (let index = 0; index < colorIndex.length; index += 1) {
+      const color = Number(colorIndex[index]);
+      if (!Number.isInteger(color) || color < 0 || color >= palette.length) return [trace];
+      counts[color] += 1;
+    }
+    const active = [];
+    for (let color = 0; color < counts.length; color += 1) if (counts[color]) active.push(color);
+    if (active.length < 2 || active.length > MAX_DENSE_PALETTE_BATCHES) return [trace];
+
+    const x = trace.x;
+    const y = trace.y;
+    const markerSize = trace.marker.size;
+    const markerOpacity = trace.marker.opacity;
+    const offsets = new Uint32Array(counts.length);
+    const buckets = new Map(active.map((color) => {
+      const length = counts[color];
+      return [color, {
+        x: new x.constructor(length), y: new y.constructor(length),
+        size: new markerSize.constructor(length), opacity: new markerOpacity.constructor(length),
+      }];
+    }));
+    for (let index = 0; index < colorIndex.length; index += 1) {
+      const color = colorIndex[index];
+      const bucket = buckets.get(color);
+      const target = offsets[color];
+      bucket.x[target] = x[index]; bucket.y[target] = y[index];
+      bucket.size[target] = markerSize[index]; bucket.opacity[target] = markerOpacity[index];
+      offsets[color] += 1;
+    }
+    return active.map((color, index) => {
+      const bucket = buckets.get(color);
+      const marker = {
+        ...trace.marker,
+        color: palette[color], size: bucket.size, opacity: bucket.opacity,
+      };
+      delete marker.colorscale; delete marker.cmin; delete marker.cmax; delete marker.showscale;
+      return {
+        ...trace,
+        x: bucket.x, y: bucket.y, marker,
+        // A layer represents one legend item even when it is rendered by
+        // several GPU batches.
+        showlegend: index === 0 && trace.showlegend,
+      };
+    });
+  }
+
+  function lineTrace(layer, table, style, forceSvgTracePlane, strokePixelScale = 1) {
     const coordinates = pathCoordinates(layer, table);
     const type = traceTypeForLayer(layer, forceSvgTracePlane);
     const trace = {
@@ -252,7 +329,7 @@
       x: coordinates.x,
       y: coordinates.y,
       mode: "lines",
-      line: lineStyle(style),
+      line: lineStyle(style, strokePixelScale),
       opacity: style.alpha === undefined ? 1 : Number(style.alpha),
       hoverinfo: "none",
       name: String(style.legend_label || layer.group_id || layer.id),
@@ -307,7 +384,7 @@
         if (path) shapes.push({
           type: "path", path: path.trim(), xref, yref, fillrule: "evenodd",
           fillcolor: style.fill_color && String(style.fill_color).toLowerCase() !== "none" ? style.fill_color : "rgba(0,0,0,0)",
-          line: { color: style.edge_color || "rgba(0,0,0,0)", width: Math.max(0, Number(style.edge_width || 0)) },
+          line: { ...lineStyle(style), color: style.edge_color || "rgba(0,0,0,0)" },
           opacity: style.alpha === undefined ? 1 : Number(style.alpha),
         });
       }
@@ -338,7 +415,7 @@
       mode: "lines",
       fill: style.fill_color && String(style.fill_color).toLowerCase() !== "none" ? "toself" : undefined,
       fillcolor: style.fill_color || "rgba(0,0,0,0)",
-      line: { color: style.edge_color || "rgba(0,0,0,0)", width: Math.max(0, Number(style.edge_width || 0)) },
+      line: { ...lineStyle(style), color: style.edge_color || "rgba(0,0,0,0)" },
       opacity: style.alpha === undefined ? 1 : Number(style.alpha),
       hoverinfo: "none",
       showlegend: false,
@@ -358,6 +435,8 @@
       ? style.text_styles
       : [style];
     const [xref, yref] = coordinateRefs(layer, style);
+    const settings = arguments[4] || {};
+    const pointScale = Number(settings.fontPixelScale || 1);
     const annotations = [];
     for (let index = 0; index < text.length; index += 1) {
       const variant = variants[styleIds[index]];
@@ -366,15 +445,16 @@
       const vertical = variant.va || style.va || "center";
       const weight = String(variant.font_weight || style.font_weight || "normal").toLowerCase();
       annotations.push({
-        x: x[index], y: y[index], text: weight === "bold" ? `<b>${text[index]}</b>` : text[index],
+        x: x[index], y: (yref === "paper" && (layer.group_id === "horizon-bottom" || layer.group_id === "horizon-label" || style.footer)
+          ? y[index] + Number(settings.footerOffset || 0) : y[index]), text: weight === "bold" ? `<b>${text[index]}</b>` : text[index],
         showarrow: false, xref, yref,
         xanchor: ["left", "right", "center"].includes(horizontal) ? horizontal : "center",
         yanchor: ({ center: "middle", baseline: "bottom", bottom: "bottom", top: "top" })[vertical] || "middle",
-        xshift: Number(variant.xshift ?? style.xshift ?? xOffset[index]),
-        yshift: Number(variant.yshift ?? style.yshift ?? yOffset[index]),
+        xshift: Number(variant.xshift ?? style.xshift ?? xOffset[index]) * pointScale,
+        yshift: Number(variant.yshift ?? style.yshift ?? yOffset[index]) * pointScale,
         textangle: Number(rotation[index]),
         font: {
-          size: Math.max(8, Number(variant.font_size || style.font_size || 12)),
+          size: Math.max(8, Number(variant.font_size || style.font_size || 12) * pointScale),
           color: variant.font_color || style.font_color || "#ffffff",
           family: weight === "bold" ? "Arial Black, Arial, sans-serif" : (variant.font_name || style.font_name || "Inter, Arial, sans-serif"),
         },
@@ -523,9 +603,9 @@
     clipFor(layer, scene);
     let trace;
     if (layer.kind === "scatter") trace = scatterTrace(layer, table, scene, style, settings.forceSvgTracePlane);
-    else if (layer.kind === "line" || layer.kind === "line_collection") trace = lineTrace(layer, table, style, settings.forceSvgTracePlane);
+    else if (layer.kind === "line" || layer.kind === "line_collection") trace = lineTrace(layer, table, style, settings.forceSvgTracePlane, settings.strokePixelScale);
     else if (layer.kind === "polygon") trace = polygonTrace(layer, table, style);
-    else if (layer.kind === "text") trace = textTrace(layer, table, scene, style);
+    else if (layer.kind === "text") trace = textTrace(layer, table, scene, style, settings);
     else if (layer.kind === "gradient") trace = gradientTrace(layer, scene, style) || hiddenLayerTrace(layer);
     else trace = infoTableTrace(layer, table, style, scene);
     const [xref, yref] = coordinateRefs(layer, style);
@@ -546,6 +626,28 @@
     return trace;
   }
 
+  function layerToPlotlyTraces(layer, table, scene, options) {
+    if (layer.kind !== "scatter") return [layerToPlotlyTrace(layer, table, scene, options)];
+    const settings = options || {};
+    const style = styleFor(layer, scene);
+    clipFor(layer, scene);
+    const [xref, yref] = coordinateRefs(layer, style);
+    return densePaletteScatterTraces(
+      layer, table, scene, style, settings.forceSvgTracePlane,
+    ).map((trace) => {
+      if (xref !== "x" || yref !== "y") {
+        trace.xaxis = xref === "paper" ? "x3" : "x2";
+        trace.yaxis = yref === "paper" ? "y3" : "y2";
+        trace.cliponaxis = false;
+      }
+      trace.meta = {
+        ...(trace.meta || {}), starplot_layer_id: layer.id,
+        starplot_zorder: layer.zorder, xref, yref, clip_id: layer.clip_id || null,
+      };
+      return trace;
+    });
+  }
+
   function placeholder(layer, forceSvgTracePlane) {
     return {
       type: traceTypeForLayer(layer, forceSvgTracePlane),
@@ -554,28 +656,81 @@
     };
   }
 
-  function sceneLayout(scene) {
+  function sceneLayout(scene, options = {}) {
     const viewport = scene.viewport || {};
     const bounds = viewport.data_bounds || {};
+    const clips = Array.isArray(scene.clips)
+      ? scene.clips
+      : Object.entries(scene.clips || {}).map(([id, value]) => ({ id, ...value }));
+    const plotClip = clips.find((c) => c.id === "plot");
+    const axesBg = viewport.axes_background || "#ffffff";
+    const shapes = [];
+    if (plotClip && plotClip.points && plotClip.points.length >= 3) {
+      // For non-rectangular clips, make the rectangular axes background
+      // transparent and fill only the clip region with the axes color.
+      const pts = plotClip.points;
+      const ringPath = pts.map((p, i) =>
+        (i === 0 ? "M" : "L") + Number(p[0]) + "," + Number(p[1])
+      ).join(" ") + " Z";
+      shapes.push({
+        type: "path",
+        path: ringPath,
+        xref: "x",
+        yref: "y",
+        fillcolor: axesBg,
+        line: { width: 0 },
+        layer: "below",
+      });
+    }
     return {
       paper_bgcolor: viewport.paper_background || "#ffffff",
-      plot_bgcolor: viewport.axes_background || "#ffffff",
+      plot_bgcolor: plotClip ? "rgba(0,0,0,0)" : axesBg,
       xaxis: {
         range: bounds.x_min === undefined ? undefined : [bounds.x_min, bounds.x_max],
-        showgrid: false, zeroline: false, constrain: "domain",
+        showgrid: false, zeroline: false, constrain: "domain", showticklabels: false, showline: false,
       },
       yaxis: {
         range: bounds.y_min === undefined ? undefined : [bounds.y_min, bounds.y_max],
-        showgrid: false, zeroline: false, scaleanchor: "x", scaleratio: 1,
+        showgrid: false, zeroline: false, scaleanchor: "x", scaleratio: 1, showticklabels: false, showline: false,
+        domain: options.yDomain,
       },
       xaxis2: { range: [0, 1], overlaying: "x", visible: false, fixedrange: true },
       yaxis2: { range: [0, 1], overlaying: "y", visible: false, fixedrange: true },
       xaxis3: { range: [0, 1], domain: [0, 1], overlaying: "x", visible: false, fixedrange: true },
       yaxis3: { range: [0, 1], domain: [0, 1], overlaying: "y", visible: false, fixedrange: true },
       showlegend: Boolean(viewport.showlegend),
-      margin: viewport.margin || { l: 10, r: 10, t: 10, b: 10 },
+      margin: options.margin || viewport.margin || { l: 10, r: 10, t: 10, b: 10 },
       annotations: [],
-      shapes: [],
+      shapes,
+    };
+  }
+
+  function renderingMetrics(scene, tables) {
+    const viewport = scene.viewport || {};
+    let footerOffset = 0;
+    for (const layer of scene.layers) {
+      if (layer.group_id !== "horizon-bottom" || !tables.has(layer.id)) continue;
+      const table = tables.get(layer.id);
+      const y = decodeCoordinate(layer, table, "y");
+      for (const value of y) footerOffset = Math.max(footerOffset, -Number(value));
+    }
+    footerOffset = Math.max(0, footerOffset);
+    const hasGridLabels = scene.layers.some((layer) => layer.group_id === "gridlines-label");
+    const sideMargin = footerOffset && hasGridLabels ? 50 : 10;
+    const referenceWidth = Number(viewport.reference_width || 0);
+    const sourceAxesWidth = Number(viewport.source_axes_width || 0);
+    const dpi = Number(viewport.dpi || 100);
+    const fontPixelScale = sourceAxesWidth > 0 && referenceWidth > 0
+      ? dpi / 72 * Math.max(1, referenceWidth - 2 * sideMargin) / sourceAxesWidth
+      : 1;
+    return {
+      footerOffset,
+      fontPixelScale,
+      margin: footerOffset
+        ? { l: sideMargin, r: sideMargin, t: 30, b: 10 }
+        : (viewport.margin || { l: 10, r: 10, t: 10, b: 10 }),
+      strokePixelScale: fontPixelScale * 1,
+      yDomain: footerOffset ? [footerOffset, 1] : undefined,
     };
   }
 
@@ -594,6 +749,13 @@
     }
   }
 
+  function afterFinalPaint() {
+    const frame = typeof global.requestAnimationFrame === "function"
+      ? global.requestAnimationFrame.bind(global)
+      : (callback) => callback();
+    return new Promise((resolve) => frame(() => frame(resolve)));
+  }
+
   function polygonTableHasHoles(table) {
     const polygonIds = column(table, "polygon_id");
     const ringIds = column(table, "ring_id");
@@ -604,6 +766,34 @@
       else if (firstRingByPolygon.get(polygonId) !== ringIds[index]) return true;
     }
     return false;
+  }
+
+  function needsSvgZorderPlane(slots) {
+    const glLayers = slots.filter((layer) => traceTypeForLayer(layer, false) === "scattergl");
+    if (!glLayers.length) return false;
+    // Plotly puts WebGL canvases on a separate paint plane.  A chart mixing
+    // them with ordinary SVG geometry can hide SVG layers regardless of Scene
+    // zorder (for example an optic-FOV circle below stars).  For charts small
+    // enough for SVG, preserve the canonical one-plane ordering instead.
+    const hasSvgGeometry = slots.some((layer) => ["scatter", "line", "polygon"].includes(layer.kind)
+      && traceTypeForLayer(layer, false) !== "scattergl");
+    const largestGlLayer = Math.max(...glLayers.map((layer) => Number(layer.row_count || 0)));
+    return hasSvgGeometry && largestGlLayer <= MAX_SVG_ZORDER_POINTS;
+  }
+
+  function normalizeSvgZorders(slots, traces, enabled) {
+    if (!enabled) return;
+    // Plotly interprets a negative SVG zorder as a request to paint beneath
+    // its canvas traces.  Scene uses large negative values for a gradient's
+    // background, then grid/FOV geometry above it.  Re-rank only the SVG
+    // plane so its relative Scene ordering survives without falling behind
+    // the gradient canvas.
+    let zorder = 0;
+    for (const layer of slots) {
+      const layerTraces = traces.get(layer.id) || [];
+      for (const trace of layerTraces) if (trace.type === "scatter") trace.zorder = zorder;
+      zorder += 1;
+    }
   }
 
   async function renderScene(target, source, options) {
@@ -618,86 +808,65 @@
     assertNotAborted(settings.signal);
     const scene = await source.loadManifest(settings.signal);
     assertNotAborted(settings.signal);
-    const tableCache = new Map();
-    const preloadFailures = new Set();
-    let forceSvgTracePlane = false;
-    for (const layer of scene.layers) {
-      if (layer.kind !== "polygon" || layer.coordinate_space !== "data") continue;
-      try {
-        const table = await global.StarplotScene.collectLayerTable(
-          source, layer, settings.request, settings.signal,
-        );
-        assertNotAborted(settings.signal);
-        tableCache.set(layer.id, table);
-        if (polygonTableHasHoles(table)) forceSvgTracePlane = true;
-      } catch (error) {
-        if (!layer.required && !(settings.signal && settings.signal.aborted)) {
-          preloadFailures.add(layer.id);
-          showLayerFailure(target, layer, error, () => renderScene(target, source, settings), true);
-          continue;
-        }
-        throw error;
-      }
-    }
     const slots = [...scene.layers].sort((left, right) =>
       Number(left.zorder) - Number(right.zorder) || String(left.id).localeCompare(String(right.id)));
-    const slotById = new Map(slots.map((layer, index) => [layer.id, index]));
-    await Plotly.react(
-      target,
-      slots.map((layer) => placeholder(layer, forceSvgTracePlane)),
-      sceneLayout(scene),
-      settings.config || {},
-    );
-    const effectsById = new Map();
-    const loadedSlots = [];
     const loadOrder = [...scene.layers].sort((left, right) =>
       Number(left.load_priority) - Number(right.load_priority)
       || Number(left.zorder) - Number(right.zorder)
       || String(left.id).localeCompare(String(right.id)));
-    for (const layer of loadOrder) {
-      if (preloadFailures.has(layer.id)) continue;
+    const loaded = await Promise.all(loadOrder.map(async (layer) => {
       try {
         assertNotAborted(settings.signal);
-        const table = tableCache.has(layer.id)
-          ? tableCache.get(layer.id)
-          : await global.StarplotScene.collectLayerTable(source, layer, settings.request, settings.signal);
+        const table = await global.StarplotScene.collectLayerTable(
+          source, layer, settings.request, settings.signal,
+        );
         assertNotAborted(settings.signal);
-        const trace = layerToPlotlyTrace(layer, table, scene, { forceSvgTracePlane });
-        assertNotAborted(settings.signal);
-        const slot = slotById.get(layer.id);
-        await Plotly.restyle(target, restyleUpdate(trace), [slot]);
-        loadedSlots.push(slot);
-        const effects = layoutEffects.get(trace);
-        if (effects) {
-          effectsById.set(layer.id, effects);
-          const orderedEffects = slots.map((item) => effectsById.get(item.id)).filter(Boolean);
-          const update = {
-            annotations: orderedEffects.flatMap((item) => item.annotations || []),
-            shapes: orderedEffects.flatMap((item) => item.shapes || []),
-          };
-          const marginBottom = Math.max(0, ...orderedEffects.map((item) => Number(item.marginBottom || 0)));
-          if (marginBottom) {
-            const margin = sceneLayout(scene).margin;
-            update.margin = { ...margin, b: Math.max(Number(margin.b || 10), marginBottom) };
-          }
-          await Plotly.relayout(target, update);
-        }
+        return { layer, table };
       } catch (error) {
         if (!layer.required && !(settings.signal && settings.signal.aborted)) {
           showLayerFailure(target, layer, error, () => renderScene(target, source, settings), true);
-          continue;
+          return { layer, error };
         }
         if (!(settings.signal && settings.signal.aborted)) {
           showLayerFailure(target, layer, error, () => renderScene(target, source, settings), false);
         }
-        throw error;
+        return { layer, error, required: true };
       }
+    }));
+    assertNotAborted(settings.signal);
+    const tableCache = new Map(loaded.filter((item) => item.table).map((item) => [item.layer.id, item.table]));
+    const requiredFailure = loaded.find((item) => item.required);
+    const mixedSvgZorderPlane = needsSvgZorderPlane(slots);
+    const forceSvgTracePlane = mixedSvgZorderPlane || slots.some((layer) =>
+      layer.kind === "polygon" && layer.coordinate_space === "data"
+      && tableCache.has(layer.id) && polygonTableHasHoles(tableCache.get(layer.id)));
+    const metrics = renderingMetrics(scene, tableCache);
+    const traces = new Map();
+    const effectsById = new Map();
+    for (const item of loaded) {
+      if (!item.table) continue;
+      const layerTraces = layerToPlotlyTraces(item.layer, item.table, scene, { ...metrics, forceSvgTracePlane });
+      traces.set(item.layer.id, layerTraces);
+      const effects = layoutEffects.get(layerTraces[0]);
+      if (effects) effectsById.set(item.layer.id, effects);
     }
+    normalizeSvgZorders(slots, traces, mixedSvgZorderPlane);
+    const orderedEffects = slots.map((layer) => effectsById.get(layer.id)).filter(Boolean);
+    const layout = sceneLayout(scene, metrics);
+    layout.annotations = orderedEffects.flatMap((item) => item.annotations || []);
+    layout.shapes = [...layout.shapes, ...orderedEffects.flatMap((item) => item.shapes || [])];
+    const marginBottom = Math.max(0, ...orderedEffects.map((item) => Number(item.marginBottom || 0)));
+    if (marginBottom) layout.margin = { ...metrics.margin, b: Math.max(Number(metrics.margin.b || 10), marginBottom) };
+    await Plotly.react(target, slots.flatMap((layer) =>
+      traces.get(layer.id) || [placeholder(layer, forceSvgTracePlane)]), layout, settings.config || {});
+    await afterFinalPaint();
+    if (requiredFailure) throw requiredFailure.error;
     return target;
   }
 
   global.StarplotScene = Object.assign(global.StarplotScene || {}, {
     layerToPlotlyTrace,
+    layerToPlotlyTraces,
     layerToPlotlyLayoutEffects(trace) { return layoutEffects.get(trace) || {}; },
     renderScene,
     traceTypeForLayer,

@@ -52,6 +52,35 @@ def test_recorder_records_scatter_with_single_color():
     assert len(cmd.data["colors"]) == 2
 
 
+def test_recorder_coalesces_adjacent_equivalent_scatter_commands_on_finalization():
+    recorder = DrawingRecorder()
+    common = {
+        "sizes": [4], "colors": ["#fff"], "alphas": [1.0],
+        "style_dict": {"symbol": "circle"}, "gid": "dso-marker", "zorder": -1,
+    }
+    recorder.record_scatter(x=[1], y=[2], metadata=[{"name": "A"}], **common)
+    recorder.record_scatter(x=[3], y=[4], metadata=[{"name": "B"}], **common)
+
+    assert len(recorder.commands) == 2
+    commands = recorder.coalesced_scatter_commands()
+    assert len(commands) == 1
+    command = commands[0]
+    np.testing.assert_array_equal(command.data["x"], [1, 3])
+    np.testing.assert_array_equal(command.data["y"], [2, 4])
+    assert command.metadata == ({"name": "A"}, {"name": "B"})
+    assert not command.data["x"].flags.writeable
+
+
+def test_recorder_keeps_different_scatter_rendering_contracts_separate():
+    recorder = DrawingRecorder()
+    for gid in ("dso-galaxy", "dso-cluster"):
+        recorder.record_scatter(
+            x=[1], y=[2], sizes=[4], colors=["#fff"], alphas=[1.0],
+            metadata=[], gid=gid, zorder=-1,
+        )
+    assert len(recorder.commands) == 2
+
+
 def test_record_scatter_preserves_numpy_columns():
     recorder = DrawingRecorder()
     recorder.record_scatter(

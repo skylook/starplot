@@ -63,7 +63,31 @@ test("layerToPlotlyTrace covers every Scene kind and keeps numeric typed arrays"
   }
 });
 
-test("renderScene reserves stable zorder slots and updates each completed layer once", async () => {
+test("dense finite-palette ScatterGL data uses bounded scalar-colour batches", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const rowCount = 100_000;
+  const colorIndex = new Uint8Array(rowCount);
+  for (let index = 0; index < rowCount; index += 1) colorIndex[index] = index % 2;
+  const table = Arrow.tableFromArrays({
+    x: new Float64Array(rowCount), y: new Float64Array(rowCount),
+    size: new Float32Array(rowCount).fill(1), color_index: colorIndex,
+    opacity: new Float32Array(rowCount).fill(0.5),
+  });
+  const current = layer("dense-stars", "scatter", 1, { palette_id: "palette", symbol: "circle" });
+  current.group_id = "stars";
+  current.row_count = rowCount;
+  const traces = runtime.layerToPlotlyTraces(current, table, {
+    styles: [], palettes: [{ id: "palette", colors: ["#fff", "#f80"] }], clips: [],
+  });
+  assert.equal(traces.length, 2);
+  assert.deepEqual(Array.from(traces, (trace) => trace.marker.color), ["#fff", "#f80"]);
+  assert.ok(traces.every((trace) => trace.type === "scattergl"));
+  assert.ok(traces.every((trace) => !Object.hasOwn(trace.marker, "colorscale")));
+  assert.equal(traces.reduce((total, trace) => total + trace.x.length, 0), rowCount);
+  assert.ok(traces.every((trace) => trace.meta.starplot_layer_id === "dense-stars"));
+});
+
+test("renderScene performs one final zorder-stable Plotly update", async () => {
   const calls = { react: [], restyle: [] };
   const Plotly = {
     async react(...args) { calls.react.push(args); },
@@ -81,15 +105,12 @@ test("renderScene reserves stable zorder slots and updates each completed layer 
     },
   };
   await runtime.renderScene("chart", source, { Plotly });
-  assert.equal(calls.react.length, 1, "one initial reservation update");
+  assert.equal(calls.react.length, 1, "one final Plotly update");
   assert.deepEqual(
     Array.from(calls.react[0][1], (trace) => trace.meta.starplot_layer_id),
     ["early-a", "early-b", "late"],
   );
-  assert.equal(calls.restyle.length, sceneLayers.length);
-  assert.deepEqual(Array.from(calls.restyle, (call) => call[2][0]), [0, 1, 2]);
-  assert.equal(new Set(calls.restyle.map((call) => call[2][0])).size, sceneLayers.length);
-  assert.equal(calls.react.length, 1, "later layers never rebuild completed traces");
+  assert.equal(calls.restyle.length, 0, "dense scenes never redraw once per layer");
 });
 
 test("relative-f32 coordinates decode only when origin or scale is nonidentity", async () => {
@@ -152,11 +173,21 @@ test("path and polygon ring boundaries never connect unrelated geometry", async 
   assert.equal(runtime.layerToPlotlyLayoutEffects(paperTrace).shapes[0].fillrule, "evenodd");
 });
 
+test("polygon and line artists preserve serialized Matplotlib custom dash patterns", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const scene = { styles: [], palettes: [], clips: [] };
+  const dashed = layer("dashed", "line", 0, { line_style: "(1, [2, 3])" });
+  assert.equal(runtime.layerToPlotlyTrace(dashed, tables.line(), scene).line.dash, "dash");
+  const polygon = layer("dashed-polygon", "polygon", 0, {
+    fill_color: "rgba(0,0,0,0)", edge_color: "#f00", line_style: "(1, [2, 3])",
+  });
+  assert.equal(runtime.layerToPlotlyTrace(polygon, tables.polygon(), scene).line.dash, "dash");
+});
+
 test("layout effects rebuild in stable zorder/id order instead of load order", async () => {
-  const calls = { relayout: [] };
+  const calls = { react: [] };
   const Plotly = {
-    async react() {}, async restyle() {},
-    async relayout(...args) { calls.relayout.push(args); },
+    async react(...args) { calls.react.push(args); }, async restyle() {}, async relayout() {},
   };
   const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
   const foreground = layer("foreground", "text", 20); foreground.load_priority = 0;
@@ -175,7 +206,7 @@ test("layout effects rebuild in stable zorder/id order instead of load order", a
   };
   await runtime.renderScene("chart", source, { Plotly });
   assert.deepEqual(
-    Array.from(calls.relayout.at(-1)[1].annotations, (annotation) => annotation.text),
+    Array.from(calls.react[0][2].annotations, (annotation) => annotation.text),
     ["background-a", "background-b", "foreground"],
   );
 });
@@ -204,11 +235,10 @@ test("DATA polygon holes keep their zorder trace plane when load priority is rev
   };
   await runtime.renderScene("chart", source, { Plotly });
   assert.deepEqual(Array.from(calls.react[0][1], (trace) => trace.meta.starplot_layer_id), ["hole", "foreground"]);
-  assert.deepEqual(Array.from(calls.restyle, (call) => call[2][0]), [1, 0]);
-  const holeUpdate = calls.restyle[1][1];
-  assert.equal(holeUpdate.type[0], "scatter");
-  assert.equal(holeUpdate.fill[0], "toself");
-  assert.equal(holeUpdate.zorder[0], 5);
+  const holeTrace = calls.react[0][1][0];
+  assert.equal(holeTrace.type, "scatter");
+  assert.equal(holeTrace.fill, "toself");
+  assert.equal(holeTrace.zorder, 5);
 });
 
 test("a DATA hole keeps mixed stars and line collections on one SVG zorder plane", async () => {
@@ -239,8 +269,23 @@ test("a DATA hole keeps mixed stars and line collections on one SVG zorder plane
   };
   await runtime.renderScene("chart", source, { Plotly });
   assert.deepEqual(Array.from(calls.react[0][1], (trace) => trace.type), ["scatter", "scatter", "scatter"]);
-  assert.deepEqual(Array.from(calls.restyle, (call) => call[1].type[0]), ["scatter", "scatter", "scatter"]);
+  assert.equal(calls.restyle.length, 0);
   assert.equal(calls.loads.filter((id) => id === "hole").length, 1, "hole detection reuses its decoded table");
+});
+
+test("mixed SVG geometry and WebGL stars use one SVG zorder plane when safely bounded", async () => {
+  const calls = { react: [] };
+  const Plotly = { async react(...args) { calls.react.push(args); }, async restyle() {}, async relayout() {} };
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
+  const optic = layer("optic", "polygon", -1, { fill_color: "rgba(0,0,0,0)", edge_color: "#f00" });
+  const stars = layer("stars", "scatter", 1, { palette_id: "p" }); stars.group_id = "stars"; stars.row_count = 2;
+  const source = {
+    async loadManifest() { return { viewport: {}, styles: [], palettes: [{ id: "p", colors: ["#fff"] }], clips: [], layers: [optic, stars] }; },
+    async *loadLayer(current) { for (const batch of (current.kind === "polygon" ? tables.polygon() : tables.scatter()).batches) yield batch; },
+  };
+  await runtime.renderScene("chart", source, { Plotly });
+  assert.deepEqual(Array.from(calls.react[0][1], (trace) => trace.type), ["scatter", "scatter"]);
+  assert.deepEqual(Array.from(calls.react[0][1], (trace) => trace.zorder), [0, 1]);
 });
 
 test("text preserves coordinate references, rotation, offsets, and per-row styles", async () => {
@@ -426,7 +471,7 @@ test("info table widths and viewport layout remain exact in initial Plotly reser
   assert.equal(layout.plot_bgcolor, "#123");
   assert.equal(layout.paper_bgcolor, "#456");
   assert.equal(layout.showlegend, true);
-  assert.deepEqual({ ...layout.margin }, { l: 20, r: 21, t: 22, b: 23 });
+  assert.deepEqual({ ...layout.margin }, { l: 20, r: 21, t: 22, b: 105 });
   const trace = runtime.layerToPlotlyTrace(layer("table", "info_table", 1), table, { viewport: {}, styles: [], palettes: [] });
   const effects = runtime.layerToPlotlyLayoutEffects(trace);
   assert.equal(trace.visible, false);
@@ -449,10 +494,10 @@ test("layout-only layers keep one trace slot and emit valid annotations and foot
   };
   await runtime.renderScene("chart", source, { Plotly });
   assert.equal(calls.react.length, 1);
-  assert.equal(calls.restyle.length, 2);
+  assert.equal(calls.restyle.length, 0);
   assert.deepEqual(Array.from(calls.react[0][1], (trace) => trace.type), ["scatter", "scatter"]);
-  assert.equal(calls.relayout.length, 2);
-  const final = calls.relayout.at(-1)[1];
+  assert.equal(calls.relayout.length, 0);
+  const final = calls.react[0][2];
   assert.equal(final.annotations.length, 3);
   assert.equal(final.annotations[0].xanchor, "right");
   assert.equal(final.annotations[0].yanchor, "top");
@@ -484,8 +529,8 @@ test("hover is bounded, invalid gradient bounds skip closed, and radial defaults
 });
 
 test("optional layer failures do not block safe layers and required failures preserve them", async () => {
-  const calls = { restyle: [], relayout: [] };
-  const Plotly = { async react() {}, async restyle(...args) { calls.restyle.push(args); }, async relayout(...args) { calls.relayout.push(args); } };
+  const calls = { react: [], restyle: [], relayout: [] };
+  const Plotly = { async react(...args) { calls.react.push(args); }, async restyle(...args) { calls.restyle.push(args); }, async relayout(...args) { calls.relayout.push(args); } };
   const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
   const good = layer("good", "line", 0); const optional = layer("optional", "line", 1); optional.required = false; const required = layer("required", "line", 2);
   const source = {
@@ -493,6 +538,7 @@ test("optional layer failures do not block safe layers and required failures pre
     async *loadLayer(current) { if (current.id !== "good") throw new Error(`${current.id} failed`); for (const batch of tables.line().batches) yield batch; },
   };
   await assert.rejects(runtime.renderScene("chart", source, { Plotly }), /required failed/);
-  assert.equal(calls.restyle.length, 1, "the completed safe layer remains visible");
-  assert.deepEqual(Array.from(calls.restyle.at(-1)[2]), [0]);
+  assert.equal(calls.restyle.length, 0);
+  assert.equal(calls.react.length, 1, "the completed safe layer remains visible");
+  assert.equal(calls.react[0][1][0].meta.starplot_layer_id, "good");
 });

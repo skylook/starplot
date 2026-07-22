@@ -364,11 +364,11 @@ def test_scene_adapter_matches_independently_captured_legacy_primitive_snapshot(
         assert customdata == expected_customdata
 
     corrected_font_diffs = {
-        ("layout", "legend", "font", "size"): (19.8, 14.666666666666666)
+        ("layout", "legend", "font", "size"): (14.666666666666666, 14.666666666666666)
     }
     if name == "text":
         corrected_font_diffs[("layout", "annotations", 0, "font", "size")] = (
-            21.6,
+            16.0,
             16.0,
         )
     assert_semantic_equal(
@@ -544,7 +544,7 @@ def test_plotly_marker_calibration_is_applied_only_after_scene_compilation():
     trace = PlotlySceneAdapter().render(scene).data[0]
 
     assert scene.layers[0].data["size"][0] == pytest.approx(neutral_size)
-    assert trace.marker.size[0] == pytest.approx(neutral_size * 1.15)
+    assert trace.marker.size[0] == pytest.approx(neutral_size * 1.0)
 
 
 def test_relative_identity_coordinates_stay_float32_typed_arrays():

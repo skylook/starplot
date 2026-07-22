@@ -42,7 +42,7 @@ class _InteractiveMixin:
         )
         reference_width, reference_height = renderer._reference_dimensions()
         return SceneCompiler().compile(
-            self._recorder.commands,
+            self._recorder.coalesced_scatter_commands(),
             self._recorder.projection_info,
             self._recorder.style_info,
             reference_width,
@@ -122,7 +122,7 @@ class _InteractiveMixin:
             height=height,
             transparent=transparent,
         )
-        return renderer.render(self._recorder.commands)
+        return renderer.render(self._recorder.coalesced_scatter_commands())
 
 
 class InteractiveMapPlot(_InteractiveMixin, RecordingMixin, MapPlot):
@@ -143,7 +143,7 @@ class InteractiveMapPlot(_InteractiveMixin, RecordingMixin, MapPlot):
         p.export_html("chart.html", width=1400, height=900)
     """
 
-    def export_html(self, filename: str, width: int = 1200, height: int = 900,
+    def export_html(self, filename: str, width: int = None, height: int = None,
                     transparent: bool = False, **kwargs):
         return super().export_html(filename, width=width, height=height,
                                    transparent=transparent, **kwargs)
@@ -152,7 +152,7 @@ class InteractiveMapPlot(_InteractiveMixin, RecordingMixin, MapPlot):
 class InteractiveZenithPlot(_InteractiveMixin, RecordingMixin, ZenithPlot):
     """ZenithPlot with interactive Plotly export.  API same as ZenithPlot."""
 
-    def export_html(self, filename: str, width: int = 1000, height: int = 1000,
+    def export_html(self, filename: str, width: int = None, height: int = None,
                     transparent: bool = False, **kwargs):
         return super().export_html(filename, width=width, height=height,
                                    transparent=transparent, **kwargs)
@@ -161,7 +161,7 @@ class InteractiveZenithPlot(_InteractiveMixin, RecordingMixin, ZenithPlot):
 class InteractiveHorizonPlot(_InteractiveMixin, RecordingMixin, HorizonPlot):
     """HorizonPlot with interactive Plotly export.  API same as HorizonPlot."""
 
-    def export_html(self, filename: str, width: int = 1200, height: int = 900,
+    def export_html(self, filename: str, width: int = None, height: int = None,
                     transparent: bool = False, **kwargs):
         return super().export_html(filename, width=width, height=height,
                                    transparent=transparent, **kwargs)
@@ -170,7 +170,7 @@ class InteractiveHorizonPlot(_InteractiveMixin, RecordingMixin, HorizonPlot):
 class InteractiveOpticPlot(_InteractiveMixin, RecordingMixin, OpticPlot):
     """OpticPlot with interactive Plotly export.  API same as OpticPlot."""
 
-    def export_html(self, filename: str, width: int = 1000, height: int = 1000,
+    def export_html(self, filename: str, width: int = None, height: int = None,
                     transparent: bool = False, **kwargs):
         return super().export_html(filename, width=width, height=height,
                                    transparent=transparent, **kwargs)
