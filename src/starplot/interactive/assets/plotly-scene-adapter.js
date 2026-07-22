@@ -570,7 +570,7 @@
     };
   }
 
-  function infoTableTrace(layer, table, style, scene) {
+  function infoTableTrace(layer, table, style, scene, settings) {
     const columns = Array.from(column(table, "column"), String);
     const values = Array.from(column(table, "value"), String);
     const widths = Array.from(column(table, "width"), (value) => Math.max(0, Number(value)));
@@ -580,13 +580,17 @@
     const normalized = widths.slice(0, count).map((value) => total > 0 ? value / total : 1 / count);
     const lineColor = style.line_color || "#999999";
     const background = style.background_color || (scene.viewport && scene.viewport.paper_background) || "#ffffff";
+    const fontScale = (settings && settings.fontPixelScale) || 1;
+    const baseSize = Number(style.font_size || 12);
+    const headerSize = Math.max(11, baseSize * 1.2 * fontScale);
+    const valueSize = Math.max(10, baseSize * fontScale);
     const shapes = [{ type: "rect", xref: "paper", yref: "paper", x0: 0, x1: 1, y0: -0.09, y1: -0.01, line: { color: lineColor, width: 1 }, fillcolor: background, layer: "above" }];
     const annotations = [];
     let left = 0;
     for (let index = 0; index < count; index += 1) {
       const right = left + normalized[index];
       if (index) shapes.push({ type: "line", xref: "paper", yref: "paper", x0: left, x1: left, y0: -0.09, y1: -0.01, line: { color: lineColor, width: 1 }, layer: "above" });
-      for (const [text, y, size] of [[`<b>${columns[index]}</b>`, -0.03, Math.max(11, Number(style.font_size || 12) * 1.2)], [values[index], -0.068, Math.max(10, Number(style.font_size || 12))]]) {
+      for (const [text, y, size] of [[`<b>${columns[index]}</b>`, -0.03, headerSize], [values[index], -0.068, valueSize]]) {
         annotations.push({ x: (left + right) / 2, y, xref: "paper", yref: "paper", text, showarrow: false, xanchor: "center", yanchor: "middle", font: { size, color: style.font_color || "#111111", family: style.font_name || "Inter, Arial, sans-serif" }, opacity: Number(style.font_alpha ?? 1) });
       }
       left = right;
@@ -607,7 +611,7 @@
     else if (layer.kind === "polygon") trace = polygonTrace(layer, table, style);
     else if (layer.kind === "text") trace = textTrace(layer, table, scene, style, settings);
     else if (layer.kind === "gradient") trace = gradientTrace(layer, scene, style) || hiddenLayerTrace(layer);
-    else trace = infoTableTrace(layer, table, style, scene);
+    else trace = infoTableTrace(layer, table, style, scene, settings);
     const [xref, yref] = coordinateRefs(layer, style);
     if (["scatter", "line", "line_collection", "polygon"].includes(layer.kind)
         && (xref !== "x" || yref !== "y")) {

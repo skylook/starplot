@@ -309,25 +309,57 @@ class RecordingMixin:
             LOGGER.debug("Could not extract axes width: %s", e)
 
     def _record_untracked_path_patches(self):
-        """Capture user-added ``PathPatch`` artists in final data coordinates.
+        """Capture user-added patch artists in final data coordinates.
 
         The public plotting API records its own primitives at call time, but
         Matplotlib also permits legitimate extensions via ``ax.add_patch``.
-        Recording those artists here preserves custom marker outlines without
-        introducing example-specific drawing code.
+        Recording those artists here preserves custom marker outlines and
+        border circles (e.g. ZenithPlot's horizon) without introducing
+        example-specific drawing code.
         """
         try:
             import numpy as np
-            from matplotlib.patches import PathPatch
+            from matplotlib.patches import Patch
 
             recorded = getattr(self, "_recorded_external_patch_ids", set())
             for patch in self.ax.patches:
-                if not isinstance(patch, PathPatch) or id(patch) in recorded:
+                if id(patch) in recorded:
                     continue
-                if not patch.get_visible() or patch.get_path().vertices.size == 0:
+                if not isinstance(patch, Patch):
+                    continue
+                if not patch.get_visible():
+                    continue
+                path = patch.get_path()
+                if path.vertices.size == 0:
                     continue
 
-                path = patch.get_path()
+                # Skip the background fill patch — it is handled by the clip
+                # geometry and clipped plot background, not as a visible polygon.
+                # Background fills have linewidth=0 and fill=True with no gid.
+                lw = float(patch.get_linewidth() or 0)
+                edge = patch.get_edgecolor()
+                has_visible_edge = (
+                    lw > 0
+                    and edge is not None
+                    and not (isinstance(edge, str) and edge.lower() == "none")
+                )
+                fill = patch.get_fill()
+                gid = patch.get_gid()
+                if not has_visible_edge and fill and not gid:
+                    # Pure background fill, no border — skip.
+                    continue
+                if not has_visible_edge and not fill:
+                    continue
+
+                # Interpolate curved paths (Circle, Ellipse) so the recorded
+                # polygon has enough vertices for a smooth Plotly rendering.
+                codes = path.codes
+                has_curves = codes is not None and any(
+                    code in (3, 4) for code in codes
+                )
+                if has_curves and len(path.vertices) < 64:
+                    path = path.interpolated(8)
+
                 rings = _transformed_path_rings(
                     self.ax, patch.get_transform(), path.vertices, path.codes
                 )
@@ -335,17 +367,18 @@ class RecordingMixin:
                     continue
 
                 alpha = patch.get_alpha()
+                fc = patch.get_facecolor()
                 self._recorder.record_polygon(
                     points=rings[0],
                     rings=rings,
                     style_dict={
-                        "fill_color": _rgba_to_hex(patch.get_facecolor()),
-                        "edge_color": _rgba_to_hex(patch.get_edgecolor()),
-                        "edge_width": float(patch.get_linewidth() or 0),
+                        "fill_color": _rgba_to_hex(fc) if fill else "none",
+                        "edge_color": _rgba_to_hex(edge),
+                        "edge_width": lw,
                         "alpha": float(alpha if alpha is not None else 1.0),
                         "line_style": str(patch.get_linestyle()),
                     },
-                    gid=patch.get_gid() or "custom-path-patch",
+                    gid=gid or "custom-patch",
                     zorder=int(patch.get_zorder() or 0),
                 )
                 recorded.add(id(patch))

@@ -862,7 +862,16 @@ class _PlotlyRenderContext:
         yshift = style.get("yshift", float(layer.data["y_offset"][0]) * point_scale)
         text = str(layer.data["text"][0]).replace("\n", "<br>")
         weight = style.get("font_weight", "normal")
-        numeric_weight = {"normal": 400, "bold": 700}.get(str(weight).lower(), weight)
+        _WEIGHT_MAP = {
+            "normal": 400, "bold": 700, "light": 300, "medium": 500,
+            "semibold": 600, "heavy": 800, "extra bold": 800, "black": 900,
+        }
+        numeric_weight = _WEIGHT_MAP.get(str(weight).lower())
+        if numeric_weight is None:
+            try:
+                numeric_weight = int(weight)
+            except (ValueError, TypeError):
+                numeric_weight = 400
         font = dict(
             size=max(8, style.get("font_size", 12) * point_scale),
             color=_sanitize_color(style.get("font_color", "#ffffff")),
