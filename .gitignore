@@ -179,6 +179,7 @@ dmypy.json
 # Temporary generated chart files
 /*.png
 /*.html
+*.scene/
 star_chart_basic.html
 star_chart_basic.png
 star_chart_detail.html
