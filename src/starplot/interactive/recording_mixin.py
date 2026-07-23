@@ -98,6 +98,22 @@ def _rgba_to_hex(color):
         return "#ffffff"
 
 
+def _rgb_string(color):
+    """Return a CSS rgb(...) or hex color string with the alpha channel removed.
+
+    Useful when the consumer (e.g. a Plotly trace) will apply a separate
+    `opacity`/`alpha` value, so the alpha should not be embedded in the color.
+    """
+    try:
+        from matplotlib.colors import to_hex, to_rgba
+        red, green, blue, _ = to_rgba(color)
+        hex_color = to_hex((red, green, blue))
+        # Use hex when possible; for non-integer values fall back to rgb().
+        return hex_color
+    except Exception:
+        return "#ffffff"
+
+
 class RecordingMixin:
     """Mixin that records drawing commands alongside matplotlib rendering."""
 
@@ -411,12 +427,15 @@ class RecordingMixin:
 
                 alpha = patch.get_alpha()
                 fc = patch.get_facecolor()
+                # Remove embedded alpha from the color strings; Plotly applies
+                # the separate `alpha` style as trace/shape opacity, and we
+                # don't want to multiply them.
                 self._recorder.record_polygon(
                     points=rings[0],
                     rings=rings,
                     style_dict={
-                        "fill_color": _rgba_to_hex(fc) if fill else "none",
-                        "edge_color": _rgba_to_hex(edge),
+                        "fill_color": _rgb_string(fc) if fill else "none",
+                        "edge_color": _rgb_string(edge),
                         "edge_width": lw,
                         "alpha": float(alpha if alpha is not None else 1.0),
                         "line_style": str(patch.get_linestyle()),
@@ -588,8 +607,10 @@ class RecordingMixin:
             if not rings:
                 return
             style_dict = {
-                "fill_color": _rgba_to_hex(patch.get_facecolor()),
-                "edge_color": _rgba_to_hex(patch.get_edgecolor()),
+                # Strip embedded alpha from fill/edge colors; a separate
+                # `alpha` is recorded and applied as Plotly trace opacity.
+                "fill_color": _rgb_string(patch.get_facecolor()),
+                "edge_color": _rgb_string(patch.get_edgecolor()),
                 "edge_width": float(patch.get_linewidth() or 0),
                 "alpha": float(patch.get_alpha() if patch.get_alpha() is not None else 1.0),
                 "line_style": str(patch.get_linestyle()),
