@@ -1,0 +1,233 @@
+{
+  "arrow_payload_bytes": 13011688,
+  "browser": {
+    "arrow_payload_bytes": 13011688,
+    "complete_render_median_ms": 4828.69180792477,
+    "complete_render_p95_ms": 5039.802010776475,
+    "completion_signal": "Plotly newPlot/react promise plus two animation frames",
+    "engine": "chromium",
+    "engine_version": "150.0.7871.125",
+    "legacy_same_scene": {
+      "complete_render_median_ms": 5622.60895606596,
+      "complete_render_p95_ms": 6041.012670239434,
+      "scene_hash": "sha256:7c1739635214d9a7e68cceecfd159d6f6437dffeb01e0ae38ebd0ca595f4ad34",
+      "source_kind": "direct-plotly-same-scene-http"
+    },
+    "legacy_source_kind": "direct-plotly-same-scene-http",
+    "legacy_source_url": "http://127.0.0.1:55479/legacy.html",
+    "scene_hash": "sha256:7c1739635214d9a7e68cceecfd159d6f6437dffeb01e0ae38ebd0ca595f4ad34",
+    "source_kind": "external-arrow-http",
+    "source_url": "http://127.0.0.1:55479/scene.html",
+    "status": "measured"
+  },
+  "environment": {
+    "browser": "chromium 150.0.7871.125",
+    "captured_at_utc": "2026-07-18T09:52:47.790258+00:00",
+    "cpu": "i386",
+    "cpu_count": 12,
+    "host_fingerprint": "2c491292ea611770",
+    "machine": "x86_64",
+    "numpy": "2.2.2",
+    "os": "macOS-10.16-x86_64-i386-64bit-Mach-O",
+    "playwright": "1.58.0",
+    "plotly": "6.5.2",
+    "pyarrow": "19.0.0",
+    "python": "3.13.2",
+    "shapely": "2.0.7",
+    "starplot": "0.19.5"
+  },
+  "external_html_bytes": 77716,
+  "legacy_renderer_preparation": {
+    "median_seconds": 10.810263658990152,
+    "p95_seconds": 11.781776595534756
+  },
+  "legacy_renderer_total": {
+    "median_seconds": 10.950480873929337,
+    "p95_seconds": 11.934872675361111
+  },
+  "ordinary_chart": {
+    "median_seconds": 0.18658588803373277,
+    "p95_seconds": 0.21648182619828732,
+    "point_count": 5000,
+    "raw_repetitions": [
+      {
+        "arrow_payload_bytes": 68616,
+        "external_html_bytes": 77716,
+        "legacy_renderer_preparation_seconds": 0.07267588097602129,
+        "legacy_renderer_total_seconds": 0.21731410699430853,
+        "payload_bytes": 186256,
+        "peak_rss_mb": 230.08984375,
+        "plotly_construction_seconds": 0.14463822601828724,
+        "viewport_warm_ms": [
+          0.10830804239958525,
+          0.11521205306053162,
+          0.08000293746590614,
+          0.07839302998036146,
+          0.07745996117591858
+        ]
+      },
+      {
+        "arrow_payload_bytes": 68616,
+        "external_html_bytes": 77716,
+        "legacy_renderer_preparation_seconds": 0.057701073004864156,
+        "legacy_renderer_total_seconds": 0.18304057407658547,
+        "payload_bytes": 186256,
+        "peak_rss_mb": 226.66015625,
+        "plotly_construction_seconds": 0.12533950107172132,
+        "viewport_warm_ms": [
+          0.11499295942485332,
+          0.09374506771564484,
+          0.08669099770486355,
+          0.08506991434842348,
+          0.10285794269293547
+        ]
+      },
+      {
+        "arrow_payload_bytes": 68616,
+        "external_html_bytes": 77716,
+        "legacy_renderer_preparation_seconds": 0.0687472780700773,
+        "legacy_renderer_total_seconds": 0.21315270301420242,
+        "payload_bytes": 186256,
+        "peak_rss_mb": 228.29296875,
+        "plotly_construction_seconds": 0.14440542494412512,
+        "viewport_warm_ms": [
+          0.1375629799440503,
+          0.11399597860872746,
+          0.10610499884933233,
+          0.10365701746195555,
+          0.10187993757426739
+        ]
+      },
+      {
+        "arrow_payload_bytes": 68616,
+        "external_html_bytes": 77716,
+        "legacy_renderer_preparation_seconds": 0.0546874450519681,
+        "legacy_renderer_total_seconds": 0.18658588803373277,
+        "payload_bytes": 186256,
+        "peak_rss_mb": 226.69921875,
+        "plotly_construction_seconds": 0.13189844298176467,
+        "viewport_warm_ms": [
+          0.12427300680428743,
+          0.10261707939207554,
+          0.09503995534032583,
+          0.0934769632294774,
+          0.09296298958361149
+        ]
+      },
+      {
+        "arrow_payload_bytes": 68616,
+        "external_html_bytes": 77716,
+        "legacy_renderer_preparation_seconds": 0.05660120095126331,
+        "legacy_renderer_total_seconds": 0.1860800179420039,
+        "payload_bytes": 186256,
+        "peak_rss_mb": 227.8671875,
+        "plotly_construction_seconds": 0.1294788169907406,
+        "viewport_warm_ms": [
+          0.11215510312467813,
+          0.09348895400762558,
+          0.08611090015619993,
+          0.0838299747556448,
+          0.08286000229418278
+        ]
+      }
+    ]
+  },
+  "payload_bytes": 31634690,
+  "peak_rss_mb": 498.33203125,
+  "plotly_construction": {
+    "median_seconds": 0.14336125401314348,
+    "p95_seconds": 0.18235363946296274
+  },
+  "point_count": 974153,
+  "raw_repetitions": [
+    {
+      "arrow_payload_bytes": 13011688,
+      "external_html_bytes": 77716,
+      "legacy_renderer_preparation_seconds": 11.223620766075328,
+      "legacy_renderer_total_seconds": 11.415656149154529,
+      "payload_bytes": 31634690,
+      "peak_rss_mb": 469.5390625,
+      "plotly_construction_seconds": 0.19203538307920098,
+      "viewport_warm_ms": [
+        8.81485897116363,
+        9.019457967951894,
+        8.275127038359642,
+        8.261909009888768,
+        8.243618998676538
+      ]
+    },
+    {
+      "arrow_payload_bytes": 13011688,
+      "external_html_bytes": 77716,
+      "legacy_renderer_preparation_seconds": 11.921315552899614,
+      "legacy_renderer_total_seconds": 12.064676806912757,
+      "payload_bytes": 31634690,
+      "peak_rss_mb": 477.93359375,
+      "plotly_construction_seconds": 0.14336125401314348,
+      "viewport_warm_ms": [
+        10.848783073015511,
+        11.358162038959563,
+        10.966968024149537,
+        10.799211915582418,
+        10.561160976067185
+      ]
+    },
+    {
+      "arrow_payload_bytes": 13011688,
+      "external_html_bytes": 77716,
+      "legacy_renderer_preparation_seconds": 10.810263658990152,
+      "legacy_renderer_total_seconds": 10.950480873929337,
+      "payload_bytes": 31634690,
+      "peak_rss_mb": 470.58984375,
+      "plotly_construction_seconds": 0.1402172149391845,
+      "viewport_warm_ms": [
+        10.88970189448446,
+        10.639328975230455,
+        9.980359929613769,
+        10.03970904275775,
+        10.217848001047969
+      ]
+    },
+    {
+      "arrow_payload_bytes": 13011688,
+      "external_html_bytes": 77716,
+      "legacy_renderer_preparation_seconds": 10.5608133940259,
+      "legacy_renderer_total_seconds": 10.699966205982491,
+      "payload_bytes": 31634690,
+      "peak_rss_mb": 482.171875,
+      "plotly_construction_seconds": 0.1391528119565919,
+      "viewport_warm_ms": [
+        10.461049037985504,
+        9.89571399986744,
+        9.822707972489297,
+        8.96723405458033,
+        8.124080952256918
+      ]
+    },
+    {
+      "arrow_payload_bytes": 13011688,
+      "external_html_bytes": 77716,
+      "legacy_renderer_preparation_seconds": 10.715544748934917,
+      "legacy_renderer_total_seconds": 10.859171413932927,
+      "payload_bytes": 31634690,
+      "peak_rss_mb": 498.33203125,
+      "plotly_construction_seconds": 0.1436266649980098,
+      "viewport_warm_ms": [
+        8.16727802157402,
+        8.116369019262493,
+        8.095728000625968,
+        8.384180022403598,
+        8.199529955163598
+      ]
+    }
+  ],
+  "scene_compile": {
+    "median_seconds": 10.810263658990152,
+    "p95_seconds": 11.781776595534756,
+    "semantics": "Native SceneCompiler.compile timing."
+  },
+  "viewport_warm": {
+    "median_ms": 9.822707972489297,
+    "p95_ms": 10.951514798216522
+  }
+}
