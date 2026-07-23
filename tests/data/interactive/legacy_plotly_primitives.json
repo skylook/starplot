@@ -896,7 +896,7 @@
       "legend": {
         "font": {
           "color": "#ffffff",
-          "size": 14.666666666666666
+          "size": 15.277777777777777
         },
         "bgcolor": "rgba(0,0,0,0.5)",
         "bordercolor": "rgba(255,255,255,0.2)",
@@ -936,7 +936,7 @@
         "line": {
           "color": "#abcdef",
           "dash": "dash",
-          "width": 2.0
+          "width": 2.083333333333333
         },
         "mode": "lines",
         "name": "Ecliptic",
@@ -1781,7 +1781,7 @@
       "legend": {
         "font": {
           "color": "#ffffff",
-          "size": 14.666666666666666
+          "size": 15.277777777777777
         },
         "bgcolor": "rgba(0,0,0,0.5)",
         "bordercolor": "rgba(255,255,255,0.2)",
@@ -1821,7 +1821,7 @@
         "line": {
           "color": "#778899",
           "dash": "solid",
-          "width": 1.3333333333333333
+          "width": 1.3888888888888888
         },
         "mode": "lines",
         "name": "Constellations",
@@ -2673,7 +2673,7 @@
       "legend": {
         "font": {
           "color": "#ffffff",
-          "size": 14.666666666666666
+          "size": 15.277777777777777
         },
         "bgcolor": "rgba(0,0,0,0.5)",
         "bordercolor": "rgba(255,255,255,0.2)",
@@ -2714,7 +2714,7 @@
         "legendgroup": "milky-way",
         "line": {
           "color": "#ffffff",
-          "width": 0.6666666666666666
+          "width": 0.6944444444444444
         },
         "mode": "lines",
         "opacity": 0.7,
@@ -3556,7 +3556,7 @@
       "legend": {
         "font": {
           "color": "#ffffff",
-          "size": 14.666666666666666
+          "size": 15.277777777777777
         },
         "bgcolor": "rgba(0,0,0,0.5)",
         "bordercolor": "rgba(255,255,255,0.2)",
@@ -4412,7 +4412,7 @@
       "legend": {
         "font": {
           "color": "#ffffff",
-          "size": 14.666666666666666
+          "size": 15.277777777777777
         },
         "bgcolor": "rgba(0,0,0,0.5)",
         "bordercolor": "rgba(255,255,255,0.2)",
@@ -4437,7 +4437,7 @@
           "font": {
             "color": "#ffffff",
             "family": "Inter, Arial, sans-serif",
-            "size": 16.0,
+            "size": 16.666666666666664,
             "weight": 400
           },
           "opacity": 1.0,
@@ -4447,11 +4447,11 @@
           "x": 0.5,
           "xanchor": "left",
           "xref": "x domain",
-          "xshift": 9.599999745686848,
+          "xshift": 9.999999735090467,
           "y": 0.75,
           "yanchor": "bottom",
           "yref": "y domain",
-          "yshift": -4.799999872843424
+          "yshift": -4.999999867545234
         }
       ],
       "modebar": {
@@ -15319,7 +15319,7 @@
       "legend": {
         "font": {
           "color": "#ffffff",
-          "size": 14.666666666666666
+          "size": 15.277777777777777
         },
         "bgcolor": "rgba(0,0,0,0.5)",
         "bordercolor": "rgba(255,255,255,0.2)",
@@ -16175,7 +16175,7 @@
       "legend": {
         "font": {
           "color": "#ffffff",
-          "size": 14.666666666666666
+          "size": 15.277777777777777
         },
         "bgcolor": "rgba(0,0,0,0.5)",
         "bordercolor": "rgba(255,255,255,0.2)",
@@ -16231,7 +16231,7 @@
           "font": {
             "color": "#ffffff",
             "family": "Inter, Arial, sans-serif",
-            "size": 19.199999999999996
+            "size": 19.999999999999996
           },
           "opacity": 1.0,
           "showarrow": false,
@@ -16247,7 +16247,7 @@
           "font": {
             "color": "#ffffff",
             "family": "Inter, Arial, sans-serif",
-            "size": 16.0
+            "size": 16.666666666666664
           },
           "opacity": 1.0,
           "showarrow": false,
@@ -16263,7 +16263,7 @@
           "font": {
             "color": "#ffffff",
             "family": "Inter, Arial, sans-serif",
-            "size": 19.199999999999996
+            "size": 19.999999999999996
           },
           "opacity": 1.0,
           "showarrow": false,
@@ -16279,7 +16279,7 @@
           "font": {
             "color": "#ffffff",
             "family": "Inter, Arial, sans-serif",
-            "size": 16.0
+            "size": 16.666666666666664
           },
           "opacity": 1.0,
           "showarrow": false,

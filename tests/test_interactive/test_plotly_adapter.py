@@ -363,19 +363,10 @@ def test_scene_adapter_matches_independently_captured_legacy_primitive_snapshot(
         assert fields == ("name", "type", "object_id")
         assert customdata == expected_customdata
 
-    corrected_font_diffs = {
-        ("layout", "legend", "font", "size"): (14.666666666666666, 14.666666666666666)
-    }
-    if name == "text":
-        corrected_font_diffs[("layout", "annotations", 0, "font", "size")] = (
-            16.0,
-            16.0,
-        )
     assert_semantic_equal(
         legacy_visual_view(actual),
         legacy_visual_view(expected),
         scene,
-        allowed_diffs=corrected_font_diffs,
     )
 
 

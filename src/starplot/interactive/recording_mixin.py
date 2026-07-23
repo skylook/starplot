@@ -230,16 +230,24 @@ class RecordingMixin:
 
         self._record_untracked_path_patches()
 
-        # Record axes bbox and pixel dimensions
+        # Record axes bbox and pixel dimensions.
+        # _fit_to_ax sets the figure size in inches to the axes bbox.  The
+        # exported PNG is rendered at self.dpi (the export dpi, typically
+        # 100), while get_window_extent() returns display pixels at the
+        # backend's figure dpi (which may be 200 on retina).  Convert to
+        # export pixels so reference dimensions match the actual PNG output
+        # used for visual comparison.
         try:
             ax_pos = self.ax.get_position()
             proj_info["axes_bbox"] = (
                 float(ax_pos.x0), float(ax_pos.y0),
                 float(ax_pos.width), float(ax_pos.height),
             )
-            extent = self.ax.get_window_extent()
+            fig_width_in, fig_height_in = self.fig.get_size_inches()
+            export_dpi = getattr(self, "dpi", 100) or 100
             proj_info["axes_pixels"] = (
-                float(extent.width), float(extent.height),
+                float(ax_pos.width * fig_width_in * export_dpi),
+                float(ax_pos.height * fig_height_in * export_dpi),
             )
         except Exception as e:
             LOGGER.debug("Could not extract axes geometry: %s", e)
@@ -302,8 +310,14 @@ class RecordingMixin:
         if magnitude_scale is not None:
             self._recorder.style_info["magnitude_scale"] = magnitude_scale
         try:
+            ax_pos = self.ax.get_position()
+            fig_width_in, fig_height_in = self.fig.get_size_inches()
+            export_dpi = getattr(self, "dpi", 100) or 100
             self._recorder.style_info["source_axes_width"] = float(
-                self.ax.get_window_extent().width
+                ax_pos.width * fig_width_in * export_dpi
+            )
+            self._recorder.style_info["source_axes_height"] = float(
+                ax_pos.height * fig_height_in * export_dpi
             )
         except Exception as e:
             LOGGER.debug("Could not extract axes width: %s", e)
@@ -353,12 +367,41 @@ class RecordingMixin:
 
                 # Interpolate curved paths (Circle, Ellipse) so the recorded
                 # polygon has enough vertices for a smooth Plotly rendering.
+                # Estimate the pixel circumference from the transformed patch
+                # bounding box and target ~1 pixel segment length.
                 codes = path.codes
                 has_curves = codes is not None and any(
                     code in (3, 4) for code in codes
                 )
                 if has_curves and len(path.vertices) < 64:
-                    path = path.interpolated(8)
+                    try:
+                        import numpy as np
+                        vertices = path.vertices
+                        # Transform a sampling of vertices to display pixels.
+                        # For Circle/Ellipse the extrema are in vertices, so
+                        # even a coarse sample bounds the final shape.
+                        sample = vertices[:: max(1, len(vertices) // 16)]
+                        display = patch.get_transform().transform(sample)
+                        widths = display[:, 0]
+                        heights = display[:, 1]
+                        px_width = float(np.max(widths) - np.min(widths))
+                        px_height = float(np.max(heights) - np.min(heights))
+                        pixel_radius = max(px_width, px_height) / 2.0
+                        circumference = 2.0 * math.pi * max(pixel_radius, 1.0)
+                        segment_count = max(64, int(round(circumference)))
+                        # matplotlib's interpolated(n) inserts n points per
+                        # original segment.  For a Circle there are ~4 segments.
+                        original_segments = max(1, len(codes) - 1)
+                        steps = max(
+                            8,
+                            min(2000, segment_count // original_segments),
+                        )
+                    except Exception as e:
+                        LOGGER.debug(
+                            "Could not estimate patch interpolation: %s", e
+                        )
+                        steps = 8
+                    path = path.interpolated(steps)
 
                 rings = _transformed_path_rings(
                     self.ax, patch.get_transform(), path.vertices, path.codes

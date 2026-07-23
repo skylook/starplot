@@ -411,17 +411,11 @@ class _PlotlyRenderContext:
         return (value - y0) / (y1 - y0)
 
     def _font_pixel_scale(self) -> float:
-        source_width = self.style_info.get("source_axes_width")
-        if not source_width:
-            return 1.0
-        reference_width = float(self.viewport.get("reference_width", source_width))
-        target_width = max(1.0, reference_width - 2.0 * self._side_margin)
-        return (
-            float(self.style_info.get("dpi", 100.0))
-            / 72.0
-            * target_width
-            / float(source_width)
-        )
+        # Font sizes are recorded in PostScript points (1/72 inch).  Plotly
+        # expects pixel sizes.  Convert using the export dpi; do NOT scale by
+        # the figure width ratio.  A 12pt font is the same physical size
+        # regardless of whether the output is 1400px or 4096px wide.
+        return float(self.style_info.get("dpi", 100.0)) / 72.0
 
     def _stroke_pixel_scale(self) -> float:
         return self._font_pixel_scale() * _KALEIDO_STROKE_SCALE

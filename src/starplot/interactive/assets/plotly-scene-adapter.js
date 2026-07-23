@@ -727,12 +727,12 @@
     footerOffset = Math.max(0, footerOffset);
     const hasGridLabels = scene.layers.some((layer) => layer.group_id === "gridlines-label");
     const sideMargin = footerOffset && hasGridLabels ? 50 : 10;
-    const referenceWidth = Number(viewport.reference_width || 0);
-    const sourceAxesWidth = Number(viewport.source_axes_width || 0);
     const dpi = Number(viewport.dpi || 100);
-    const fontPixelScale = sourceAxesWidth > 0 && referenceWidth > 0
-      ? dpi / 72 * Math.max(1, referenceWidth - 2 * sideMargin) / sourceAxesWidth
-      : 1;
+    // Font sizes are recorded in PostScript points (1/72 inch).  Plotly expects
+    // pixel sizes.  Convert using the export dpi; do NOT scale by the figure
+    // width ratio.  A 12pt font is the same physical size regardless of output
+    // width.
+    const fontPixelScale = dpi / 72;
     return {
       footerOffset,
       fontPixelScale,

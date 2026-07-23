@@ -296,9 +296,10 @@ def test_renderer_scales_text_from_matplotlib_points():
 
     fig = PlotlyRenderer(PROJ_INFO, style_info, width=740, height=500).render([cmd])
 
-    # Plot width inside the 10px left/right margins is 720px. At 100 DPI,
-    # 12 points on a 1000px source axes therefore maps to 12 Plotly pixels.
-    assert fig.layout.annotations[0].font.size == pytest.approx(12.0)
+    # 12 points at 100 DPI is 12 * 100/72 ~= 16.7 pixels, independent of
+    # source axes width.  (Points are an absolute unit; only the output dpi
+    # matters, not the figure pixel dimensions.)
+    assert fig.layout.annotations[0].font.size == pytest.approx(16.67, abs=0.01)
 
 
 def test_renderer_line():
