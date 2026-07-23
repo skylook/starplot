@@ -4,7 +4,6 @@ import numpy as np
 import pytest
 import starplot.interactive.recorder as recorder_module
 from starplot.interactive.recorder import DrawingRecorder
-from starplot.interactive.commands import DrawingCommand
 
 
 def test_recorder_initial_state():

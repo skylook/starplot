@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import shapely.errors
 from shapely.geometry import Polygon
 from shapely.ops import polygonize, triangulate, unary_union
 
@@ -31,6 +32,12 @@ from starplot.interactive.style_converter import (
     MARKER_SYMBOL_MAP,
 )
 
+# Expected errors when converting one Scene layer to a Plotly trace.  These are
+# narrower than ``Exception`` and still let real programming errors surface.
+_LAYER_RENDER_ERRORS = (
+    AttributeError, KeyError, LookupError, TypeError, ValueError, IndexError,
+    shapely.errors.ShapelyError,
+)
 
 _KALEIDO_MARKER_SCALE = 1.0
 _KALEIDO_STROKE_SCALE = 1.0
@@ -188,7 +195,7 @@ class _PlotlyRenderContext:
         }[layer.kind]
         try:
             handler(layer)
-        except Exception as error:
+        except _LAYER_RENDER_ERRORS as error:
             raise RuntimeError(
                 f"Failed to render {layer.kind.value} Scene layer "
                 f"(group_id={layer.group_id})"

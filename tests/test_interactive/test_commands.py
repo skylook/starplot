@@ -1,6 +1,5 @@
 """Unit tests for DrawingCommand dataclass."""
 
-import pytest
 from starplot.interactive.commands import DrawingCommand
 
 

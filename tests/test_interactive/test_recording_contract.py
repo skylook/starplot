@@ -226,7 +226,6 @@ def test_text_command_preserves_offset_and_rotation():
 
 def test_horizon_gridlines_record_the_final_gridliner_segments():
     """The interactive grid must use Cartopy's rendered gridliner segments."""
-    from matplotlib.path import Path
     from starplot.interactive.recording_mixin import _transformed_path_segments
 
     plot = make_horizon_plot()

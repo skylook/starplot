@@ -5,13 +5,11 @@ the matplotlib render and the recorded commands.  Pixel-level comparison
 requires kaleido and is marked as optional.
 """
 
+import importlib.util
+
 import pytest
 
-try:
-    import plotly.graph_objects as go
-    PLOTLY_AVAILABLE = True
-except ImportError:
-    PLOTLY_AVAILABLE = False
+PLOTLY_AVAILABLE = importlib.util.find_spec("plotly") is not None
 
 pytestmark = pytest.mark.skipif(not PLOTLY_AVAILABLE, reason="plotly not installed")
 

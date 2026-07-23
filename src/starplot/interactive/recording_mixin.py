@@ -14,6 +14,8 @@ import logging
 import math
 from typing import Optional
 
+import shapely.errors
+
 from starplot.interactive.recorder import DrawingRecorder
 from starplot.interactive.commands import CoordinateSpace
 from starplot.coordinates import CoordinateSystem
@@ -23,6 +25,14 @@ from starplot.styles.helpers import use_style
 LOGGER = logging.getLogger("starplot.interactive")
 
 _MAX_INTERACTIVE_HOVER_POINTS = 50_000
+
+# These are the errors we expect when reading Matplotlib/shapely state that may
+# not be present or may be in an unexpected form.  They are much narrower than
+# ``Exception``: they exclude RuntimeError, OSError, SystemExit, KeyboardInterrupt,
+# MemoryError, NotImplementedError, etc., so real programming errors still propagate.
+_RECORDING_ERRORS = (AttributeError, KeyError, LookupError, TypeError, ValueError, IndexError)
+_GRIDLINE_ERRORS = (RuntimeError, *_RECORDING_ERRORS)
+_CLIP_ERRORS = (shapely.errors.ShapelyError, *_RECORDING_ERRORS)
 
 
 def _split_points(points):
@@ -94,7 +104,7 @@ def _rgba_to_hex(color):
                 f"{round(blue * 255)},{alpha:g})"
             )
         return to_hex((red, green, blue))
-    except Exception:
+    except _RECORDING_ERRORS:
         return "#ffffff"
 
 
@@ -110,7 +120,7 @@ def _rgb_string(color):
         hex_color = to_hex((red, green, blue))
         # Use hex when possible; for non-integer values fall back to rgb().
         return hex_color
-    except Exception:
+    except _RECORDING_ERRORS:
         return "#ffffff"
 
 
@@ -159,7 +169,6 @@ class RecordingMixin:
         the latter maps DATA offsets through an identity marker transform and
         then wrongly inverse-projects them a second time.
         """
-        import numpy as np
         raw = collection.get_offsets()
         if len(raw) == 0:
             return [], []
@@ -185,7 +194,7 @@ class RecordingMixin:
                 if math.isfinite(x) and math.isfinite(y):
                     return float(x), float(y)
                 return float('nan'), float('nan')
-            except Exception as e:
+            except _RECORDING_ERRORS as e:
                 LOGGER.debug("Projection failed for (%s, %s): %s", ra, dec, e)
                 return float('nan'), float('nan')
         else:
@@ -235,13 +244,13 @@ class RecordingMixin:
                 "y_min": ylim[0],
                 "y_max": ylim[1],
             })
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.debug("Could not extract axis limits: %s", e)
 
         # Force a draw so axes position and window extent are final
         try:
             self.fig.draw_without_rendering()
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.debug("Could not draw without rendering: %s", e)
 
         self._record_untracked_path_patches()
@@ -265,7 +274,7 @@ class RecordingMixin:
                 float(ax_pos.width * fig_width_in * export_dpi),
                 float(ax_pos.height * fig_height_in * export_dpi),
             )
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.debug("Could not extract axes geometry: %s", e)
             proj_info["axes_bbox"] = (0.0, 0.0, 1.0, 1.0)
             proj_info["axes_pixels"] = (0.0, 0.0)
@@ -286,7 +295,7 @@ class RecordingMixin:
                 else self.style.background_color.as_hex()
             )
             fig_bg = self.style.figure_background_color.as_hex()
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.debug("Could not extract style info: %s", e)
             bg = "#ffffff"
             fig_bg = "#ffffff"
@@ -335,7 +344,7 @@ class RecordingMixin:
             self._recorder.style_info["source_axes_height"] = float(
                 ax_pos.height * fig_height_in * export_dpi
             )
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.debug("Could not extract axes width: %s", e)
 
     def _record_untracked_path_patches(self):
@@ -412,7 +421,7 @@ class RecordingMixin:
                             8,
                             min(2000, segment_count // original_segments),
                         )
-                    except Exception as e:
+                    except _RECORDING_ERRORS as e:
                         LOGGER.debug(
                             "Could not estimate patch interpolation: %s", e
                         )
@@ -445,7 +454,7 @@ class RecordingMixin:
                 )
                 recorded.add(id(patch))
             self._recorded_external_patch_ids = recorded
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.debug("Could not record external path patches: %s", e)
 
     def _record_final_clip_geometry(self):
@@ -510,7 +519,7 @@ class RecordingMixin:
                 points = points[:-1]
             kind = "rect" if len(set(points)) == 4 else "polygon"
             return ClipGeometry(kind=kind, points=tuple(points))
-        except Exception as e:
+        except _CLIP_ERRORS as e:
             LOGGER.warning("Failed to extract clip geometry: %s", e)
             return ClipGeometry(kind="none")
 
@@ -536,7 +545,7 @@ class RecordingMixin:
                 label = ""
                 try:
                     label = s.get_label(s) if callable(getattr(s, "get_label", None)) else ""
-                except Exception as e:
+                except _RECORDING_ERRORS as e:
                     LOGGER.debug("Could not get star label: %s", e)
                 metadata.append({
                     "name": label or "",
@@ -561,7 +570,7 @@ class RecordingMixin:
             for ra, dec in zip(ras_list, decs_list):
                 try:
                     x, y = self._proj.transform_point(ra, dec, self._crs)
-                except Exception:
+                except _RECORDING_ERRORS:
                     x, y = float("nan"), float("nan")
                 xs.append(float(x) if math.isfinite(x) else float("nan"))
                 ys.append(float(y) if math.isfinite(y) else float("nan"))
@@ -616,7 +625,7 @@ class RecordingMixin:
                 "line_style": str(patch.get_linestyle()),
                 "legend_label": kwargs.get("legend_label"),
             }
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.debug("Could not extract rendered polygon: %s", e)
             return
         self._recorder.record_polygon(
@@ -649,7 +658,7 @@ class RecordingMixin:
             if hasattr(result, "get_rotation"):
                 try:
                     rotation = float(result.get_rotation())
-                except Exception:
+                except _RECORDING_ERRORS:
                     pass
 
             from starplot.interactive.commands import DrawingCommand, CoordinateSpace
@@ -728,7 +737,7 @@ class RecordingMixin:
                     gid=kwargs.get("gid", "line"),
                     zorder=int(artist.get_zorder()),
                 )
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.warning("Failed to record line (gid=%s): %s", kwargs.get("gid", "line"), e)
 
     # ------------------------------------------------------------------
@@ -1159,7 +1168,7 @@ class RecordingMixin:
                         zorder=int(style.label.zorder or 0),
                         space=CoordinateSpace.DATA,
                     )
-        except Exception as e:
+        except _GRIDLINE_ERRORS as e:
             LOGGER.warning("Failed to record gridlines: %s", e)
 
     # ------------------------------------------------------------------
@@ -1188,7 +1197,7 @@ class RecordingMixin:
                     segments.extend(_transformed_path_segments(
                         self.ax, collection.get_transform(), segment
                     ))
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.warning("Failed to extract rendered constellation lines: %s", e)
             return
 
@@ -1248,7 +1257,7 @@ class RecordingMixin:
                     gid="constellations-border",
                     zorder=int(resolved_style.zorder or 0),
                 )
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.warning("Failed to record constellation borders: %s", e)
 
     # ------------------------------------------------------------------
@@ -1305,7 +1314,7 @@ class RecordingMixin:
                     gid=gid,
                     zorder=int(artist.get_zorder()),
                 )
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.warning("Failed to record rendered line artists (gid=%s): %s", gid, e)
 
     # ------------------------------------------------------------------
@@ -1543,7 +1552,7 @@ class RecordingMixin:
                             zorder=int(artist.get_zorder()),
                             space=CoordinateSpace.DATA,
                         )
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.debug("Could not record horizon: %s", e)
 
     # ------------------------------------------------------------------
@@ -1597,7 +1606,7 @@ class RecordingMixin:
                 space=CoordinateSpace.PAPER,
                 clip_id=None,
             )
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.debug("Could not record arrow: %s", e)
 
     # ------------------------------------------------------------------
@@ -1646,7 +1655,7 @@ class RecordingMixin:
                 zorder=int(artist.get_zorder()),
                 space=CoordinateSpace.PAPER,
             )
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.debug("Could not record title: %s", e)
 
     # ------------------------------------------------------------------
@@ -1716,7 +1725,6 @@ class RecordingMixin:
                 # Legend objects have get_texts()
                 if not hasattr(artist, 'get_texts'):
                     continue
-                legend = artist
                 # Record a placeholder command so the gid exists
                 cmd = DrawingCommand(
                     kind="text",
@@ -1744,7 +1752,7 @@ class RecordingMixin:
                 )
                 self._recorder.commands.append(cmd)
                 break
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.warning("Failed to record star magnitude scale: %s", e)
 
     # ------------------------------------------------------------------
@@ -1794,7 +1802,7 @@ class RecordingMixin:
                         space=CoordinateSpace.AXES,
                     )
                     self._recorder.commands.append(cmd)
-            except Exception as e:
+            except _RECORDING_ERRORS as e:
                 LOGGER.warning("Failed to record zenith info: %s", e)
             return result
 
@@ -1855,7 +1863,7 @@ class RecordingMixin:
                 gid="optic-info-table",
                 zorder=getattr(resolved_style, "zorder", 0) + 2000,
             )
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.warning("Failed to record optic info table: %s", e)
 
         return result
@@ -1901,7 +1909,7 @@ class RecordingMixin:
                 gid="optic-border",
                 zorder=1000,
             )
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.warning("Failed to record optic border: %s", e)
 
     # ------------------------------------------------------------------
@@ -1918,5 +1926,5 @@ class RecordingMixin:
                 gid="gradient",
                 zorder=ZOrderEnum.LAYER_1 - 1000,
             )
-        except Exception as e:
+        except _RECORDING_ERRORS as e:
             LOGGER.warning("Failed to record gradient background: %s", e)

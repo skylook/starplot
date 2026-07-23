@@ -29,6 +29,10 @@ def test_interactive_map_plot_imports():
         InteractiveMapPlot, InteractiveZenithPlot,
         InteractiveHorizonPlot, InteractiveOpticPlot,
     )
+    assert InteractiveMapPlot is not None
+    assert InteractiveZenithPlot is not None
+    assert InteractiveHorizonPlot is not None
+    assert InteractiveOpticPlot is not None
 
 
 def test_interactive_map_plot_creates():
