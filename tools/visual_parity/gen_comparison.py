@@ -27,6 +27,10 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from typing import Mapping
 from urllib.request import Request, urlopen
 
+if __package__:
+    from . import crops
+else:
+    import crops
 import numpy as np
 
 from starplot.interactive.arrow_transport import decode_layer_stream
@@ -281,13 +285,12 @@ def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, heig
 def _write_diff(folder: Path, name: str, transports: tuple[str, ...]) -> None:
     from PIL import Image
 
-    def composite(image):
-        rgba = image.convert("RGBA")
-        return Image.alpha_composite(Image.new("RGBA", rgba.size, "white"), rgba)
-
     def compare(left, right):
-        left_array = np.asarray(composite(left), dtype=np.float32)
-        right_array = np.asarray(composite(right), dtype=np.float32)
+        # Composite onto white to match the background used by crops.diff_stats.
+        left_rgb = crops.composite_on_color(left, (255, 255, 255))
+        right_rgb = crops.composite_on_color(right, (255, 255, 255))
+        left_array = np.asarray(left_rgb, dtype=np.float32)
+        right_array = np.asarray(right_rgb, dtype=np.float32)
         if left_array.shape != right_array.shape:
             return f"size mismatch {left.size} vs {right.size}"
         delta = np.abs(left_array - right_array)
@@ -295,16 +298,56 @@ def _write_diff(folder: Path, name: str, transports: tuple[str, ...]) -> None:
 
     original = Image.open(folder / "orig.png")
     interactive = Image.open(folder / "interactive.png")
-    browser_images = {name: Image.open(folder / f"{name}.png") for name in transports}
-    rows = [("orig vs interactive", compare(original, interactive))]
-    for name, image in browser_images.items():
+    browser_images = {transport: Image.open(folder / f"{transport}.png") for transport in transports}
+    interactive_for_orig = interactive.resize(original.size, Image.Resampling.LANCZOS)
+    rows = [("orig vs interactive", compare(original, interactive_for_orig))]
+    for transport_name, image in browser_images.items():
         resized = interactive.resize(image.size, Image.Resampling.LANCZOS)
-        rows.append((f"interactive vs {name}", compare(resized, image)))
+        rows.append((f"interactive vs {transport_name}", compare(resized, image)))
     for index, left_name in enumerate(transports):
         for right_name in transports[index + 1:]:
             rows.append((f"{left_name} vs {right_name}", compare(browser_images[left_name], browser_images[right_name])))
     (folder / "diff.md").write_text(
         "\n".join([f"# {name} transport diff", "", "| pair | diagnostic |", "|---|---|"] + [f"| {label} | {result} |" for label, result in rows]) + "\n",
+        encoding="utf-8",
+    )
+
+    # Local semantic crop comparisons for every pair, resizing to a common size.
+    crops_dir = folder / "crops"
+    crops_dir.mkdir(exist_ok=True)
+    pairs = [("orig vs interactive", folder / "orig.png", folder / "interactive.png", "left")]
+    for transport_name in transports:
+        pairs.append((f"interactive vs {transport_name}", folder / "interactive.png", folder / f"{transport_name}.png", "right"))
+    for index, left_name in enumerate(transports):
+        for right_name in transports[index + 1:]:
+            pairs.append((f"{left_name} vs {right_name}", folder / f"{left_name}.png", folder / f"{right_name}.png", "left"))
+
+    crop_sections = []
+    for label, left_path, right_path, reference in pairs:
+        review = crops.build_pair_review(
+            left_path, right_path, crops_dir, label,
+            root_dir=folder, semantic=True, reference=reference,
+        )
+        section_lines = [
+            f"## {label}",
+            "",
+            f"Full: MAE={review['full_stats']['mae']} RMSE={review['full_stats']['rmse']} "
+            f"nonzero={review['full_stats']['nonzero_gt5']}% max={review['full_stats']['max_diff']}",
+            "",
+            "| crop | combined | diff |",
+            "|---|---|---|",
+        ]
+        for crop in review["crops"]:
+            section_lines.append(
+                f"| {crop['name']} ({crop['desc']}) "
+                f"MAE={crop['stats']['mae']} RMSE={crop['stats']['rmse']} "
+                f"nonzero={crop['stats']['nonzero_gt5']}% max={crop['stats']['max_diff']} | "
+                f"![combined]({crop['combined']}) | ![diff]({crop['diff']}) |"
+            )
+        section_lines.append("")
+        crop_sections.append("\n".join(section_lines))
+    (folder / "crops.md").write_text(
+        "\n".join([f"# {name} local crop comparisons", ""] + crop_sections),
         encoding="utf-8",
     )
 

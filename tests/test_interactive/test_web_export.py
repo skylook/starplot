@@ -196,3 +196,137 @@ def test_untrusted_layer_ids_never_control_paths_or_html_ids(tmp_path):
     html = inline.html_path.read_text(encoding="utf-8")
     assert "starplot-layer-0" in html
     assert "<script>globalThis.pwn=1</script>" not in html
+
+
+def test_remote_rejects_unsafe_data_url_host_characters(tmp_path):
+    with pytest.raises(ValueError, match="unsafe"):
+        export_scene_html(
+            _scene(), tmp_path / "chart.html", data_mode="remote",
+            data_url='https://examp"le.test/manifest.json',
+        )
+
+
+def test_remote_rejects_unsafe_data_url_characters(tmp_path):
+    for bad in (
+        "https://example.com/foo<bar",
+        "https://example.com/foo bar",
+        "https://example.com/foo{bar",
+    ):
+        with pytest.raises(ValueError, match="unsafe"):
+            export_scene_html(_scene(), tmp_path / "chart.html", data_mode="remote", data_url=bad)
+
+
+def test_remote_accepts_valid_url_specials(tmp_path):
+    # Single quotes, at-signs in paths, and percent-encoding are valid URL characters.
+    result = export_scene_html(
+        _scene(), tmp_path / "chart.html", data_mode="remote",
+        data_url="https://example.com/user'file%20name@tag?x=a'b",
+    )
+    html = result.html_path.read_text(encoding="utf-8")
+    assert "https://example.com/user'file%20name@tag?x=a'b" in html
+
+
+def test_remote_rejects_userinfo_and_fragments_and_bad_percent_encoding(tmp_path):
+    with pytest.raises(ValueError, match="userinfo"):
+        export_scene_html(
+            _scene(), tmp_path / "chart.html", data_mode="remote",
+            data_url="https://user:pass@example.test/manifest.json",
+        )
+    with pytest.raises(ValueError, match="fragment"):
+        export_scene_html(
+            _scene(), tmp_path / "chart.html", data_mode="remote",
+            data_url="https://example.test/manifest.json#fragment",
+        )
+    with pytest.raises(ValueError, match="percent-encoding"):
+        export_scene_html(
+            _scene(), tmp_path / "chart.html", data_mode="remote",
+            data_url="https://example.test/manifest%GH.json",
+        )
+
+
+def test_allowed_data_origins_reject_unsafe_host_characters(tmp_path):
+    with pytest.raises(ValueError, match="unsafe"):
+        export_scene_html(
+            _scene(), tmp_path / "chart.html", data_mode="remote",
+            data_url="https://example.test/manifest.json",
+            allowed_data_origins=("https://examp\"le.test",),
+        )
+    with pytest.raises(ValueError, match="unsafe"):
+        export_scene_html(
+            _scene(), tmp_path / "chart.html", data_mode="remote",
+            data_url="https://example.test/manifest.json",
+            allowed_data_origins=("https://trusted.test@evil.test",),
+        )
+
+
+def test_directory_script_src_is_html_escaped(tmp_path):
+    result = export_scene_html(
+        _scene(), tmp_path / "foo&bar.html", library_mode=LibraryMode.DIRECTORY,
+    )
+    html = result.html_path.read_text(encoding="utf-8")
+    assert 'src="foo&amp;bar.scene/assets/' in html
+    assert 'src="foo&bar.scene/assets/' not in html
+    assert "<script" in html
+
+
+def test_unsafe_filename_characters_are_rejected(tmp_path):
+    with pytest.raises(ValueError, match="unsafe"):
+        export_scene_html(_scene(), tmp_path / "foo#bar.html")
+
+
+def test_remote_csp_meta_attribute_is_well_formed(tmp_path):
+    result = export_scene_html(
+        _scene(), tmp_path / "chart.html", data_mode="remote",
+        data_url="https://example.test/api/scenes/rigel",
+        allowed_data_origins=("https://cdn.test/",),
+    )
+    html = result.html_path.read_text(encoding="utf-8")
+    m = re.search(r'<meta http-equiv="Content-Security-Policy" content="([^"]+)">', html)
+    assert m, "CSP meta tag is malformed or unterminated"
+    policy = m.group(1)
+    assert "'self'" in policy
+    assert "https://example.test" in policy
+    assert "https://cdn.test" in policy
+
+
+def test_remote_accepts_tilde_in_url_path(tmp_path):
+    # Tilde is a valid RFC 3986 unreserved character, most common in paths.
+    result = export_scene_html(
+        _scene(), tmp_path / "chart.html", data_mode="remote",
+        data_url="https://example.com/~user/manifest.json",
+    )
+    html = result.html_path.read_text(encoding="utf-8")
+    assert "https://example.com/~user/manifest.json" in html
+
+
+def test_remote_accepts_ipv6_and_underscore_hosts(tmp_path):
+    for valid in (
+        "https://[2001:db8::1]:8080/manifest.json",
+        "https://foo_bar.test/manifest.json",
+    ):
+        result = export_scene_html(_scene(), tmp_path / "chart.html", data_mode="remote", data_url=valid)
+        assert valid in result.html_path.read_text(encoding="utf-8")
+
+
+def test_remote_rejects_malformed_host_port(tmp_path):
+    for bad in (
+        "https://example:test.com:8080/manifest.json",
+        "https://example.test:abc/manifest.json",
+        "https://example.com:80.evil.com/manifest.json",
+    ):
+        with pytest.raises(ValueError, match="unsafe|invalid"):
+            export_scene_html(_scene(), tmp_path / "chart.html", data_mode="remote", data_url=bad)
+
+
+def test_allowed_data_origins_reject_malformed_host_port(tmp_path):
+    for bad in (
+        "https://example:test.com:8080",
+        "https://example.test:abc",
+        "https://example.com:80.evil.com",
+    ):
+        with pytest.raises(ValueError, match="unsafe|invalid"):
+            export_scene_html(
+                _scene(), tmp_path / "chart.html", data_mode="remote",
+                data_url="https://example.test/manifest.json",
+                allowed_data_origins=(bad,),
+            )
