@@ -118,9 +118,10 @@ def test_record_scatter_detaches_all_numpy_columns_from_callers():
         retained = command.data[name]
         assert source.flags.writeable
         assert retained.flags.c_contiguous
-        assert retained.flags.owndata
         assert not retained.flags.writeable
         assert not np.shares_memory(retained, source)
+        with pytest.raises(ValueError):
+            np.ndarray.setflags(retained, write=True)
         source[0] = source[-1]
         np.testing.assert_array_equal(retained, expected[name])
         with pytest.raises(ValueError):

@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 from dataclasses import astuple, dataclass, field
-from enum import StrEnum
+from enum import Enum
 import math
 from types import MappingProxyType
 from typing import Any, Mapping, Protocol
 
 import numpy as np
 
-from starplot.interactive.commands import CoordinateSpace
+from starplot.interactive.commands import (
+    ClipGeometry as RecordedClipGeometry,
+    CoordinateSpace,
+)
 
 
-class SceneKind(StrEnum):
+class _StringEnum(str, Enum):
+    """Python 3.10-compatible string enum with ``StrEnum`` string behavior."""
+
+    __str__ = str.__str__
+
+
+class SceneKind(_StringEnum):
     SCATTER = "scatter"
     LINE = "line"
     LINE_COLLECTION = "line_collection"
@@ -23,13 +32,13 @@ class SceneKind(StrEnum):
     INFO_TABLE = "info_table"
 
 
-class InteractionPolicy(StrEnum):
+class InteractionPolicy(_StringEnum):
     NONE = "none"
     HOVER = "hover"
     HOVER_AND_DETAIL = "hover-and-detail"
 
 
-class CoordinateEncodingKind(StrEnum):
+class CoordinateEncodingKind(_StringEnum):
     ABSOLUTE_F64 = "absolute-f64"
     RELATIVE_F32 = "relative-f32"
 
@@ -131,22 +140,68 @@ class ClipGeometry:
 
 
 def readonly_array(value, dtype=None) -> np.ndarray:
-    """Copy into owned, contiguous storage that cannot be written through."""
-    array = np.array(
-        value,
-        dtype=dtype,
-        copy=True,
-        order="C",
-        subok=False,
-    )
-    return _seal_owned_array(array)
+    """Snapshot into storage ordinary NumPy operations cannot make writeable.
+
+    Non-object arrays are backed by an immutable ``bytes`` snapshot, so neither
+    ``np.ndarray.setflags(array, write=True)`` nor ordinary view/buffer escape
+    routes can restore write access.  Object arrays cannot use byte-backed
+    storage: NumPy deliberately rejects object arrays from raw buffers because
+    the buffer would not safely own Python references.  Their values are deeply
+    frozen into a sealed owner and exposed through a view, which also rejects a
+    direct base-class ``setflags`` call on the public result.  NumPy still
+    exposes that owner through ``array.base``; a caller that deliberately
+    re-enables its write flag can replace object slots, which pure NumPy cannot
+    prevent safely.
+    """
+    source = np.asarray(value, dtype=dtype, order="C")
+    if source.dtype.hasobject:
+        owner = _seal_owned_array(_deep_frozen_object_array(source))
+        return owner.view(_ImmutableArray)
+    return _readonly_buffer_array(source)
+
+
+def _readonly_buffer_array(source: np.ndarray) -> np.ndarray:
+    """Return an immutable, C-contiguous snapshot of a non-object array."""
+    payload = source.tobytes(order="C")
+    array = np.frombuffer(payload, dtype=source.dtype).reshape(source.shape)
+    return array.view(_ImmutableArray)
+
+
+class _ImmutableArray(np.ndarray):
+    """An ndarray whose public API cannot restore write access."""
+
+    def __new__(cls, shape, dtype):
+        return super().__new__(cls, shape=shape, dtype=dtype, order="C")
+
+    def setflags(self, write=None, align=None, uic=None):
+        if write:
+            raise ValueError("Scene arrays cannot be made writeable")
+        return super().setflags(write=write, align=align, uic=uic)
+
+    def __getitem__(self, key):
+        result = super().__getitem__(key)
+        if isinstance(result, np.ndarray):
+            return readonly_array(result)
+        return result
+
+
+def _deep_frozen_object_array(source: np.ndarray) -> np.ndarray:
+    """Snapshot Python objects retained by an object-dtype column."""
+    frozen = np.empty(source.shape, dtype=object, order="C")
+    for index in np.ndindex(source.shape):
+        frozen[index] = _freeze_value(source[index])
+    return frozen
 
 
 def _seal_owned_array(array: np.ndarray) -> np.ndarray:
-    """Seal newly allocated owned storage without making another copy."""
+    """Seal owned storage or retain an already sealed Scene snapshot."""
     if not isinstance(array, np.ndarray):
         raise TypeError("owned array must be a NumPy ndarray")
-    if not array.flags.owndata or not array.flags.c_contiguous:
+    if not array.flags.c_contiguous:
+        raise ValueError("owned array must own C-contiguous storage")
+    if not array.flags.owndata:
+        if isinstance(array, _ImmutableArray) and not array.flags.writeable:
+            return array
         raise ValueError("owned array must own C-contiguous storage")
     array.setflags(write=False)
     return array
@@ -173,11 +228,22 @@ def _freeze_value(value):
         )
     if isinstance(value, (list, tuple)):
         return tuple(_freeze_value(item) for item in value)
-    if isinstance(value, set):
+    if isinstance(value, (set, frozenset)):
         return frozenset(_freeze_value(item) for item in value)
+    if isinstance(value, (bytearray, memoryview)):
+        return bytes(value)
     if isinstance(value, np.ndarray):
         return readonly_array(value)
-    return value
+    if isinstance(value, (ClipGeometry, RecordedClipGeometry)):
+        return value
+    if isinstance(
+        value,
+        (str, bytes, int, float, complex, bool, type(None), Enum, np.generic),
+    ):
+        return value
+    raise TypeError(
+        f"Scene values cannot retain mutable {type(value).__name__} instances"
+    )
 
 
 @dataclass(frozen=True)
@@ -196,12 +262,11 @@ class ColumnarData:
         for column in columns.values():
             if (
                 not isinstance(column, np.ndarray)
-                or not column.flags.owndata
                 or not column.flags.c_contiguous
                 or column.flags.writeable
             ):
                 raise ValueError(
-                    "owned columns must be C-contiguous, read-only NumPy arrays"
+                    "columns must be C-contiguous, read-only NumPy arrays"
                 )
 
         row_count = _validated_row_count(columns)

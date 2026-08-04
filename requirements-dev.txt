@@ -17,5 +17,11 @@ rich==13.9.4
 snakeviz==2.2.2
 marimo==0.15.2
 
+# Visual parity / interactive tooling
+plotly==6.0.1
+kaleido==0.2.1.post1
+playwright==1.50.1
+scipy==1.15.1
+
 # to fix hot reloading mkdocs
 click==8.2.1

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import html
 from typing import Any
 
 import numpy as np
@@ -44,7 +46,7 @@ _KALEIDO_STROKE_SCALE = 1.0
 _MAX_INTERACTIVE_HOVER_POINTS = 100_000
 _PLOTLY_MIN_MARKER_DIAMETER = np.float32(1.5)
 _SCATTERGL_MIN_MARKER_DIAMETER = np.float32(1.0)
-_SCATTERGL_SUBPIXEL_COVERAGE_SCALE = np.float32(6.0)
+_SCATTERGL_SUBPIXEL_COVERAGE_SCALE = np.float32(2.0)
 _MATPLOTLIB_NONE_COLORS = frozenset({"none", "None", "NONE", ""})
 _KNOWN_LEGEND_GROUPS = frozenset(
     {
@@ -73,6 +75,11 @@ def _sanitize_color(value, default="rgba(0,0,0,0)") -> str:
     if hasattr(value, "as_hex"):
         return value.as_hex()
     return str(value)
+
+
+def _html_escape(value) -> str:
+    """Escape a user-supplied value for safe use inside Plotly text/annotations."""
+    return html.escape(str(value), quote=True)
 
 
 def _is_no_color(value) -> bool:
@@ -298,7 +305,7 @@ class _PlotlyRenderContext:
         legend_title = self.style_info.get("legend_title")
         if legend_title:
             legend["title"] = dict(
-                text=str(legend_title),
+                text=_html_escape(legend_title),
                 font=dict(
                     color=self.style_info.get("legend_font_color", "#ffffff"),
                     size=max(
@@ -327,10 +334,14 @@ class _PlotlyRenderContext:
             dragmode="pan",
             showlegend=self.style_info.get("show_legend", False),
             legend=legend,
-            margin=dict(l=10, r=10, t=30, b=10),
+            margin=dict(
+                self.viewport.get(
+                    "margin", dict(l=10, r=10, t=30, b=10, autoexpand=False)
+                )
+            ),
             autosize=False,
-            width=self.viewport.get("reference_width"),
-            height=self.viewport.get("reference_height"),
+            width=int(round(self.viewport.get("reference_width", 1000))),
+            height=int(round(self.viewport.get("reference_height", 1000))),
         )
         self._add_clipped_plot_background(background)
 
@@ -357,6 +368,11 @@ class _PlotlyRenderContext:
         )
 
     def _reserve_scene_space(self) -> None:
+        if self.viewport.get("margin"):
+            # A tight Matplotlib export has already recorded the final space
+            # occupied by horizon labels.  Applying the historical synthetic
+            # footer a second time shrinks the sky viewport and clips gradients.
+            return
         footer_values = []
         for layer in self.scene.layers:
             if layer.group_id == "horizon-bottom" and "y" in layer.data.columns:
@@ -417,12 +433,38 @@ class _PlotlyRenderContext:
         y0, y1 = self._paper_y_bounds
         return (value - y0) / (y1 - y0)
 
+    def _point_to_pixel_scale(self) -> float:
+        """Convert PostScript points (1/72 inch) to pixels using the export dpi."""
+        try:
+            return float(self.style_info.get("dpi", 100.0)) / 72.0
+        except (TypeError, ValueError):
+            return 1.0
+
+    def _width_ratio(self) -> float:
+        """Return target/output axes width divided by source figure axes width.
+
+        Marker sizes are already calibrated to this ratio in the Scene compiler,
+        but fonts, stroke widths, and offsets are recorded in original figure
+        points and must be scaled by the same ratio to stay visually proportional
+        when the output dimensions differ from the source figure.
+        """
+        target = self.viewport.get("target_axes_width") or self.viewport.get(
+            "reference_width", 1.0
+        )
+        source = (
+            self.viewport.get("source_axes_width")
+            or self.style_info.get("source_axes_width")
+            or self.style_info.get("resolution")
+            or target
+        )
+        try:
+            return float(target) / float(source)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return 1.0
+
     def _font_pixel_scale(self) -> float:
-        # Font sizes are recorded in PostScript points (1/72 inch).  Plotly
-        # expects pixel sizes.  Convert using the export dpi; do NOT scale by
-        # the figure width ratio.  A 12pt font is the same physical size
-        # regardless of whether the output is 1400px or 4096px wide.
-        return float(self.style_info.get("dpi", 100.0)) / 72.0
+        """Return the combined point-to-pixel and target-size scale for fonts."""
+        return self._point_to_pixel_scale() * self._width_ratio()
 
     def _stroke_pixel_scale(self) -> float:
         return self._font_pixel_scale() * _KALEIDO_STROKE_SCALE
@@ -439,12 +481,15 @@ class _PlotlyRenderContext:
 
     def _legend(self, layer: SceneLayer) -> tuple[str, bool]:
         label = layer.style.get("legend_label")
-        name = str(label) if label is not None else _group_name(layer.group_id)
+        name = _html_escape(
+            label if label is not None else _group_name(layer.group_id)
+        )
         if not self.fig.layout.showlegend:
             return name, False
         explicit_labels = self.style_info.get("legend_labels")
         if explicit_labels is not None:
-            if name not in explicit_labels or name in self._shown_legend_labels:
+            escaped_labels = {_html_escape(lbl) for lbl in explicit_labels}
+            if name not in escaped_labels or name in self._shown_legend_labels:
                 return name, False
             self._shown_legend_labels.add(name)
             return name, True
@@ -482,27 +527,25 @@ class _PlotlyRenderContext:
             layer.data["size"] * np.float32(_KALEIDO_MARKER_SCALE),
             dtype=np.float32,
         )
+        marker_size = np.maximum(
+            plotly_size,
+            _SCATTERGL_MIN_MARKER_DIAMETER if use_webgl else _PLOTLY_MIN_MARKER_DIAMETER,
+        ).astype(np.float32, copy=False)
         if use_webgl:
             coverage = np.minimum(
                 np.float32(1.0),
                 plotly_size * plotly_size * _SCATTERGL_SUBPIXEL_COVERAGE_SCALE,
             )
-            marker_size = np.maximum(
-                plotly_size, _SCATTERGL_MIN_MARKER_DIAMETER
-            ).astype(np.float32, copy=False)
             marker_opacity = np.asarray(
                 layer.data["opacity"] * coverage,
                 dtype=np.float32,
             )
+        else:
+            marker_opacity = layer.data["opacity"]
+        if use_webgl:
             edge_width = 0.0
         else:
-            marker_size = np.maximum(plotly_size, _PLOTLY_MIN_MARKER_DIAMETER).astype(
-                np.float32, copy=False
-            )
-            marker_opacity = layer.data["opacity"]
-            edge_width = (layer.style.get("edge_width", 0) or 0) * (
-                self._stroke_pixel_scale()
-            )
+            edge_width = (layer.style.get("edge_width", 0) or 0) * self._stroke_pixel_scale()
         marker = dict(
             size=marker_size,
             color=color,
@@ -549,24 +592,30 @@ class _PlotlyRenderContext:
                 if "type" in columns
                 else ""
             )
-            name = str(columns["name"][index]) if "name" in columns else ""
+            name = _html_escape(columns["name"][index]) if "name" in columns else ""
             parts = [f"<b>{name}</b>"] if name else []
             if "bayer" in columns and columns["bayer"][index]:
-                parts.append(str(columns["bayer"][index]))
+                parts.append(_html_escape(columns["bayer"][index]))
             if "dso_type" in columns and columns["dso_type"][index]:
-                parts.append(f"Type: {columns['dso_type'][index]}")
+                parts.append(f"Type: {_html_escape(columns['dso_type'][index])}")
             if "magnitude" in columns and np.isfinite(columns["magnitude"][index]):
                 digits = 1 if kind == "dso" else 2
                 parts.append(
-                    f"Magnitude: {float(columns['magnitude'][index]):.{digits}f}"
+                    "Magnitude: "
+                    + _html_escape(
+                        format(float(columns["magnitude"][index]), f".{digits}f")
+                    )
                 )
             if "ra" in columns and "dec" in columns:
                 ra = columns["ra"][index]
                 dec = columns["dec"][index]
                 if np.isfinite(ra) and np.isfinite(dec):
-                    parts.append(f"RA: {float(ra) / 15:.4f}h  DEC: {float(dec):.4f}°")
+                    parts.append(
+                        f"RA: {_html_escape(format(float(ra) / 15, '.4f'))}h  "
+                        f"DEC: {_html_escape(format(float(dec), '.4f'))}°"
+                    )
             if "constellation" in columns and columns["constellation"][index]:
-                parts.append(f"Constellation: {columns['constellation'][index]}")
+                parts.append(f"Constellation: {_html_escape(columns['constellation'][index])}")
             result.append("<br>".join(parts))
         return result
 
@@ -577,11 +626,31 @@ class _PlotlyRenderContext:
 
     def _line_style(self, layer: SceneLayer) -> dict[str, Any]:
         line_style = layer.style.get("line_style", "solid")
-        dash = (
-            "solid"
-            if isinstance(line_style, (list, tuple))
-            else LINE_STYLE_MAP.get(str(line_style), "solid")
-        )
+        if isinstance(line_style, (list, tuple)):
+            # A LineCollection may return a homogeneous list of style strings.
+            # A tuple/list of numbers is a Matplotlib dash tuple.
+            if (
+                line_style
+                and all(isinstance(item, str) for item in line_style)
+                and len(set(line_style)) == 1
+            ):
+                str_style = str(line_style[0]).strip().lower()
+                dash = LINE_STYLE_MAP.get(str_style, "solid")
+            else:
+                dash = "dash"
+        else:
+            str_style = str(line_style).strip().lower()
+            # Matplotlib may serialize custom dash tuples as strings like
+            # "(0, (1, 2))"; parse them so they render as dashed in Plotly.
+            try:
+                parsed = ast.literal_eval(str_style)
+                dash = (
+                    "dash"
+                    if isinstance(parsed, (list, tuple))
+                    else LINE_STYLE_MAP.get(str_style, "solid")
+                )
+            except (ValueError, SyntaxError):
+                dash = LINE_STYLE_MAP.get(str_style, "solid")
         return dict(
             color=_sanitize_color(layer.style.get("color", "#777777")),
             width=max(
@@ -644,7 +713,7 @@ class _PlotlyRenderContext:
             and "name" in layer.data.columns
         ):
             names = layer.data["name"]
-            hover = [None if row < 0 else str(names[row]) for row in source_rows]
+            hover = [None if row < 0 else _html_escape(names[row]) for row in source_rows]
         trace_type = (
             go.Scattergl
             if not self._force_svg_trace_plane
@@ -875,7 +944,7 @@ class _PlotlyRenderContext:
         point_scale = self._font_pixel_scale()
         xshift = style.get("xshift", float(layer.data["x_offset"][0]) * point_scale)
         yshift = style.get("yshift", float(layer.data["y_offset"][0]) * point_scale)
-        text = str(layer.data["text"][0]).replace("\n", "<br>")
+        text = _html_escape(str(layer.data["text"][0])).replace("\n", "<br>")
         weight = style.get("font_weight", "normal")
         _WEIGHT_MAP = {
             "normal": 400, "bold": 700, "light": 300, "medium": 500,
@@ -929,7 +998,7 @@ class _PlotlyRenderContext:
             return
         direction = layer.style.get("direction", "linear")
         if direction == "radial":
-            steps = 220
+            steps = 512
             x = np.linspace(float(x_min), float(x_max), steps)
             y = np.linspace(float(y_min), float(y_max), steps)
             xx, yy = np.meshgrid(x, y)
@@ -976,8 +1045,8 @@ class _PlotlyRenderContext:
             zsmooth: Any = "best"
         elif direction == "linear":
             clip = self.scene.clips.get(layer.clip_id) if layer.clip_id else None
-            steps = 220 if clip is not None else 2000
-            x = np.linspace(float(x_min), float(x_max), 220 if clip is not None else 2)
+            steps = 512 if clip is not None else 2000
+            x = np.linspace(float(x_min), float(x_max), 512 if clip is not None else 2)
             y = np.linspace(float(y_min), float(y_max), steps)
             xx, yy = np.meshgrid(x, y)
             z = np.repeat(
@@ -989,7 +1058,7 @@ class _PlotlyRenderContext:
                 z = np.where(self._gradient_clip_mask(layer, xx, yy), z, np.nan)
             zsmooth = False
         elif direction == "mollweide":
-            steps = 250
+            steps = 512
             x = np.linspace(float(x_min), float(x_max), steps)
             y = np.linspace(float(y_min), float(y_max), steps)
             xx, yy = np.meshgrid(x, y)
@@ -1066,8 +1135,8 @@ class _PlotlyRenderContext:
         return scatter_clip_mask(xx.ravel(), yy.ravel(), clip).reshape(xx.shape)
 
     def _add_info_table(self, layer: SceneLayer) -> None:
-        columns = [str(value) for value in layer.data["column"]]
-        values = [str(value) for value in layer.data["value"]]
+        columns = [_html_escape(value) for value in layer.data["column"]]
+        values = [_html_escape(value) for value in layer.data["value"]]
         count = min(len(columns), len(values))
         if not count:
             return
@@ -1172,10 +1241,10 @@ class _PlotlyRenderContext:
                                 width=0,
                             ),
                         ),
-                        name=str(label),
+                        name=_html_escape(label),
                         legendgroup="star-magnitude-scale",
                         legendgrouptitle_text=(
-                            str(magnitude_scale.get("title", "Star Magnitude"))
+                            _html_escape(magnitude_scale.get("title", "Star Magnitude"))
                             if index == 0
                             else None
                         ),

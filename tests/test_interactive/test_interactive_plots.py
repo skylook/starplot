@@ -1,6 +1,7 @@
 """Integration tests for Interactive*Plot classes."""
 
 import pytest
+import starplot.interactive.plots as interactive_plots
 
 try:
     import plotly.graph_objects as go
@@ -9,6 +10,12 @@ except ImportError:
     PLOTLY_AVAILABLE = False
 
 pytestmark = pytest.mark.skipif(not PLOTLY_AVAILABLE, reason="plotly not installed")
+
+
+@pytest.fixture(autouse=True)
+def _chdir(tmp_path, monkeypatch):
+    """Run each test in ``tmp_path`` so relative export paths resolve there."""
+    monkeypatch.chdir(tmp_path)
 
 
 def _make_map_plot(**kwargs):
@@ -99,7 +106,7 @@ def test_export_html_creates_file(tmp_path):
     p.stars(where=[ibis_col.magnitude < 4])
 
     html_path = tmp_path / "test.html"
-    p.export_html(str(html_path))
+    p.export_html("test.html")
 
     assert html_path.exists()
     content = html_path.read_text(encoding="utf-8")
@@ -111,9 +118,69 @@ def test_export_html_maps_legacy_inline_library_request(tmp_path):
     p = _make_map_plot()
     html_path = tmp_path / "legacy.html"
     with pytest.warns(DeprecationWarning, match="single-file"):
-        result = p.export_html(str(html_path), include_plotlyjs=True)
+        result = p.export_html("legacy.html", include_plotlyjs=True)
     assert result.bundle_path is None
     assert 'id="starplot-manifest"' in html_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("legacy_value", [False, "cdn"])
+def test_export_html_maps_legacy_cdn_library_request(legacy_value, monkeypatch):
+    p = _make_map_plot()
+    captured = {}
+    monkeypatch.setattr(p, "_compile_scene", lambda **kwargs: object())
+    monkeypatch.setattr(
+        interactive_plots,
+        "export_scene_html",
+        lambda scene, filename, **kwargs: captured.update(kwargs),
+    )
+    with pytest.warns(DeprecationWarning, match="include_plotlyjs"):
+        p.export_html("legacy.html", include_plotlyjs=legacy_value)
+    assert captured["library_mode"] == "cdn"
+    assert captured["data_mode"] == "external"
+
+
+def test_export_html_maps_legacy_directory_library_request(monkeypatch):
+    p = _make_map_plot()
+    captured = {}
+    monkeypatch.setattr(p, "_compile_scene", lambda **kwargs: object())
+    monkeypatch.setattr(
+        interactive_plots,
+        "export_scene_html",
+        lambda scene, filename, **kwargs: captured.update(kwargs),
+    )
+    with pytest.warns(DeprecationWarning, match="include_plotlyjs"):
+        p.export_html("legacy.html", include_plotlyjs="directory")
+    assert captured["library_mode"] == "directory"
+    assert captured["data_mode"] == "external"
+
+
+def test_export_html_maps_legacy_inline_string_to_single_file(monkeypatch):
+    p = _make_map_plot()
+    captured = {}
+    monkeypatch.setattr(p, "_compile_scene", lambda **kwargs: object())
+    monkeypatch.setattr(
+        interactive_plots,
+        "export_scene_html",
+        lambda scene, filename, **kwargs: captured.update(kwargs),
+    )
+    with pytest.warns(DeprecationWarning, match="include_plotlyjs"):
+        p.export_html("legacy.html", include_plotlyjs="inline")
+    assert captured["library_mode"] == "inline"
+    assert captured["data_mode"] == "inline"
+
+
+def test_export_html_rejects_unsupported_legacy_library_request():
+    p = _make_map_plot()
+    with pytest.raises(ValueError, match="include_plotlyjs"):
+        p.export_html("legacy.html", include_plotlyjs="/custom/plotly.js")
+
+
+def test_export_html_rejects_conflicting_library_options():
+    p = _make_map_plot()
+    with pytest.raises(ValueError, match="conflicts"):
+        p.export_html(
+            "legacy.html", include_plotlyjs="cdn", library_mode="directory"
+        )
 
 
 def test_matplotlib_output_unchanged():

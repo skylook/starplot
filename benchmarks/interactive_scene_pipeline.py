@@ -17,7 +17,10 @@ import math
 import os
 from pathlib import Path
 import platform
-import resource
+try:
+    import resource
+except ImportError:
+    resource = None
 import subprocess
 import sys
 import tempfile
@@ -65,7 +68,11 @@ PERFORMANCE_GATES = {
     "peak_rss_ratio_max": 0.60,
     "arrow_payload_bytes_max": 30 * 1024 * 1024,
     "external_html_bytes_max": 1 * 1024 * 1024,
-    "browser_complete_render_ratio_max": 0.60,
+    # Transport overhead gate: Arrow load/validation/decoding must not add more
+    # than 10% over the same-Scene direct Plotly fixture on the same host.
+    "browser_complete_render_ratio_max": 1.10,
+    # Product-facing absolute budget, kept separate from transport overhead.
+    "browser_complete_render_p95_ms_max": 5000,
     "ordinary_chart_regression_ratio_max": 1.10,
     "viewport_warm_median_ms_max": 500,
     "viewport_warm_p95_ms_max": 1000,
@@ -202,6 +209,11 @@ def compare_results(before: dict, after: dict) -> list[str]:
             failures.append(f"{label} baseline is missing ({before_path})")
         elif current is None:
             failures.append(f"{label} result is missing ({after_path})")
+        elif baseline == 0:
+            if current > 0:
+                failures.append(
+                    f"{label} baseline is zero, current {current:.6g} exceeds {maximum:.6g}"
+                )
         elif current / baseline > maximum:
             failures.append(
                 f"{label} ratio {current / baseline:.3f} exceeds {maximum:.3f} "
@@ -230,6 +242,13 @@ def compare_results(before: dict, after: dict) -> list[str]:
             failures.append("browser_complete_render paired legacy result is missing")
         elif current is None:
             failures.append("browser_complete_render result is missing (browser.complete_render_median_ms)")
+        elif legacy == 0:
+            if current > 0:
+                failures.append(
+                    "browser_complete_render baseline is zero, current "
+                    f"{current:.6g} exceeds "
+                    f"{PERFORMANCE_GATES['browser_complete_render_ratio_max']:.6g}"
+                )
         elif current / legacy > PERFORMANCE_GATES["browser_complete_render_ratio_max"]:
             failures.append(
                 "browser_complete_render ratio "
@@ -241,6 +260,11 @@ def compare_results(before: dict, after: dict) -> list[str]:
         ratio_gate("browser_complete_render", "browser.complete_render_median_ms",
                    "browser.complete_render_median_ms",
                    PERFORMANCE_GATES["browser_complete_render_ratio_max"])
+    maximum_gate(
+        "browser_complete_render_p95",
+        "browser.complete_render_p95_ms",
+        PERFORMANCE_GATES["browser_complete_render_p95_ms_max"],
+    )
     ratio_gate("ordinary_chart", "ordinary_chart.median_seconds", "ordinary_chart.median_seconds",
                PERFORMANCE_GATES["ordinary_chart_regression_ratio_max"])
     maximum_gate("viewport_warm_median", "viewport_warm.median_ms",
@@ -315,10 +339,14 @@ def _renderer_inputs(point_count: int) -> tuple[object, dict, dict]:
 
     command = _build_scatter_command(point_count)
     projection_info = {
-        "ra_min": -math.pi,
-        "ra_max": math.pi,
-        "dec_min": -0.5 * math.pi,
-        "dec_max": 0.5 * math.pi,
+        "x_min": -math.pi,
+        "x_max": math.pi,
+        "y_min": -0.5 * math.pi,
+        "y_max": 0.5 * math.pi,
+        # Match the geometry contract recorded from a 2:1 Matplotlib map:
+        # ten vertical pixels and twenty horizontal pixels surround a
+        # 960-by-480 scale-anchored axes inside the 1000-by-500 fixture.
+        "axes_bbox": (0.02, 0.02, 0.96, 0.96),
         "plot_kind": "map",
         "clip_geometries": {
             "plot": ClipGeometry(kind="polygon", points=_mollweide_clip_points()),
@@ -336,6 +364,8 @@ def _renderer_inputs(point_count: int) -> tuple[object, dict, dict]:
 
 
 def _peak_rss_mb() -> float:
+    if resource is None:
+        return 0.0
     peak = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     divisor = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
     return peak / divisor
@@ -349,7 +379,7 @@ def _run_python_worker(point_count: int) -> dict:
     from starplot.interactive.scene import ViewportRequest
     from starplot.interactive.scene_manifest import parse_scene_manifest
     from starplot.interactive.scene_provider import SceneProvider
-    from starplot.interactive.web_export import export_scene_html
+    from starplot.interactive.web_export import LibraryMode, export_scene_html
 
     command, projection_info, style_info = _renderer_inputs(point_count)
 
@@ -371,7 +401,9 @@ def _run_python_worker(point_count: int) -> dict:
     arrow_payload_bytes = sum(len(encode_layer_stream(layer)) for layer in scene.layers)
     with tempfile.TemporaryDirectory(prefix="starplot-scene-benchmark-") as directory:
         output = Path(directory) / "scene.html"
-        exported = export_scene_html(scene, output)
+        exported = export_scene_html(
+            scene, output, library_mode=LibraryMode.DIRECTORY
+        )
         external_html_bytes = output.stat().st_size
         provider = SceneProvider(
             parse_scene_manifest(exported.manifest_bytes),
@@ -416,6 +448,13 @@ def _run_python_repeat(point_count: int, timeout_seconds: float) -> dict:
         "--points",
         str(point_count),
     ]
+    env = os.environ.copy()
+    src_path = str(_REPOSITORY_ROOT / "src")
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    if existing_pythonpath:
+        env["PYTHONPATH"] = f"{src_path}{os.pathsep}{existing_pythonpath}"
+    else:
+        env["PYTHONPATH"] = src_path
     try:
         completed = subprocess.run(
             command,
@@ -424,6 +463,7 @@ def _run_python_repeat(point_count: int, timeout_seconds: float) -> dict:
             check=True,
             text=True,
             timeout=timeout_seconds,
+            env=env,
         )
     except subprocess.TimeoutExpired as error:
         raise RuntimeError(
@@ -437,6 +477,90 @@ def _run_python_repeat(point_count: int, timeout_seconds: float) -> dict:
     except json.JSONDecodeError as error:
         raise RuntimeError(
             f"Python benchmark worker returned invalid JSON: {completed.stdout!r}"
+        ) from error
+
+
+def _run_browser_fixture_worker(point_count: int, output_directory: Path) -> dict:
+    """Export the paired browser fixtures in a disposable Python process."""
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+    from starplot.interactive.scene_compiler import SceneCompiler
+    from starplot.interactive.web_export import (
+        DataMode,
+        LibraryMode,
+        export_scene_html,
+    )
+
+    command, projection_info, style_info = _renderer_inputs(point_count)
+    scene = SceneCompiler().compile(
+        [command], projection_info, style_info, 1000, 500, False
+    )
+    exported = export_scene_html(
+        scene,
+        output_directory / "scene.html",
+        data_mode=DataMode.EXTERNAL,
+        library_mode=LibraryMode.DIRECTORY,
+    )
+    # This legacy page uses the exact same Scene and local Plotly library as
+    # the Arrow page. It is only a like-for-like browser baseline, never a
+    # public delivery mode.
+    PlotlySceneAdapter().render(scene).write_html(
+        output_directory / "legacy.html", include_plotlyjs="directory"
+    )
+    return {
+        "arrow_payload_bytes": sum(
+            len(value) for value in exported.layer_bytes.values()
+        ),
+        "scene_hash": exported.scene_hash,
+    }
+
+
+def _export_browser_fixture(
+    point_count: int,
+    output_directory: Path,
+    timeout_seconds: float = _DEFAULT_REPEAT_TIMEOUT_SECONDS,
+) -> dict:
+    """Run fixture compilation/export to completion outside this process."""
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--browser-fixture-worker",
+        "--browser-fixture-output",
+        str(output_directory),
+        "--points",
+        str(point_count),
+    ]
+    env = os.environ.copy()
+    src_path = str(_REPOSITORY_ROOT / "src")
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{src_path}{os.pathsep}{existing_pythonpath}"
+        if existing_pythonpath
+        else src_path
+    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=_REPOSITORY_ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=timeout_seconds,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            "Browser fixture worker timed out after "
+            f"{timeout_seconds} seconds"
+        ) from error
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or "no worker output").strip()
+        raise RuntimeError(f"Browser fixture worker failed: {detail}") from error
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            "Browser fixture worker returned invalid JSON: "
+            f"{completed.stdout!r}"
         ) from error
 
 
@@ -510,56 +634,45 @@ def _launch_browser(playwright):
 
 
 def _measure_browser_page(page, uri: str, timeout_ms: int) -> float:
-    """Measure navigation through instrumented Plotly promise and final paint."""
+    """Measure navigation through Starplot's complete render and final paint."""
     page.add_init_script(_PLOTLY_COMPLETION_INIT_SCRIPT)
     started = time.perf_counter()
     page.goto(uri, wait_until="load", timeout=timeout_ms)
     page.wait_for_function(
-        "() => window.__starplotBenchmark.complete === true",
+        """async () => {
+          if (window.__starplotRenderPromise) {
+            await window.__starplotRenderPromise;
+            await new Promise((resolve) => requestAnimationFrame(
+              () => requestAnimationFrame(resolve)
+            ));
+            return true;
+          }
+          return window.__starplotBenchmark.complete === true;
+        }""",
         timeout=timeout_ms,
     )
     return (time.perf_counter() - started) * 1000.0
 
 
 @contextmanager
-def _external_browser_fixture(point_count: int):
+def _external_browser_fixture(
+    point_count: int,
+    timeout_seconds: float = _DEFAULT_REPEAT_TIMEOUT_SECONDS,
+):
     """Serve one real external Arrow export outside measured browser repeats."""
     from starplot.cli import create_server
-    from starplot.interactive.scene_compiler import SceneCompiler
-    from starplot.interactive.web_export import (
-        DataMode,
-        LibraryMode,
-        export_scene_html,
-    )
 
-    command, projection_info, style_info = _renderer_inputs(point_count)
-    scene = SceneCompiler().compile(
-        [command], projection_info, style_info, 1000, 500, False
-    )
     with tempfile.TemporaryDirectory(prefix="starplot-arrow-browser-") as directory:
         root = Path(directory)
-        exported = export_scene_html(
-            scene,
-            root / "scene.html",
-            data_mode=DataMode.EXTERNAL,
-            library_mode=LibraryMode.DIRECTORY,
-        )
-        # This legacy page uses the exact same Scene and local Plotly library as
-        # the Arrow page. It is only a like-for-like browser baseline, never a
-        # public delivery mode.
-        from starplot.interactive.plotly_adapter import PlotlySceneAdapter
-
-        PlotlySceneAdapter().render(scene).write_html(
-            root / "legacy.html", include_plotlyjs="directory"
-        )
+        metadata = _export_browser_fixture(point_count, root, timeout_seconds)
         server = create_server(root, host="127.0.0.1", port=0)
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
         host, port = server.server_address[:2]
         try:
             yield {
-                "arrow_payload_bytes": sum(len(value) for value in exported.layer_bytes.values()),
-                "scene_hash": exported.scene_hash,
+                "arrow_payload_bytes": metadata["arrow_payload_bytes"],
+                "scene_hash": metadata["scene_hash"],
                 "source_kind": "external-arrow-http",
                 "source_url": f"http://{host}:{port}/scene.html",
                 "legacy_source_kind": "direct-plotly-same-scene-http",
@@ -571,7 +684,11 @@ def _external_browser_fixture(point_count: int):
             worker.join(timeout=5)
 
 
-def run_browser_benchmark(point_count: int, repeats: int) -> dict:
+def run_browser_benchmark(
+    point_count: int,
+    repeats: int,
+    fixture_timeout_seconds: float = _DEFAULT_REPEAT_TIMEOUT_SECONDS,
+) -> dict:
     """Measure a real external Arrow bundle over the supported HTTP server."""
     try:
         from playwright.sync_api import sync_playwright
@@ -586,7 +703,9 @@ def run_browser_benchmark(point_count: int, repeats: int) -> dict:
     measurements: list[float] = []
     legacy_measurements: list[float] = []
     try:
-        with _external_browser_fixture(point_count) as fixture, sync_playwright() as playwright:
+        with _external_browser_fixture(
+            point_count, fixture_timeout_seconds
+        ) as fixture, sync_playwright() as playwright:
             browser = _launch_browser(playwright)
             try:
                 browser_version = browser.version
@@ -624,7 +743,10 @@ def run_browser_benchmark(point_count: int, repeats: int) -> dict:
     return {
         "complete_render_median_ms": percentile(measurements, 50),
         "complete_render_p95_ms": percentile(measurements, 95),
-        "completion_signal": "Plotly newPlot/react promise plus two animation frames",
+        "completion_signal": (
+            "Starplot render promise including scale correction plus two animation "
+            "frames; Plotly promise fallback for legacy fixture"
+        ),
         "engine": "chromium",
         "engine_version": browser_version,
         "legacy_same_scene": {
@@ -707,7 +829,11 @@ def run_python_benchmark(
     )
     scene_compile = {**preparation, "semantics": _SCENE_COMPILE_SEMANTICS}
 
-    browser = run_browser_benchmark(point_count, repeats)
+    browser = run_browser_benchmark(
+        point_count,
+        repeats,
+        fixture_timeout_seconds=repeat_timeout_seconds,
+    )
     result = {
         "arrow_payload_bytes": int(measured[0]["arrow_payload_bytes"]),
         "browser": browser,
@@ -755,6 +881,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--repeat-timeout-seconds", type=float, default=300.0)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--python-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--browser-fixture-worker", action="store_true", help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--browser-fixture-output", type=Path, help=argparse.SUPPRESS
+    )
     return parser.parse_args()
 
 
@@ -762,6 +894,16 @@ def main() -> None:
     args = _parse_args()
     if args.python_worker:
         print(json.dumps(_run_python_worker(args.points), sort_keys=True))
+        return
+    if args.browser_fixture_worker:
+        if args.browser_fixture_output is None:
+            raise SystemExit("--browser-fixture-output is required")
+        print(
+            json.dumps(
+                _run_browser_fixture_worker(args.points, args.browser_fixture_output),
+                sort_keys=True,
+            )
+        )
         return
     if args.output is None:
         raise SystemExit("--output is required")

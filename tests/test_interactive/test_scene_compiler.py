@@ -369,6 +369,9 @@ def test_target_axes_width_controls_marker_calibration_and_viewport_contract():
         source_axes_width=1200.0,
     )
     assert scene.viewport["target_axes_width"] == pytest.approx(600.0)
+    assert scene.viewport["margin"] == pytest.approx(
+        {"l": 200.0, "r": 200.0, "t": 50.0, "b": 50.0, "autoexpand": False}
+    )
     assert scene.layers[0].data["size"].tolist() == pytest.approx([expected])
 
 
@@ -613,6 +616,42 @@ def test_non_data_and_unknown_clips_do_not_trigger_scene_geometry_clipping():
     assert [layer.data.row_count for layer in scene.layers] == [2, 2]
 
 
+def test_axes_polygon_clip_is_transformed_from_final_data_coordinates():
+    projection = {
+        **PROJECTION,
+        "clip_geometries": {
+            "plot": RecordedClipGeometry(
+                "rect",
+                ((2.0, -3.0), (8.0, 3.0)),
+            )
+        },
+    }
+    command = DrawingCommand(
+        kind="polygon",
+        data={
+            "points": ((0.1, 0.25), (0.9, 0.25), (0.9, 0.75), (0.1, 0.75)),
+            "final_artist": True,
+        },
+        space=CoordinateSpace.AXES,
+        clip_id="plot",
+    )
+
+    scene = SceneCompiler().compile(
+        [command], projection, STYLE, 1200, 800, False
+    )
+
+    layer = scene.layers[0]
+    # The compiler consumes the DATA-space clip while pre-clipping this
+    # AXES-space polygon; the emitted layer must not expose a mismatched clip.
+    assert layer.clip_id is None
+    x = layer.coordinate_encoding["x"].decode(layer.data.columns["x"])
+    y = layer.coordinate_encoding["y"].decode(layer.data.columns["y"])
+    assert np.min(x) == pytest.approx(0.2)
+    assert np.max(x) == pytest.approx(0.8)
+    assert np.min(y) == pytest.approx(0.25)
+    assert np.max(y) == pytest.approx(0.75)
+
+
 def test_none_recording_clip_is_ignored_at_scene_boundary():
     command = DrawingCommand(
         kind="line",
@@ -775,8 +814,10 @@ def test_compile_builds_frozen_viewport_clips_and_context_mappings():
         "axes_background": "#101820",
         "transparent": True,
         "target_axes_width": 1200.0,
-        "source_axes_width": None,
-        "dpi": 100.0,
+        "source_axes_width": 4096,
+        "dpi": 100,
+        "show_legend": False,
+        "legend_labels": (),
     }
     assert scene.projection_info["x_min"] == 0.0
     assert scene.style_info["background_color"] == "#101820"
@@ -1114,7 +1155,10 @@ def test_filter_columns_retains_each_boolean_selection_without_second_copy(
     assert filtered["name"] is captured[1]
     np.testing.assert_array_equal(filtered["x"], [1, 3])
     np.testing.assert_array_equal(filtered["name"], ["a", "c"])
-    assert all(column.flags.owndata for column in captured)
+    assert all(
+        not np.shares_memory(filtered[name], data[name])
+        for name in filtered.columns
+    )
     assert all(column.flags.c_contiguous for column in captured)
     assert all(column.flags.aligned for column in captured)
     assert all(not column.flags.writeable for column in captured)
@@ -1336,13 +1380,19 @@ def test_palette_encoding_arrays_are_independent_contiguous_read_only_aligned():
 
     assert encoded.palette == ("#0000ff", "#ff0000")
     assert encoded.opacity.tolist() == pytest.approx([0.25, 0.75])
-    for array in (encoded.color_index, encoded.opacity):
-        assert array.flags.owndata
+    for array, source in zip(
+        (encoded.color_index, encoded.opacity),
+        (colors, opacity),
+        strict=True,
+    ):
+        assert not np.shares_memory(array, source)
         assert array.flags.c_contiguous
         assert array.flags.aligned
         assert not array.flags.writeable
         with pytest.raises(ValueError):
             array[0] = 0
+        with pytest.raises(ValueError):
+            np.ndarray.setflags(array, write=True)
 
     with pytest.raises(FrozenInstanceError):
         encoded.palette = ()

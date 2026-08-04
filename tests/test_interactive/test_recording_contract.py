@@ -11,10 +11,12 @@ from starplot.interactive.recorder import DrawingRecorder
 
 
 def test_matplotlib_color_serialization_preserves_transparent_edges():
-    from starplot.interactive.recording_mixin import _rgba_to_hex
+    from starplot.interactive.recording_mixin import _edge_color_string, _rgba_to_hex
 
     assert _rgba_to_hex((0.0, 0.0, 0.0, 0.0)) == "rgba(0,0,0,0)"
     assert _rgba_to_hex((1.0, 0.0, 0.0, 0.5)) == "rgba(255,0,0,0.5)"
+    assert _edge_color_string((0.0, 0.0, 0.0, 0.0)) is None
+    assert _edge_color_string((0.0, 0.0, 0.0, 1.0)) == "#000000"
 
 
 def test_artist_offset_extraction_uses_collection_offset_transform():
@@ -148,6 +150,26 @@ def make_optic_plot():
     )
 
 
+def make_camera_plot():
+    from starplot.interactive import InteractiveOpticPlot
+    from starplot import Observer
+    from starplot.models import Camera
+    from starplot.styles import PlotStyle, extensions
+    dt = datetime(2023, 12, 16, 21, 0, 0, tzinfo=ZoneInfo("US/Pacific"))
+    observer = Observer(dt=dt, lat=33.363484, lon=-116.836394)
+    return InteractiveOpticPlot(
+        ra=90.0, dec=10.0, observer=observer,
+        optic=Camera(
+            sensor_width=36,
+            sensor_height=24,
+            lens_focal_length=105,
+            rotation=17,
+        ),
+        style=PlotStyle().extend(extensions.GRAYSCALE_DARK, extensions.OPTIC),
+        resolution=512, autoscale=True,
+    )
+
+
 @pytest.mark.parametrize("plot_factory, expected_kind", [
     (make_map_plot, "rect"),
     (make_horizon_plot, "rect"),
@@ -160,10 +182,30 @@ def test_plot_metadata_has_final_clip_and_axes_geometry(plot_factory, expected_k
     info = plot._recorder.projection_info
     assert info["plot_kind"] in {"map", "horizon", "zenith", "optic"}
     assert info["axes_pixels"][0] > 0 and info["axes_pixels"][1] > 0
+    assert info["figure_pixels"][0] > 0 and info["figure_pixels"][1] > 0
+    assert info["figure_pixels"][0] >= info["axes_pixels"][0]
+    assert info["figure_pixels"][1] >= info["axes_pixels"][1]
     clip = info["clip_geometries"]["plot"]
     assert clip.kind == expected_kind
     assert len(clip.points) >= (4 if expected_kind == "rect" else 64)
     assert all(math.isfinite(v) for point in clip.points for v in point)
+
+
+def test_exported_png_geometry_becomes_the_interactive_viewport(tmp_path):
+    from PIL import Image
+
+    plot = make_map_plot()
+    export_path = tmp_path / "chart.png"
+    plot.export(str(export_path), padding=0.25)
+    plot._record_plot_info()
+
+    image = Image.open(export_path)
+    info = plot._recorder.projection_info
+    assert info["figure_pixels"] == pytest.approx(image.size, abs=1.0)
+    x0, y0, width, height = info["axes_bbox"]
+    assert 0 <= x0 < 1 and 0 <= y0 < 1
+    assert 0 < width <= 1 and 0 < height <= 1
+    assert x0 + width <= 1 and y0 + height <= 1
 
 
 def test_map_clip_uses_final_curved_projection_boundary():
@@ -176,6 +218,23 @@ def test_map_clip_uses_final_curved_projection_boundary():
     assert len(clip.points) > 20
     assert max(x for x, _ in clip.points) == pytest.approx(plot.ax.get_xlim()[1])
     assert min(y for _, y in clip.points) == pytest.approx(plot.ax.get_ylim()[0])
+
+
+def test_optic_clip_uses_flattened_circle_geometry_not_bezier_controls():
+    """Circle clips must retain their round renderer geometry in Plotly."""
+    import numpy as np
+
+    plot = make_optic_plot()
+    plot._record_plot_info()
+
+    points = np.asarray(
+        plot._recorder.projection_info["clip_geometries"]["plot"].points,
+        dtype=float,
+    )
+    radii = np.hypot(points[:, 0], points[:, 1])
+    # Circle control points sit about 3.5% outside the true radius.  The
+    # flattened renderer path stays within a tiny numerical tolerance.
+    assert np.ptp(radii) / np.mean(radii) < 1e-3
 
 
 # ------------------------------------------------------------------
@@ -294,6 +353,23 @@ def test_reference_lines_record_final_matplotlib_dash_and_width():
     )
 
 
+def test_arrow_retains_its_matplotlib_background_clip_contract():
+    plot = make_map_plot()
+
+    patches_before = len(plot.ax.patches)
+    plot.arrow(origin=(80, 0), target=(100, 10))
+
+    arrow_artist = plot.ax.patches[patches_before]
+    command = next(c for c in plot._recorder.commands if c.gid == "arrow")
+    assert arrow_artist.get_clip_on()
+    assert (
+        arrow_artist.get_clip_path() is not None
+        or arrow_artist.get_clip_box() is not None
+    )
+    assert command.space is CoordinateSpace.AXES
+    assert command.clip_id == "plot"
+
+
 def test_title_records_final_artist_style_and_tight_bbox_gutter():
     plot = make_map_plot()
     plot.title("Probe")
@@ -302,6 +378,28 @@ def test_title_records_final_artist_style_and_tight_bbox_gutter():
     assert command.style["font_size"] == pytest.approx(plot.ax.title.get_fontsize())
     assert command.style["axes_domain_top"] < 1.0
     assert command.style["axes_domain_top"] < command.data["y"] <= 1.0
+
+
+def test_camera_border_records_the_final_matplotlib_patch_exactly_once():
+    """A rectangular camera must not acquire a synthetic circular border."""
+    import numpy as np
+
+    plot = make_camera_plot()
+    outer_border = plot.ax.patches[-1]
+    expected = plot.ax.transData.inverted().transform(outer_border.get_verts())
+
+    plot._record_plot_info()
+
+    borders = [c for c in plot._recorder.commands if c.gid == "optic-border"]
+    assert len(borders) == 1
+    border = borders[0]
+    assert border.kind == "polygon"
+    assert border.style["fill_color"] == "none"
+    assert border.style["edge_width"] == pytest.approx(
+        outer_border.get_linewidth()
+    )
+    assert np.asarray(border.data["points"]) == pytest.approx(expected)
+    assert not any(c.gid == "custom-patch" for c in plot._recorder.commands)
 
 
 def test_zenith_horizon_uses_axes_circle_and_fixed_cardinal_positions():

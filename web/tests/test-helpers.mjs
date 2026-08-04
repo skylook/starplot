@@ -97,7 +97,7 @@ export function tableWithSceneMetadata(columns, { id, kind, coordinateEncoding =
 export async function loadRuntime(files, extras = {}) {
   const atob = (value) => Buffer.from(value, "base64").toString("binary");
   const btoa = (value) => Buffer.from(value, "binary").toString("base64");
-  const window = { Arrow, crypto: webcrypto, atob, btoa, ...extras };
+  const window = { Arrow, crypto: webcrypto, atob, btoa, setTimeout, clearTimeout, ...extras };
   window.window = window;
   window.globalThis = window;
   const context = vm.createContext({
@@ -114,6 +114,8 @@ export async function loadRuntime(files, extras = {}) {
     Float64Array,
     Uint16Array,
     Uint32Array,
+    setTimeout,
+    clearTimeout,
     atob,
     btoa,
     console,

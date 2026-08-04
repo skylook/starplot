@@ -582,6 +582,66 @@
     return response;
   }
 
+  function declaredContentLength(response) {
+    if (!response || !response.headers || typeof response.headers.get !== "function") return null;
+    const raw = response.headers.get("content-length");
+    if (raw === null || raw === undefined || raw === "") return null;
+    const length = Number(raw);
+    return Number.isSafeInteger(length) && length >= 0 ? length : null;
+  }
+
+  function validateFinalHttpUrl(response, requestedUrl, allowedOrigins, label) {
+    const finalUrl = new URL(response.url || requestedUrl);
+    if (finalUrl.protocol !== "http:" && finalUrl.protocol !== "https:") {
+      throw new Error(`${label} URL must use HTTP(S)`);
+    }
+    if (allowedOrigins && !allowedOrigins.includes(finalUrl.origin)) {
+      throw new Error(`redirected ${label} URL origin is not allowed`);
+    }
+    return finalUrl.href;
+  }
+
+  async function readLimitedStream(response, maxBytes, label) {
+    if (!response.body || typeof response.body.getReader !== "function") return null;
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const bytes = asBytes(value);
+      total += bytes.byteLength;
+      if (total > maxBytes) {
+        if (typeof reader.cancel === "function") await reader.cancel();
+        throw new Error(`${label} exceeds the configured byte limit`);
+      }
+      chunks.push(bytes);
+    }
+    const result = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return result;
+  }
+
+  async function readLimitedText(response, maxBytes, label) {
+    const streamed = await readLimitedStream(response, maxBytes, label);
+    if (streamed) return new TextDecoder().decode(streamed);
+    const text = await response.text();
+    if (utf8Length(text) > maxBytes) throw new Error(`${label} exceeds the configured byte limit`);
+    return text;
+  }
+
+  async function readLimitedBytes(response, maxBytes, label) {
+    const streamed = await readLimitedStream(response, maxBytes, label);
+    if (streamed) return streamed;
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > maxBytes) throw new Error(`${label} exceeds the configured byte limit`);
+    return bytes;
+  }
+
   function externalFileError() {
     return new Error('External Scene data cannot be loaded from file://. Use starplot serve <directory> or data_mode="inline".');
   }
@@ -597,15 +657,31 @@
     return new Error(`Scene request failed for ${origin}: ${message.replace(/https?:\/\/[^\s)]+/g, origin)}`);
   }
 
+  function manualRedirectError() {
+    const error = new Error("Scene redirects are not permitted");
+    error.name = "SceneRedirectError";
+    return error;
+  }
+
   async function fetchWithRetry(fetchImpl, url, signal) {
     const delays = [0, 250, 500];
     let lastError;
     for (let attempt = 0; attempt < delays.length; attempt += 1) {
       assertNotAborted(signal);
       if (delays[attempt]) await new Promise((resolve) => global.setTimeout(resolve, delays[attempt]));
-      try { return checkedResponse(await fetchImpl(url, { signal }), url); }
+      try {
+        // Browser Fetch deliberately hides redirect targets in manual mode, so they cannot
+        // be origin-validated before following. Fail closed instead of following blindly.
+        const response = await fetchImpl(url, { signal, redirect: "manual" });
+        if (response && (response.type === "opaqueredirect"
+          || (response.status >= 300 && response.status < 400))) {
+          throw manualRedirectError();
+        }
+        return checkedResponse(response, url);
+      }
       catch (error) {
         if (error && error.name === "AbortError") throw error;
+        if (error && error.name === "SceneRedirectError") throw error;
         lastError = error;
       }
     }
@@ -752,12 +828,19 @@
       if (new URL(url).protocol === "file:") throw externalFileError();
       const response = await fetchWithRetry(this.fetch, url, signal);
       assertNotAborted(signal);
+      const finalUrl = validateFinalHttpUrl(response, url, null, "manifest");
+      const declaredLength = declaredContentLength(response);
+      if (declaredLength !== null && declaredLength > this.limits.max_manifest_bytes) {
+        throw new Error("Scene manifest exceeds the configured byte limit");
+      }
       if (typeof response.text !== "function") throw new Error("Scene manifest response must expose exact text bytes");
-      const text = await response.text();
+      const text = await readLimitedText(
+        response, this.limits.max_manifest_bytes, "Scene manifest",
+      );
       let manifest;
       try { manifest = JSON.parse(text); } catch (error) { throw new Error("Scene manifest is not valid JSON", { cause: error }); }
       this._manifest = await validateManifest(manifest, text, this.limits);
-      this.manifestUrl = response.url || url;
+      this.manifestUrl = finalUrl;
       return this._manifest;
     }
 
@@ -767,14 +850,23 @@
       if (protocol === "file:") throw externalFileError();
       if (protocol !== "http:" && protocol !== "https:") throw new Error(`layer URL must use HTTP(S) for layer ${layer.id}`);
       const manifestOrigin = new URL(this.manifestUrl || this.baseUrl).origin;
-      const allowedOrigins = this.allowedDataOrigins.length
-        ? this.allowedDataOrigins
-        : [manifestOrigin];
+      const allowedOrigins = [...new Set([manifestOrigin, ...this.allowedDataOrigins])];
       if (!allowedOrigins.includes(new URL(url).origin)) {
         throw new Error(`layer URL origin is not allowed for layer ${layer.id}`);
       }
       const response = await fetchWithRetry(this.fetch, url, signal);
-      return new Uint8Array(await response.arrayBuffer());
+      validateFinalHttpUrl(response, url, allowedOrigins, "layer");
+      const declaredLength = declaredContentLength(response);
+      if (declaredLength !== null && declaredLength > this.limits.max_layer_bytes) {
+        throw new Error(`layer ${layer.id} exceeds the configured byte limit`);
+      }
+      if (!hasViewportParameters(request) && declaredLength !== null
+          && declaredLength !== layer.byte_length) {
+        throw new Error(`Arrow byte length does not match manifest for layer ${layer.id}`);
+      }
+      return readLimitedBytes(
+        response, this.limits.max_layer_bytes, `layer ${layer.id}`,
+      );
     }
   }
 

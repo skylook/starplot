@@ -19,6 +19,7 @@ import shapely.errors
 from starplot.interactive.recorder import DrawingRecorder
 from starplot.interactive.commands import CoordinateSpace
 from starplot.coordinates import CoordinateSystem
+from starplot.data.translations import translate
 from starplot.styles import ObjectStyle, PathStyle, LineStyle, LabelStyle, LegendStyle, ArrowStyle
 from starplot.styles.helpers import use_style
 
@@ -122,6 +123,18 @@ def _rgb_string(color):
         return hex_color
     except _RECORDING_ERRORS:
         return "#ffffff"
+
+
+def _edge_color_string(color):
+    """Preserve a fully transparent Matplotlib edge as no edge at all."""
+    try:
+        from matplotlib.colors import to_rgba
+
+        if to_rgba(color)[3] == 0:
+            return None
+    except _RECORDING_ERRORS:
+        return None
+    return _rgb_string(color)
 
 
 class RecordingMixin:
@@ -270,13 +283,45 @@ class RecordingMixin:
             )
             fig_width_in, fig_height_in = self.fig.get_size_inches()
             export_dpi = getattr(self, "dpi", 100) or 100
+            proj_info["figure_pixels"] = (
+                float(fig_width_in * export_dpi),
+                float(fig_height_in * export_dpi),
+            )
             proj_info["axes_pixels"] = (
                 float(ax_pos.width * fig_width_in * export_dpi),
                 float(ax_pos.height * fig_height_in * export_dpi),
             )
+            export_geometry = getattr(self, "_last_export_geometry", None)
+            if export_geometry:
+                tight_x, tight_y, tight_width, tight_height = export_geometry[
+                    "tight_bbox_inches"
+                ]
+                axes_x, axes_y, axes_width, axes_height = export_geometry[
+                    "axes_bbox_inches"
+                ]
+                pad_inches = export_geometry["padding_inches"]
+                recorded_dpi = export_geometry["dpi"]
+                export_width = tight_width + 2 * pad_inches
+                export_height = tight_height + 2 * pad_inches
+                if export_width > 0 and export_height > 0:
+                    proj_info["figure_pixels"] = (
+                        float(export_width * recorded_dpi),
+                        float(export_height * recorded_dpi),
+                    )
+                    proj_info["axes_bbox"] = (
+                        float((axes_x - tight_x + pad_inches) / export_width),
+                        float((axes_y - tight_y + pad_inches) / export_height),
+                        float(axes_width / export_width),
+                        float(axes_height / export_height),
+                    )
+                    proj_info["axes_pixels"] = (
+                        float(axes_width * recorded_dpi),
+                        float(axes_height * recorded_dpi),
+                    )
         except _RECORDING_ERRORS as e:
             LOGGER.debug("Could not extract axes geometry: %s", e)
             proj_info["axes_bbox"] = (0.0, 0.0, 1.0, 1.0)
+            proj_info["figure_pixels"] = (0.0, 0.0)
             proj_info["axes_pixels"] = (0.0, 0.0)
 
         # Record clip geometry
@@ -444,7 +489,7 @@ class RecordingMixin:
                     rings=rings,
                     style_dict={
                         "fill_color": _rgb_string(fc) if fill else "none",
-                        "edge_color": _rgb_string(edge),
+                        "edge_color": _edge_color_string(edge),
                         "edge_width": lw,
                         "alpha": float(alpha if alpha is not None else 1.0),
                         "line_style": str(patch.get_linestyle()),
@@ -478,15 +523,14 @@ class RecordingMixin:
             ):
                 if patch is None:
                     continue
-                path_obj = patch.get_path()
-                codes = path_obj.codes
-                has_curves = codes is not None and any(
-                    code in (3, 4) for code in codes
-                )
-                if has_curves and len(path_obj.vertices) < 64:
-                    path_obj = path_obj.interpolated(8)
-                trans = patch.get_transform() + self.ax.transData.inverted()
-                raw_verts = trans.transform(path_obj.vertices)
+                # ``Path.interpolated`` subdivides cubic Bézier *control
+                # points* linearly; using it for Circle patches produces an
+                # octagonal-looking clip.  Matplotlib's Patch.get_verts()
+                # instead returns its renderer-ready, flattened display
+                # vertices.  Convert those final vertices back to the Scene's
+                # final DATA coordinate space.
+                display_verts = patch.get_verts()
+                raw_verts = self.ax.transData.inverted().transform(display_verts)
                 finite = [
                     (float(x), float(y))
                     for x, y in raw_verts
@@ -528,7 +572,12 @@ class RecordingMixin:
     # ------------------------------------------------------------------
 
     def _scatter_stars(self, ras, decs, sizes, alphas, colors, style=None, **kwargs):
-        legend_label = kwargs.pop("legend_label", "Star")
+        _raw_legend_label = kwargs.pop("legend_label", "Star")
+        legend_label = translate(_raw_legend_label, self.language) or _raw_legend_label
+        # Capture values before super() pops them from kwargs.
+        requested_zorder = kwargs.get("zorder")
+        requested_edgecolors = kwargs.get("edgecolors")
+        requested_symbol = kwargs.get("symbol")
         collections_before = len(self.ax.collections)
         result = super()._scatter_stars(ras, decs, sizes, alphas, colors, style, **kwargs)
 
@@ -576,11 +625,22 @@ class RecordingMixin:
                 ys.append(float(y) if math.isfinite(y) else float("nan"))
 
         resolved_style = style or self.style.star
-        symbol = kwargs.get("symbol", getattr(resolved_style.marker, "symbol", "circle"))
+        symbol = requested_symbol or getattr(resolved_style.marker, "symbol", "circle")
         symbol = getattr(symbol, "value", symbol)
+        edge_color = requested_edgecolors
+        if not edge_color:
+            if resolved_style.marker.edge_color:
+                edge_color = resolved_style.marker.edge_color.as_hex()
+            else:
+                edge_color = "none"
+        zorder = (
+            requested_zorder
+            if requested_zorder is not None
+            else resolved_style.marker.zorder
+        )
         style_dict = {
             "symbol": str(symbol),
-            "edge_color": kwargs.get("edgecolors", "none"),
+            "edge_color": edge_color,
             "edge_width": getattr(resolved_style.marker, "edge_width", 0),
             "legend_label": legend_label,
             "fill": getattr(resolved_style.marker, "fill", "full"),
@@ -594,7 +654,7 @@ class RecordingMixin:
             metadata=metadata,
             style_dict=style_dict,
             gid=kwargs.get("gid", "stars"),
-            zorder=int(kwargs.get("zorder") or resolved_style.marker.zorder),
+            zorder=int(zorder),
         )
         return result
 
@@ -619,7 +679,7 @@ class RecordingMixin:
                 # Strip embedded alpha from fill/edge colors; a separate
                 # `alpha` is recorded and applied as Plotly trace opacity.
                 "fill_color": _rgb_string(patch.get_facecolor()),
-                "edge_color": _rgb_string(patch.get_edgecolor()),
+                "edge_color": _edge_color_string(patch.get_edgecolor()),
                 "edge_width": float(patch.get_linewidth() or 0),
                 "alpha": float(patch.get_alpha() if patch.get_alpha() is not None else 1.0),
                 "line_style": str(patch.get_linestyle()),
@@ -662,6 +722,15 @@ class RecordingMixin:
                     pass
 
             from starplot.interactive.commands import DrawingCommand, CoordinateSpace
+            stroke_style = {}
+            for effect in kwargs.get("path_effects", ()):
+                gc = getattr(effect, "_gc", {})
+                if gc.get("foreground") is not None and gc.get("linewidth"):
+                    stroke_style = {
+                        "stroke_color": _rgba_to_hex(gc["foreground"]),
+                        "stroke_width": float(gc["linewidth"]),
+                    }
+                    break
             cmd = DrawingCommand(
                 kind="text",
                 data={
@@ -679,6 +748,7 @@ class RecordingMixin:
                     "va": kwargs.get("va", "center"),
                     "alpha": kwargs.get("alpha", 1.0),
                     "rotation": float(rotation),
+                    **stroke_style,
                 },
                 gid=kwargs.get("gid", "text"),
                 zorder=kwargs.get("zorder", 0),
@@ -821,7 +891,11 @@ class RecordingMixin:
             metadata=[{"type": "marker", "name": label or ""}],
             style_dict=style_dict,
             gid=kwargs.get("gid_marker") or "marker",
-            zorder=int(style_kwargs.get("zorder") or style.marker.zorder),
+            zorder=int(
+                style_kwargs.get("zorder")
+                if style_kwargs.get("zorder") is not None
+                else style.marker.zorder
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -1478,16 +1552,48 @@ class RecordingMixin:
                     if len(self.ax.patches) > patches_before
                     else None
                 )
+
+                # Derive the horizon circle in data coordinates from the
+                # Matplotlib patch (ZenithPlot.horizon places a Circle with
+                # radius 0.454 in axes coordinates).  This avoids hard-coding
+                # the ratio between axes fractions and data units.
                 xlim = self.ax.get_xlim()
                 ylim = self.ax.get_ylim()
-                center_x = (xlim[0] + xlim[1]) / 2
-                center_y = (ylim[0] + ylim[1]) / 2
-                radius = (xlim[1] - xlim[0]) / 2 * 0.454 / 0.5
+                if horizon_patch is not None:
+                    # The patch is created with transform=self.ax.transAxes and
+                    # center/radius in axes fractions.  Convert via transAxes
+                    # directly; using horizon_patch.get_transform() would apply
+                    # the patch's local Affine2D pre-transform and shift the
+                    # center off the axes origin.
+                    inv_data = self.ax.transData.inverted()
+                    center = inv_data.transform(self.ax.transAxes.transform(horizon_patch.center))
+                    edge = inv_data.transform(
+                        self.ax.transAxes.transform(
+                            (horizon_patch.center[0] + horizon_patch.radius, horizon_patch.center[1])
+                        )
+                    )
+                    center_x, center_y = float(center[0]), float(center[1])
+                    radius = math.hypot(edge[0] - center_x, edge[1] - center_y)
+                else:
+                    # Fallback if the patch is missing for any reason.
+                    center_x = (xlim[0] + xlim[1]) / 2
+                    center_y = (ylim[0] + ylim[1]) / 2
+                    radius = (xlim[1] - xlim[0]) / 2 * 0.454 / 0.5
 
                 import numpy as np
                 theta = np.linspace(0, 2 * np.pi, 100)
                 circle_x = center_x + radius * np.cos(theta)
                 circle_y = center_y + radius * np.sin(theta)
+
+                # The plotted horizon patch is used by Matplotlib for both the
+                # visible ring and the outer clip boundary.  Record it as a
+                # Plotly line so the ring is drawn once in data coordinates; add
+                # the patch to the recorded set so _record_untracked_path_patches
+                # does not render it again.
+                if horizon_patch is not None:
+                    recorded = getattr(self, "_recorded_external_patch_ids", set())
+                    recorded.add(id(horizon_patch))
+                    self._recorded_external_patch_ids = recorded
 
                 self._recorder.record_line(
                     x=list(circle_x),
@@ -1570,7 +1676,7 @@ class RecordingMixin:
         max_attempts: int = 100,
         **kwargs,
     ):
-        """Record the arrow polygon in axes (paper) coordinates."""
+        """Record the arrow polygon in axes coordinates."""
         patches_before = len(self.ax.patches)
         super().arrow(
             origin=origin,
@@ -1590,22 +1696,35 @@ class RecordingMixin:
                 (float(x), float(y))
                 for x, y in arrow_patch.get_xy()
             ]
+            # Capture the actual rendered linewidth/scaled style from the patch
+            # so the Plotly trace matches Matplotlib, not the unscaled style.
             self._recorder.record_polygon(
                 points=points,
                 style_dict={
                     "fill_color": style.fill_color.as_hex() if style.fill_color else None,
                     "edge_color": style.edge_color.as_hex() if style.edge_color else None,
-                    "edge_width": getattr(style, "edge_width", 0),
-                    "alpha": getattr(style, "alpha", 1.0),
-                    "line_style": str(getattr(style, "line_style", "solid")),
-                    "xref": "paper",
-                    "yref": "paper",
+                    "edge_width": float(arrow_patch.get_linewidth() or 0),
+                    "alpha": float(
+                        arrow_patch.get_alpha()
+                        if arrow_patch.get_alpha() is not None
+                        else 1.0
+                    ),
+                    "line_style": str(arrow_patch.get_linestyle()),
+                    "legend_label": kwargs.get("legend_label"),
                 },
-                gid="arrow",
-                zorder=int(getattr(style, "zorder", 0) or 0),
-                space=CoordinateSpace.PAPER,
-                clip_id=None,
+                gid=kwargs.get("gid") or "arrow",
+                zorder=int(arrow_patch.get_zorder() or 0),
+                space=CoordinateSpace.AXES,
+                # Matplotlib clips this axes-space polygon against the plot's
+                # background patch.  The compiler transforms that final-data
+                # clip into axes coordinates before intersecting the polygon.
+                clip_id="plot",
             )
+            # Mark the patch as recorded so _record_untracked_path_patches
+            # does not capture it a second time in data coordinates.
+            self._recorded_external_patch_ids = getattr(
+                self, "_recorded_external_patch_ids", set()
+            ) | {id(arrow_patch)}
         except _RECORDING_ERRORS as e:
             LOGGER.debug("Could not record arrow: %s", e)
 
@@ -1629,11 +1748,12 @@ class RecordingMixin:
                 renderer=self.fig.canvas.get_renderer()
             )
             paper_y_max = max(1.0, float(title_bbox.y1) / figure_height)
+            paper_y = min(1.0, float(anchor_y) / paper_y_max)
             font_family = artist.get_fontfamily()
             self._recorder.record_text(
                 text=artist.get_text(),
                 x=float(anchor_x),
-                y=float(anchor_y) / paper_y_max,
+                y=paper_y,
                 style_dict={
                     "font_size": float(artist.get_fontsize()),
                     "font_color": _rgba_to_hex(artist.get_color()),
@@ -1869,46 +1989,50 @@ class RecordingMixin:
         return result
 
     # ------------------------------------------------------------------
-    # Method 10: OpticPlot border (circular field of view)
+    # Method 10: OpticPlot border
     # ------------------------------------------------------------------
 
     def _plot_border(self):
-        """Override _plot_border for OpticPlot to record circular border."""
+        """Record the final Matplotlib optic border geometry exactly once."""
+        patches_before = len(self.ax.patches)
         super()._plot_border()
-        
+
         # Only record for OpticPlot
         from starplot.plots.optic import OpticPlot
         if not isinstance(self, OpticPlot):
             return
-        
-        try:
-            # Match OpticPlot._plot_border() outer ring:
-            # optic.patch(..., padding=0.05, linewidth=25 * self.scale,
-            #            edgecolor=self.style.border_bg_color)
-            color = self.style.border_bg_color.as_hex()
-            width = 25 * self.scale
-            alpha = 1.0
 
-            # Optic.patch() is a circle for scope/binocular optics.
-            # Keep fallback for non-circular optics.
-            import numpy as np
-            radius = getattr(self.optic, "radius", self.optic.xlim) + 0.05
-            theta = np.linspace(0, 2 * np.pi, 100)
-            circle_x = radius * np.cos(theta)
-            circle_y = radius * np.sin(theta)
-            
-            self._recorder.record_line(
-                x=list(circle_x),
-                y=list(circle_y),
+        try:
+            new_patches = self.ax.patches[patches_before:]
+            outer_border = next(
+                patch
+                for patch in reversed(new_patches)
+                if not patch.get_fill() and float(patch.get_linewidth() or 0) > 0
+            )
+            points = [
+                (float(x), float(y))
+                for x, y in self.ax.transData.inverted().transform(
+                    outer_border.get_verts()
+                )
+            ]
+            alpha = outer_border.get_alpha()
+            self._recorder.record_polygon(
+                points=points,
+                rings=[points],
                 style_dict={
-                    "color": color,
-                    "width": width,
-                    "line_style": "solid",
-                    "alpha": alpha,
+                    "fill_color": "none",
+                    "edge_color": _edge_color_string(outer_border.get_edgecolor()),
+                    "edge_width": float(outer_border.get_linewidth() or 0),
+                    "alpha": float(alpha if alpha is not None else 1.0),
+                    "line_style": str(outer_border.get_linestyle()),
                 },
                 gid="optic-border",
-                zorder=1000,
+                zorder=int(outer_border.get_zorder() or 0),
+                clip_id=None,
             )
+            recorded = getattr(self, "_recorded_external_patch_ids", set())
+            recorded.add(id(outer_border))
+            self._recorded_external_patch_ids = recorded
         except _RECORDING_ERRORS as e:
             LOGGER.warning("Failed to record optic border: %s", e)
 

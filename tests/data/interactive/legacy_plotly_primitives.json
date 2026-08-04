@@ -51,8 +51,8 @@
           ],
           "showscale": false,
           "size": [
-            4.513516902923584,
-            6.018022060394287
+            4.0,
+            5.333333492279053
           ],
           "symbol": "circle"
         },
@@ -896,17 +896,18 @@
       "legend": {
         "font": {
           "color": "#ffffff",
-          "size": 15.277777777777777
+          "size": 14.666666666666666
         },
         "bgcolor": "rgba(0,0,0,0.5)",
         "bordercolor": "rgba(255,255,255,0.2)",
         "borderwidth": 1
       },
       "margin": {
-        "l": 10,
-        "r": 10,
-        "t": 30,
-        "b": 10
+        "l": 10.0,
+        "r": 10.000000000000009,
+        "t": 49.999999999999986,
+        "b": 50.0,
+        "autoexpand": false
       },
       "plot_bgcolor": "#101820",
       "paper_bgcolor": "#010203",
@@ -936,7 +937,7 @@
         "line": {
           "color": "#abcdef",
           "dash": "dash",
-          "width": 2.083333333333333
+          "width": 2.0
         },
         "mode": "lines",
         "name": "Ecliptic",
@@ -1781,17 +1782,18 @@
       "legend": {
         "font": {
           "color": "#ffffff",
-          "size": 15.277777777777777
+          "size": 14.666666666666666
         },
         "bgcolor": "rgba(0,0,0,0.5)",
         "bordercolor": "rgba(255,255,255,0.2)",
         "borderwidth": 1
       },
       "margin": {
-        "l": 10,
-        "r": 10,
-        "t": 30,
-        "b": 10
+        "l": 10.0,
+        "r": 10.000000000000009,
+        "t": 49.999999999999986,
+        "b": 50.0,
+        "autoexpand": false
       },
       "plot_bgcolor": "#101820",
       "paper_bgcolor": "#010203",
@@ -1821,7 +1823,7 @@
         "line": {
           "color": "#778899",
           "dash": "solid",
-          "width": 1.3888888888888888
+          "width": 1.3333333333333333
         },
         "mode": "lines",
         "name": "Constellations",
@@ -2673,17 +2675,18 @@
       "legend": {
         "font": {
           "color": "#ffffff",
-          "size": 15.277777777777777
+          "size": 14.666666666666666
         },
         "bgcolor": "rgba(0,0,0,0.5)",
         "bordercolor": "rgba(255,255,255,0.2)",
         "borderwidth": 1
       },
       "margin": {
-        "l": 10,
-        "r": 10,
-        "t": 30,
-        "b": 10
+        "l": 10.0,
+        "r": 10.000000000000009,
+        "t": 49.999999999999986,
+        "b": 50.0,
+        "autoexpand": false
       },
       "plot_bgcolor": "#101820",
       "paper_bgcolor": "#010203",
@@ -2714,7 +2717,7 @@
         "legendgroup": "milky-way",
         "line": {
           "color": "#ffffff",
-          "width": 0.6944444444444444
+          "width": 0.6666666666666666
         },
         "mode": "lines",
         "opacity": 0.7,
@@ -3556,17 +3559,18 @@
       "legend": {
         "font": {
           "color": "#ffffff",
-          "size": 15.277777777777777
+          "size": 14.666666666666666
         },
         "bgcolor": "rgba(0,0,0,0.5)",
         "bordercolor": "rgba(255,255,255,0.2)",
         "borderwidth": 1
       },
       "margin": {
-        "l": 10,
-        "r": 10,
-        "t": 30,
-        "b": 10
+        "l": 10.0,
+        "r": 10.000000000000009,
+        "t": 49.999999999999986,
+        "b": 50.0,
+        "autoexpand": false
       },
       "plot_bgcolor": "#101820",
       "paper_bgcolor": "#010203",
@@ -4412,17 +4416,18 @@
       "legend": {
         "font": {
           "color": "#ffffff",
-          "size": 15.277777777777777
+          "size": 14.666666666666666
         },
         "bgcolor": "rgba(0,0,0,0.5)",
         "bordercolor": "rgba(255,255,255,0.2)",
         "borderwidth": 1
       },
       "margin": {
-        "l": 10,
-        "r": 10,
-        "t": 30,
-        "b": 10
+        "l": 10.0,
+        "r": 10.000000000000009,
+        "t": 49.999999999999986,
+        "b": 50.0,
+        "autoexpand": false
       },
       "plot_bgcolor": "#101820",
       "paper_bgcolor": "#010203",
@@ -4437,7 +4442,7 @@
           "font": {
             "color": "#ffffff",
             "family": "Inter, Arial, sans-serif",
-            "size": 16.666666666666664,
+            "size": 16.0,
             "weight": 400
           },
           "opacity": 1.0,
@@ -4447,11 +4452,11 @@
           "x": 0.5,
           "xanchor": "left",
           "xref": "x domain",
-          "xshift": 9.999999735090467,
+          "xshift": 9.599999745686848,
           "y": 0.75,
           "yanchor": "bottom",
           "yref": "y domain",
-          "yshift": -4.999999867545234
+          "yshift": -4.799999872843424
         }
       ],
       "modebar": {
@@ -15319,17 +15324,18 @@
       "legend": {
         "font": {
           "color": "#ffffff",
-          "size": 15.277777777777777
+          "size": 14.666666666666666
         },
         "bgcolor": "rgba(0,0,0,0.5)",
         "bordercolor": "rgba(255,255,255,0.2)",
         "borderwidth": 1
       },
       "margin": {
-        "l": 10,
-        "r": 10,
-        "t": 30,
-        "b": 10
+        "l": 10.0,
+        "r": 10.000000000000009,
+        "t": 49.999999999999986,
+        "b": 50.0,
+        "autoexpand": false
       },
       "plot_bgcolor": "#101820",
       "paper_bgcolor": "#010203",
@@ -16175,17 +16181,18 @@
       "legend": {
         "font": {
           "color": "#ffffff",
-          "size": 15.277777777777777
+          "size": 14.666666666666666
         },
         "bgcolor": "rgba(0,0,0,0.5)",
         "bordercolor": "rgba(255,255,255,0.2)",
         "borderwidth": 1
       },
       "margin": {
-        "l": 10,
-        "r": 10,
-        "t": 30,
-        "b": 105
+        "l": 10.0,
+        "r": 10.000000000000009,
+        "t": 49.999999999999986,
+        "b": 105,
+        "autoexpand": false
       },
       "plot_bgcolor": "#101820",
       "paper_bgcolor": "#010203",
@@ -16231,7 +16238,7 @@
           "font": {
             "color": "#ffffff",
             "family": "Inter, Arial, sans-serif",
-            "size": 19.999999999999996
+            "size": 19.199999999999996
           },
           "opacity": 1.0,
           "showarrow": false,
@@ -16247,7 +16254,7 @@
           "font": {
             "color": "#ffffff",
             "family": "Inter, Arial, sans-serif",
-            "size": 16.666666666666664
+            "size": 16.0
           },
           "opacity": 1.0,
           "showarrow": false,
@@ -16263,7 +16270,7 @@
           "font": {
             "color": "#ffffff",
             "family": "Inter, Arial, sans-serif",
-            "size": 19.999999999999996
+            "size": 19.199999999999996
           },
           "opacity": 1.0,
           "showarrow": false,
@@ -16279,7 +16286,7 @@
           "font": {
             "color": "#ffffff",
             "family": "Inter, Arial, sans-serif",
-            "size": 16.666666666666664
+            "size": 16.0
           },
           "opacity": 1.0,
           "showarrow": false,

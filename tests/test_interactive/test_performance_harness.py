@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -108,7 +109,10 @@ def test_compare_results_reports_every_missed_performance_gate():
         "peak_rss_mb": 7.0,
         "arrow_payload_bytes": 31 * 1024 * 1024,
         "external_html_bytes": 2 * 1024 * 1024,
-        "browser": {"complete_render_median_ms": 80.0},
+        "browser": {
+            "complete_render_median_ms": 120.0,
+            "complete_render_p95_ms": 5001.0,
+        },
         "ordinary_chart": {"median_seconds": 1.2},
         "viewport_warm": {"median_ms": 501.0, "p95_ms": 1001.0},
     }
@@ -116,15 +120,21 @@ def test_compare_results_reports_every_missed_performance_gate():
 
     failures = benchmark.compare_results(before, after)
 
-    assert len(failures) == 8
+    assert len(failures) == 9
     assert any("scene_compile" in failure for failure in failures)
     assert any("peak_rss" in failure for failure in failures)
     assert any("arrow_payload" in failure for failure in failures)
     assert any("external_html" in failure for failure in failures)
     assert any("browser_complete" in failure for failure in failures)
+    assert any("browser_complete_render_p95" in failure for failure in failures)
     assert any("ordinary_chart" in failure for failure in failures)
     assert any("viewport_warm_median" in failure for failure in failures)
     assert any("viewport_warm_p95" in failure for failure in failures)
+
+
+def test_browser_gates_separate_transport_overhead_from_absolute_product_budget():
+    assert benchmark.PERFORMANCE_GATES["browser_complete_render_ratio_max"] == 1.10
+    assert benchmark.PERFORMANCE_GATES["browser_complete_render_p95_ms_max"] == 5000
 
 
 def test_compare_results_rejects_unmeasured_metrics_and_host_mismatch():
@@ -161,6 +171,40 @@ def test_scatter_command_columns_are_contiguous_read_only_arrays(column, dtype):
     assert not values.flags.writeable
 
 
+def test_renderer_fixture_matches_recorded_projection_geometry_contract():
+    from starplot.interactive.scene_compiler import SceneCompiler
+
+    command, projection, style = benchmark._renderer_inputs(100)
+
+    assert {
+        key: projection[key] for key in ("x_min", "x_max", "y_min", "y_max")
+    } == {
+        "x_min": -np.pi,
+        "x_max": np.pi,
+        "y_min": -0.5 * np.pi,
+        "y_max": 0.5 * np.pi,
+    }
+    scene = SceneCompiler().compile(
+        [command], projection, style, width=1000, height=500, transparent=False
+    )
+    assert scene.viewport["data_bounds"] == pytest.approx(
+        {
+            "x_min": -np.pi,
+            "x_max": np.pi,
+            "y_min": -0.5 * np.pi,
+            "y_max": 0.5 * np.pi,
+        }
+    )
+    assert scene.viewport["target_axes_width"] == pytest.approx(960.0)
+    assert dict(scene.viewport["margin"]) == {
+        "l": pytest.approx(20.0),
+        "r": pytest.approx(20.0),
+        "t": pytest.approx(10.0),
+        "b": pytest.approx(10.0),
+        "autoexpand": False,
+    }
+
+
 def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch, capsys):
     worker_result = {
         "arrow_payload_bytes": 900,
@@ -179,16 +223,18 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch, capsys)
         return worker_result
 
     monkeypatch.setattr(benchmark, "_run_python_repeat", run_repeat)
-    monkeypatch.setattr(
-        benchmark,
-        "run_browser_benchmark",
-        lambda point_count, repeats: {
+    browser_calls = []
+
+    def run_browser(point_count, repeats, fixture_timeout_seconds):
+        browser_calls.append((point_count, repeats, fixture_timeout_seconds))
+        return {
             "complete_render_median_ms": None,
             "engine": "chromium",
             "engine_version": "test",
             "status": "test",
-        },
-    )
+        }
+
+    monkeypatch.setattr(benchmark, "run_browser_benchmark", run_browser)
 
     result = benchmark.run_python_benchmark(
         point_count=10,
@@ -198,6 +244,7 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch, capsys)
 
     benchmark.validate_benchmark_artifact(result)
     assert calls == [(10, 2.0), (10, 2.0)]
+    assert browser_calls == [(10, 1, 2.0)]
     assert result["scene_compile"]["median_seconds"] == 0.25
     assert result["legacy_renderer_total"]["median_seconds"] == 1.5
     assert result["legacy_renderer_preparation"]["median_seconds"] == 0.25
@@ -244,7 +291,11 @@ def test_browser_page_waits_for_instrumented_plotly_promise_and_final_paint():
     assert "react" in init_script
     assert "Promise.resolve" in init_script
     assert init_script.count("requestAnimationFrame") >= 2
-    assert "__starplotBenchmark.complete === true" in events[2][1]
+    completion_predicate = events[2][1]
+    assert "__starplotRenderPromise" in completion_predicate
+    assert "await window.__starplotRenderPromise" in completion_predicate
+    assert "__starplotBenchmark.complete === true" in completion_predicate
+    assert completion_predicate.count("requestAnimationFrame") >= 2
 
 
 def test_browser_launcher_falls_back_to_system_chrome(monkeypatch):
@@ -290,6 +341,93 @@ def test_python_repeat_parses_isolated_worker_result(monkeypatch):
     monkeypatch.setattr(benchmark.subprocess, "run", run)
 
     assert benchmark._run_python_repeat(10, 12.0) == expected
+
+
+def test_browser_fixture_export_runs_in_isolated_worker(monkeypatch, tmp_path):
+    expected = {
+        "arrow_payload_bytes": 123,
+        "scene_hash": "scene-hash",
+    }
+    completed = SimpleNamespace(stdout=json.dumps(expected), stderr="")
+
+    def run(command, **kwargs):
+        assert command[:2] == [sys.executable, str(Path(benchmark.__file__).resolve())]
+        assert "--browser-fixture-worker" in command
+        assert command[command.index("--browser-fixture-output") + 1] == str(tmp_path)
+        assert command[command.index("--points") + 1] == "10"
+        assert kwargs["cwd"] == benchmark._REPOSITORY_ROOT
+        assert kwargs["capture_output"] is True
+        assert kwargs["check"] is True
+        assert kwargs["text"] is True
+        assert kwargs["timeout"] == 12.0
+        return completed
+
+    monkeypatch.setattr(benchmark.subprocess, "run", run)
+
+    assert benchmark._export_browser_fixture(10, tmp_path, 12.0) == expected
+
+
+def test_browser_fixture_export_timeout_is_fatal(monkeypatch, tmp_path):
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(benchmark.subprocess, "run", timeout)
+
+    with pytest.raises(RuntimeError, match="timed out after 12.0 seconds"):
+        benchmark._export_browser_fixture(10, tmp_path, 12.0)
+
+
+def test_browser_fixture_worker_exports_arrow_and_same_scene_legacy():
+    import inspect
+
+    source = inspect.getsource(benchmark._run_browser_fixture_worker)
+
+    assert "SceneCompiler" in source
+    assert "DataMode.EXTERNAL" in source
+    assert "PlotlySceneAdapter().render(scene)" in source
+
+
+def test_browser_fixture_starts_server_only_after_isolated_export(
+    monkeypatch, tmp_path
+):
+    events = []
+
+    def export(point_count, output_directory, timeout_seconds):
+        assert point_count == 10
+        assert output_directory.is_dir()
+        assert timeout_seconds == 12.0
+        events.append("worker_exited")
+        return {"arrow_payload_bytes": 123, "scene_hash": "scene-hash"}
+
+    class Server:
+        server_address = ("127.0.0.1", 4321)
+
+        def serve_forever(self):
+            events.append("server_served")
+
+        def shutdown(self):
+            events.append("server_shutdown")
+
+        def server_close(self):
+            events.append("server_closed")
+
+    def create_server(root, host, port):
+        assert events == ["worker_exited"]
+        assert root.is_dir()
+        assert host == "127.0.0.1"
+        assert port == 0
+        events.append("server_created")
+        return Server()
+
+    monkeypatch.setattr(benchmark, "_export_browser_fixture", export)
+    monkeypatch.setattr("starplot.cli.create_server", create_server)
+    with benchmark._external_browser_fixture(10, 12.0) as fixture:
+        assert fixture["source_url"] == "http://127.0.0.1:4321/scene.html"
+        assert fixture["legacy_source_url"] == "http://127.0.0.1:4321/legacy.html"
+        assert fixture["arrow_payload_bytes"] == 123
+        assert fixture["scene_hash"] == "scene-hash"
+
+    assert events[0:2] == ["worker_exited", "server_created"]
 
 
 def test_benchmark_worker_uses_scene_compiler_and_adapter_source():

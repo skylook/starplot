@@ -52,6 +52,20 @@ def test_renderer_uses_requested_output_dimensions():
     assert fig.layout.height == 900
 
 
+def test_renderer_defaults_to_recorded_figure_dimensions_over_axes_dimensions():
+    renderer = PlotlyRenderer(
+        {
+            **PROJ_INFO,
+            "axes_bbox": (0.1, 0.1, 0.8, 0.8),
+            "axes_pixels": (800.0, 640.0),
+            "figure_pixels": (1000.0, 800.0),
+        },
+        STYLE_INFO,
+    )
+
+    assert renderer._reference_dimensions() == (1000.0, 800.0)
+
+
 def test_renderer_leaves_dimensions_responsive_when_none_are_requested():
     """to_plotly() without dimensions must keep Plotly's responsive default."""
     fig = make_renderer().render([])
@@ -278,6 +292,21 @@ def test_renderer_text_preserves_matplotlib_multiline_labels():
     assert fig.layout.annotations[0].text == "CANIS<br>MAJOR"
 
 
+def test_renderer_text_escapes_html_in_user_labels():
+    cmd = DrawingCommand(
+        kind="text",
+        data={"text": "<b>A&B</b>", "x": 1.0, "y": 2.0},
+        style={"font_color": "#ffffff", "font_weight": "normal"},
+        zorder=1,
+        gid="constellations-label-name",
+        space=CoordinateSpace.DATA,
+    )
+
+    fig = make_renderer().render([cmd])
+
+    assert fig.layout.annotations[0].text == "&lt;b&gt;A&amp;B&lt;/b&gt;"
+
+
 def test_renderer_scales_text_from_matplotlib_points():
     """Text uses recorded Matplotlib DPI, plot scale, and axes dimensions."""
     style_info = {
@@ -296,10 +325,10 @@ def test_renderer_scales_text_from_matplotlib_points():
 
     fig = PlotlyRenderer(PROJ_INFO, style_info, width=740, height=500).render([cmd])
 
-    # 12 points at 100 DPI is 12 * 100/72 ~= 16.7 pixels, independent of
-    # source axes width.  (Points are an absolute unit; only the output dpi
-    # matters, not the figure pixel dimensions.)
-    assert fig.layout.annotations[0].font.size == pytest.approx(16.67, abs=0.01)
+    # 12 points at 100 DPI is 12 * 100/72 ~= 16.7 pixels, scaled by the
+    # target/source axes width ratio (740/1000) so text stays visually
+    # proportional to the output dimensions.
+    assert fig.layout.annotations[0].font.size == pytest.approx(12.33, abs=0.01)
 
 
 def test_renderer_line():
@@ -434,6 +463,25 @@ def test_renderer_hover_star_text():
     assert "RA" in hover_text
 
 
+def test_renderer_hover_text_escapes_html_metacharacters():
+    cmd = DrawingCommand(
+        kind="scatter",
+        data={"x": [1.0], "y": [2.0], "sizes": [15], "colors": ["#fff"], "alphas": [1.0]},
+        metadata=[{
+            "name": "<b>Evil</b>", "magnitude": 1.0, "bayer": "&test",
+            "constellation": "A&B", "ra": 0.0, "dec": 0.0, "type": "star"
+        }],
+        zorder=0, gid="stars",
+    )
+    renderer = make_renderer()
+    fig = renderer.render([cmd])
+    hover_text = fig.data[0].text[0]
+    assert "<b>Evil</b>" not in hover_text
+    assert "&lt;b&gt;Evil&lt;/b&gt;" in hover_text
+    assert "&amp;test" in hover_text
+    assert "A&amp;B" in hover_text
+
+
 def test_renderer_disables_hover_payload_for_high_volume_trace(monkeypatch):
     import starplot.interactive.plotly_adapter as adapter_module
 
@@ -517,6 +565,29 @@ def test_marker_size_calibration_can_retain_subpixel_diameter():
     np.testing.assert_allclose(calibrated, expected, rtol=2e-6)
 
 
+def test_marker_size_calibration_matches_matplotlib_circle_extent():
+    """Matplotlib's default circle path has a diameter of sqrt(s) points."""
+    from starplot.interactive.style_converter import calibrate_marker_size
+
+    assert calibrate_marker_size(
+        3800.0,
+        dpi=100.0,
+        width=4800.0,
+        source_axes_width=4800.0,
+        min_size=0.0,
+    ) == pytest.approx(math.sqrt(3800.0) * 100.0 / 72.0)
+    assert calibrate_marker_size(
+        3800.0, dpi=100.0, width=4800.0, source_axes_width=4800.0,
+        min_size=0.0, symbol="star_8",
+    ) == pytest.approx(math.sqrt(3800.0) * 100.0 / 144.0)
+    for symbol in ("point", "star_4"):
+        assert calibrate_marker_size(
+            3800.0, dpi=100.0, width=4800.0, source_axes_width=4800.0,
+            min_size=0.0, symbol=symbol,
+        ) == pytest.approx(math.sqrt(3800.0) * 100.0 / 144.0)
+
+
+
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
@@ -558,7 +629,7 @@ def test_tiny_per_point_alpha_stays_numeric_for_plotly6():
 
     figure = make_renderer().render([cmd])
 
-    assert figure.data[0].marker.opacity[0] == pytest.approx(7.344895e-05)
+    assert figure.data[0].marker.opacity[0] == pytest.approx(1.9228892e-05)
     assert figure.data[0].marker.color.dtype == np.uint8
 
 
@@ -747,9 +818,11 @@ def test_renderer_converts_offset_points_to_pixels():
     renderer = renderer_with_known_axes_pixels()
     figure = renderer.render([text_command(offset_points=(7.2, -3.6))])
     annotation = figure.layout.annotations[0]
-    # 7.2 points at 100 dpi → 7.2 / 72 * 100 = 10 pixels
-    assert annotation.xshift == pytest.approx(10.0, abs=0.5)
-    assert annotation.yshift == pytest.approx(-5.0, abs=0.5)
+    # 7.2 points at 100 dpi → 7.2 / 72 * 100 = 10 pixels, scaled by the
+    # target/source axes width ratio (400/500 = 0.8) because offsets are
+    # recorded relative to the source figure and must stay proportional.
+    assert annotation.xshift == pytest.approx(8.0, abs=0.5)
+    assert annotation.yshift == pytest.approx(-4.0, abs=0.5)
 
 
 # ------------------------------------------------------------------

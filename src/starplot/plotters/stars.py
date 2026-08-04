@@ -37,13 +37,18 @@ class StarPlotterMixin:
             else:
                 edge_colors = "none"
 
+        symbol = kwargs.pop("symbol", None) or style.marker.symbol_matplot
+        zorder = kwargs.pop("zorder", None)
+        if zorder is None:
+            zorder = style.marker.zorder
+
         plotted = self.ax.scatter(
             ras,
             decs,
             s=sizes,
             c=colors,
-            marker=kwargs.pop("symbol", None) or style.marker.symbol_matplot,
-            zorder=kwargs.pop("zorder", None) or style.marker.zorder,
+            marker=symbol,
+            zorder=zorder,
             edgecolors=edge_colors,
             alpha=alphas,
             gid="stars",

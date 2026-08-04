@@ -417,9 +417,18 @@ class SceneCompiler:
             "target_axes_width": context.target_axes_width,
             # Browser adapters need the same final-artwork scale inputs as the
             # Python Plotly adapter; they must not infer font metrics from CSS.
-            "source_axes_width": style.get("source_axes_width"),
+            "source_axes_width": style.get(
+                "source_axes_width"
+            ) or style.get("resolution", 4096.0),
             "dpi": style.get("dpi", 100.0),
+            # Legend controls: show_legend toggles the legend, legend_labels
+            # filters which named traces should appear.
+            "show_legend": bool(style.get("show_legend", False)),
+            "legend_labels": list(style.get("legend_labels") or []),
         }
+        margin = _viewport_margin(projection, width_value, height_value)
+        if margin is not None:
+            viewport["margin"] = margin
         return ScenePackage(
             layers=tuple(layer for _, layer in indexed_layers),
             projection_info=projection,
@@ -455,9 +464,19 @@ class SceneCompiler:
         method_name = COMMAND_COMPILERS[command.kind]
         parts = getattr(self, method_name)(command, context, index)
         kind = SceneKind(command.kind.value)
+        axes_clip_consumed = (
+            context is not None
+            and command.space is CoordinateSpace.AXES
+            and command.kind is CommandType.POLYGON
+            and command.clip_id in context.clips
+        )
         clip_id = (
             None
-            if context is not None and command.clip_id in context.ignored_clip_ids
+            if axes_clip_consumed
+            or (
+                context is not None
+                and command.clip_id in context.ignored_clip_ids
+            )
             else command.clip_id
         )
         layer = SceneLayer(
@@ -531,6 +550,7 @@ class SceneCompiler:
             source_axes_width=source_width,
             min_size=0.0,
             kaleido_scale=1.0,
+            symbol=command.style.get("symbol"),
         )
         columns = {
             "x": x,
@@ -794,6 +814,35 @@ def _target_axes_width(projection_info, output_width: float) -> float:
     return output_width * width_fraction
 
 
+def _viewport_margin(projection_info, output_width: float, output_height: float):
+    """Return Plotly pixel margins matching the recorded Matplotlib axes box."""
+    axes_bbox = projection_info.get("axes_bbox")
+    if axes_bbox is None:
+        return None
+    try:
+        x0, y0, width_fraction, height_fraction = (
+            float(value) for value in axes_bbox
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("axes_bbox must contain four finite values") from error
+    values = (x0, y0, width_fraction, height_fraction)
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("axes_bbox must contain four finite values")
+    if not 0 <= x0 <= 1 or not 0 <= y0 <= 1:
+        raise ValueError("axes_bbox origin fractions must be between zero and one")
+    if not 0 < width_fraction <= 1 or not 0 < height_fraction <= 1:
+        raise ValueError("axes_bbox size fractions must be greater than zero and at most one")
+    if x0 + width_fraction > 1 or y0 + height_fraction > 1:
+        raise ValueError("axes_bbox must fit within the figure")
+    return {
+        "l": max(0.0, output_width * x0),
+        "r": max(0.0, output_width * (1 - x0 - width_fraction)),
+        "t": max(0.0, output_height * (1 - y0 - height_fraction)),
+        "b": max(0.0, output_height * y0),
+        "autoexpand": False,
+    }
+
+
 def _compile_clips(recorded_clips) -> tuple[dict[str, ClipGeometry], frozenset[str]]:
     clips = {}
     ignored = set()
@@ -808,13 +857,45 @@ def _compile_clips(recorded_clips) -> tuple[dict[str, ClipGeometry], frozenset[s
 def _command_clip(
     command: DrawingCommand, context: _CompileContext | None
 ) -> ClipGeometry | None:
-    if (
-        context is None
-        or command.space is not CoordinateSpace.DATA
-        or command.clip_id is None
-    ):
+    if context is None or command.clip_id is None:
         return None
-    return context.clips.get(command.clip_id)
+    clip = context.clips.get(command.clip_id)
+    if clip is None or command.space is CoordinateSpace.DATA:
+        return clip
+    if (
+        command.space is CoordinateSpace.AXES
+        and command.kind is CommandType.POLYGON
+    ):
+        return _data_clip_to_axes(clip, context.projection_info)
+    return None
+
+
+def _data_clip_to_axes(
+    clip: ClipGeometry, projection_info: Mapping[str, Any]
+) -> ClipGeometry:
+    """Map a final-data clip to the normalized Matplotlib axes coordinate space."""
+    try:
+        x_min = float(projection_info["x_min"])
+        x_max = float(projection_info["x_max"])
+        y_min = float(projection_info["y_min"])
+        y_max = float(projection_info["y_max"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(
+            "axes-space clipping requires finite projection data bounds"
+        ) from error
+    bounds = (x_min, x_max, y_min, y_max)
+    if not all(math.isfinite(value) for value in bounds) or x_min == x_max or y_min == y_max:
+        raise ValueError("axes-space clipping requires finite non-zero data bounds")
+    return ClipGeometry(
+        kind=clip.kind,
+        points=tuple(
+            (
+                (float(x) - x_min) / (x_max - x_min),
+                (float(y) - y_min) / (y_max - y_min),
+            )
+            for x, y in clip.points
+        ),
+    )
 
 
 def _aligned_column(values, row_count: int, name: str) -> np.ndarray:

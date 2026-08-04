@@ -56,13 +56,18 @@ class _InteractiveMixin:
         """Export as an interactive Plotly HTML file.
 
         Args:
-            filename: Output HTML file path.
+            filename: Output HTML file path. Relative paths are resolved
+                against the current working directory and must stay inside
+                it (directory traversal via ``..`` is rejected).  Absolute
+                paths are accepted.
             width: Chart width in pixels (default depends on plot type).
             height: Chart height in pixels (default depends on plot type).
             transparent: If True, the figure and plot background will be
                 transparent (matching matplotlib's ``transparent=True``).
             data_mode: ``external`` (default), ``inline``, or ``remote``.
-            library_mode: ``cdn``, ``directory``, or ``inline``.
+            library_mode: ``cdn``, ``directory``, or ``inline``. CDN exports
+                need network access when opened; directory and inline exports
+                use locally bundled libraries and work offline.
             data_url: Required manifest URL for ``remote`` mode.
             allowed_data_origins: Explicit remote layer-origin allow-list.
         """
@@ -77,15 +82,34 @@ class _InteractiveMixin:
                     stacklevel=2,
                 )
         if include_plotlyjs is not None:
-            if library_mode is None:
-                library_mode = "inline" if include_plotlyjs is True else "cdn"
-            if include_plotlyjs is True and data_mode == "external":
-                warnings.warn(
-                    "include_plotlyjs=True requested the former direct-open single-file "
-                    "behavior; using data_mode='inline' instead",
-                    DeprecationWarning,
-                    stacklevel=2,
+            if isinstance(include_plotlyjs, bool):
+                legacy_library_mode = "inline" if include_plotlyjs else "cdn"
+            elif include_plotlyjs in {"cdn", "directory", "inline"}:
+                legacy_library_mode = include_plotlyjs
+            else:
+                raise ValueError(
+                    "include_plotlyjs must be True, False, 'cdn', 'directory', "
+                    "or 'inline'; use library_mode for new code"
                 )
+            if (
+                library_mode is not None
+                and str(getattr(library_mode, "value", library_mode))
+                != legacy_library_mode
+            ):
+                raise ValueError("include_plotlyjs conflicts with library_mode")
+            library_mode = legacy_library_mode
+            single_file = legacy_library_mode == "inline" and data_mode == "external"
+            warnings.warn(
+                "include_plotlyjs is deprecated; use library_mode instead"
+                + (
+                    "; preserving the former direct-open single-file behavior"
+                    if single_file
+                    else ""
+                ),
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if single_file:
                 data_mode = "inline"
         if kwargs:
             unknown = ", ".join(sorted(kwargs))

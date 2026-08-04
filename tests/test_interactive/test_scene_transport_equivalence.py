@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pytest
 
 from starplot.interactive import (
     ColumnarData, InteractionPolicy, SceneKind, SceneLayer, ScenePackage,
@@ -13,6 +14,12 @@ from starplot.interactive import (
 from starplot.interactive.commands import CoordinateSpace
 from starplot.interactive.scene import CoordinateEncoding, CoordinateEncodingKind
 from starplot.interactive.scene_manifest import parse_scene_manifest
+
+
+@pytest.fixture(autouse=True)
+def _chdir(tmp_path, monkeypatch):
+    """Run each test in ``tmp_path`` so relative export paths resolve there."""
+    monkeypatch.chdir(tmp_path)
 
 
 def _scene() -> ScenePackage:
@@ -41,8 +48,8 @@ def _scene() -> ScenePackage:
 
 def test_inline_static_and_provider_preserve_manifest_and_arrow_bytes(tmp_path):
     scene = _scene()
-    inline = export_scene_html(scene, tmp_path / "inline.html", data_mode="inline")
-    static = export_scene_html(scene, tmp_path / "static.html", data_mode="external")
+    inline = export_scene_html(scene, "inline.html", data_mode="inline")
+    static = export_scene_html(scene, "static.html", data_mode="external")
     provider = SceneProvider(
         parse_scene_manifest(inline.manifest_bytes), inline.manifest_bytes, inline.layer_bytes
     )

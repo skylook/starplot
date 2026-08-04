@@ -43,6 +43,10 @@ def crop_box(width: int, height: int, box: tuple[float, float, float, float]) ->
 def composite_on_color(img: Image.Image, color: tuple[int, int, int]) -> Image.Image:
     """Composite an RGBA image onto a solid RGB background. Opaque or
     grayscale images are converted to RGB unchanged."""
+    # Palette and LA images may carry transparency; normalize to RGBA first
+    # so the alpha channel is composited rather than dropped.
+    if img.mode in ("P", "PA", "LA"):
+        img = img.convert("RGBA")
     if img.mode == "RGBA":
         bg = Image.new("RGBA", img.size, (*color, 255))
         return Image.alpha_composite(bg, img).convert("RGB")
@@ -57,12 +61,14 @@ def diff_stats(orig: Image.Image, inline: Image.Image) -> dict[str, float]:
     arr = np.asarray(diff, dtype=np.float32)
     mae = float(arr.mean())
     rmse = float(math.sqrt((arr * arr).mean()))
-    nonzero = float(np.count_nonzero(arr > 5)) / arr.size * 100.0
+    nonzero_gt5 = float(np.count_nonzero(arr > 5)) / arr.size * 100.0
+    nonzero_gt20 = float(np.count_nonzero(arr > 20)) / arr.size * 100.0
     max_diff = float(arr.max())
     return {
         "mae": round(mae, 2),
         "rmse": round(rmse, 2),
-        "nonzero_gt5": round(nonzero, 2),
+        "nonzero_gt5": round(nonzero_gt5, 2),
+        "nonzero_gt20": round(nonzero_gt20, 2),
         "max_diff": round(max_diff, 2),
     }
 
@@ -75,7 +81,7 @@ def _semantic_crop_boxes(
 
     Selection proceeds round-robin across feature sources so all salient region
     types are represented, then continues with the next-best candidates until
-    ``count`` crops are found.  Geometric boxes are used only as a fallback when
+    ``count`` crops are found.  Geometric boxes are used as a fallback when
     scipy is unavailable or no salient features are found.
     """
     if _ndimage is None:
@@ -199,52 +205,53 @@ def build_pair_review(
     ``output_dir`` and a report dict is returned.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    left = Image.open(left_path).convert("RGBA")
-    right = Image.open(right_path).convert("RGBA")
+    with Image.open(left_path) as left_raw, Image.open(right_path) as right_raw:
+        left = left_raw.convert("RGBA")
+        right = right_raw.convert("RGBA")
 
-    if reference == "left" and left.size != right.size:
-        right = right.resize(left.size, Image.Resampling.LANCZOS)
-    elif reference == "right" and left.size != right.size:
-        left = left.resize(right.size, Image.Resampling.LANCZOS)
+        if reference == "left" and left.size != right.size:
+            right = right.resize(left.size, Image.Resampling.LANCZOS)
+        elif reference == "right" and left.size != right.size:
+            left = left.resize(right.size, Image.Resampling.LANCZOS)
 
-    full_stats = diff_stats(left, right)
+        full_stats = diff_stats(left, right)
 
-    slug = re.sub(r"[^\w]+", "_", pair_name).strip("_")
-    crop_entries = []
-    crop_boxes = _semantic_crop_boxes(left) if semantic else CROP_BOXES
-    for crop_name, box, desc in crop_boxes:
-        crop_left = left.crop(crop_box(*left.size, box))
-        crop_right = right.crop(crop_box(*right.size, box))
-        stats = diff_stats(crop_left, crop_right)
+        slug = re.sub(r"[^\w]+", "_", pair_name).strip("_")
+        crop_entries = []
+        crop_boxes = _semantic_crop_boxes(left) if semantic else CROP_BOXES
+        for crop_name, box, desc in crop_boxes:
+            crop_left = left.crop(crop_box(*left.size, box))
+            crop_right = right.crop(crop_box(*right.size, box))
+            stats = diff_stats(crop_left, crop_right)
 
-        # Composite onto white so the comparison has a fixed, consistent
-        # background regardless of the viewer's page color.
-        combined = Image.new("RGB", (crop_left.width * 2, crop_left.height), (255, 255, 255))
-        combined.paste(composite_on_color(crop_left, (255, 255, 255)), (0, 0))
-        combined.paste(composite_on_color(crop_right, (255, 255, 255)), (crop_left.width, 0))
-        combined_path = output_dir / f"{slug}_{crop_name}.png"
-        combined.save(combined_path)
+            # Composite onto white so the comparison has a fixed, consistent
+            # background regardless of the viewer's page color.
+            combined = Image.new("RGB", (crop_left.width * 2, crop_left.height), (255, 255, 255))
+            combined.paste(composite_on_color(crop_left, (255, 255, 255)), (0, 0))
+            combined.paste(composite_on_color(crop_right, (255, 255, 255)), (crop_left.width, 0))
+            combined_path = output_dir / f"{slug}_{crop_name}.png"
+            combined.save(combined_path)
 
-        diff_img = ImageChops.difference(
-            composite_on_color(crop_left, (255, 255, 255)).convert("L"),
-            composite_on_color(crop_right, (255, 255, 255)).convert("L"),
-        )
-        diff_vis = diff_img.point(lambda v: min(255, v * 4))
-        diff_path = output_dir / f"{slug}_{crop_name}_diff.png"
-        diff_vis.save(diff_path)
+            diff_img = ImageChops.difference(
+                composite_on_color(crop_left, (255, 255, 255)).convert("L"),
+                composite_on_color(crop_right, (255, 255, 255)).convert("L"),
+            )
+            diff_vis = diff_img.point(lambda v: min(255, v * 4))
+            diff_path = output_dir / f"{slug}_{crop_name}_diff.png"
+            diff_vis.save(diff_path)
 
-        crop_entries.append({
-            "name": crop_name,
-            "desc": desc,
-            "combined": _path_for_report(combined_path, root_dir),
-            "diff": _path_for_report(diff_path, root_dir),
-            "stats": stats,
-        })
+            crop_entries.append({
+                "name": crop_name,
+                "desc": desc,
+                "combined": _path_for_report(combined_path, root_dir),
+                "diff": _path_for_report(diff_path, root_dir),
+                "stats": stats,
+            })
 
-    return {
-        "pair_name": pair_name,
-        "full_stats": full_stats,
-        "left_size": left.size,
-        "right_size": right.size,
-        "crops": crop_entries,
-    }
+        return {
+            "pair_name": pair_name,
+            "full_stats": full_stats,
+            "left_size": left.size,
+            "right_size": right.size,
+            "crops": crop_entries,
+        }

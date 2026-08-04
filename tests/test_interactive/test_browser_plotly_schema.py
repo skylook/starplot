@@ -4,6 +4,7 @@ import subprocess
 import base64
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -56,6 +57,118 @@ console.log(JSON.stringify(output, (_key, value) => ArrayBuffer.isView(value) ? 
             },
         )
         figure.to_plotly_json()
+
+
+def test_browser_text_scales_to_the_compiled_viewport():
+    """Browser text must shrink with a high-resolution source plot."""
+    script = r"""
+import { Arrow, loadRuntime } from "./tests/test-helpers.mjs";
+const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"]);
+const layer = {
+  id: "text", kind: "text", group_id: "labels", required: true, zorder: 0,
+  load_priority: 0, coordinate_space: "data", clip_id: null, style_id: null,
+  interaction: "none", hover_fields: [],
+  coordinate_encoding: {
+    x: { kind: "absolute-f64", origin: 0, scale: 1, max_error_pixels: 0 },
+    y: { kind: "absolute-f64", origin: 0, scale: 1, max_error_pixels: 0 },
+  },
+  style: { font_size: 20 },
+};
+const lineLayer = {
+  id: "line", kind: "line", group_id: "grid", required: true, zorder: 0,
+  load_priority: 0, coordinate_space: "data", clip_id: null, style_id: null,
+  interaction: "none", hover_fields: [], coordinate_encoding: {
+    x: { kind: "absolute-f64", origin: 0, scale: 1, max_error_pixels: 0 },
+    y: { kind: "absolute-f64", origin: 0, scale: 1, max_error_pixels: 0 },
+  },
+  style: { line_width: 1 },
+};
+const table = Arrow.tableFromArrays({
+  x: new Float64Array([1]), y: new Float64Array([1]), text: ["label"],
+  rotation: new Float32Array([0]), x_offset: new Float32Array([0]),
+  y_offset: new Float32Array([0]), style_id: new Uint16Array([0]),
+});
+const lineTable = Arrow.tableFromArrays({
+  x: new Float64Array([0, 2]), y: new Float64Array([0, 2]),
+  path_id: new Uint32Array([0, 0]),
+});
+const source = {
+  async loadManifest() {
+    return { layers: [layer, lineLayer], styles: [], palettes: [], clips: [], viewport: {
+      reference_width: 1000, reference_height: 500, target_axes_width: 1000,
+      source_axes_width: 2000, dpi: 72, data_bounds: { x_min: 0, x_max: 2, y_min: 0, y_max: 2 },
+      margin: { l: 100, r: 80, t: 30, b: 20 },
+    }};
+  },
+  async *loadLayer(layer) { yield layer.id === "text" ? table : lineTable; },
+};
+let captured;
+const Plotly = {
+  async react(_target, traces, layout) { captured = { traces, layout }; },
+  async restyle() {}, async relayout() {},
+};
+await runtime.renderScene({}, source, { Plotly });
+console.log(JSON.stringify({
+  fontSize: captured.layout.annotations[0].font.size,
+  lineWidth: captured.traces.find((trace) => trace.name === "Grid").line.width,
+  lineSimplify: captured.traces.find((trace) => trace.name === "Grid").line.simplify,
+  margin: captured.layout.margin,
+  shapes: captured.layout.shapes.length,
+}));
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=ROOT / "web",
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    metrics = json.loads(completed.stdout)
+    assert metrics["fontSize"] == 10.0
+    # Text and strokes are both Matplotlib point units, so each is scaled once
+    # from the source canvas to the compiled browser viewport.
+    assert metrics["lineWidth"] == 0.5
+    # Plotly's default path simplification turns recorded circular borders into
+    # visibly faceted polygons, so Scene line fidelity requires it disabled.
+    assert metrics["lineSimplify"] is False
+    assert metrics["margin"] == {
+        "l": 100, "r": 80, "t": 30, "b": 20, "autoexpand": False,
+    }
+    assert metrics["shapes"] == 0
+
+
+def test_browser_scattergl_subpixel_opacity_uses_empirical_coverage():
+    """A 1px WebGL fallback uses the same empirical area scaling as Kaleido."""
+    script = r"""
+import { Arrow, loadRuntime } from "./tests/test-helpers.mjs";
+const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+const layer = {
+  id: "stars", kind: "scatter", group_id: "stars", row_count: 1,
+  required: true, zorder: 0, load_priority: 0, coordinate_space: "data",
+  clip_id: null, style_id: null, interaction: "none", hover_fields: [],
+  coordinate_encoding: {
+    x: { kind: "absolute-f64", origin: 0, scale: 1, max_error_pixels: 0 },
+    y: { kind: "absolute-f64", origin: 0, scale: 1, max_error_pixels: 0 },
+  }, style: { palette_id: "stars" },
+};
+const table = Arrow.tableFromArrays({
+  x: new Float64Array([0]), y: new Float64Array([0]),
+  size: new Float32Array([0.5]), opacity: new Float32Array([1]),
+  color_index: new Uint16Array([0]),
+});
+const trace = runtime.layerToPlotlyTrace(layer, table, {
+  viewport: {}, styles: [], palettes: [{ id: "stars", colors: ["#fff"] }], clips: [],
+});
+console.log(trace.marker.opacity[0]);
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=ROOT / "web",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert float(completed.stdout.strip()) == pytest.approx(0.5)
 
 
 def test_python_arrow_and_manifest_authorities_load_in_browser_runtime():

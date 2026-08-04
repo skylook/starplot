@@ -13,20 +13,27 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import textwrap
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import HTTPServer
 import threading
 import webbrowser
 
+if __package__:
+    from .server import SafeStaticHandler
+else:
+    from server import SafeStaticHandler
+
 ROOT = pathlib.Path(__file__).resolve().parents[2] / "comparison_outputs"
 PORT = 8765
+_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def discover_examples() -> list[dict]:
     """Scan comparison_outputs for example folders with orig.png and inline.png."""
     examples = []
     for d in sorted(ROOT.iterdir()):
-        if not d.is_dir():
+        if not d.is_dir() or not _SAFE_NAME_RE.fullmatch(d.name):
             continue
         orig = d / "orig.png"
         inline = d / "inline.png"
@@ -36,17 +43,50 @@ def discover_examples() -> list[dict]:
         diff_file = d / "diff.md"
         if diff_file.exists():
             diff_md = diff_file.read_text()
+
+        crops = []
+        crops_dir = d / "crops"
+        prefix = "orig_vs_inline_"
+        if crops_dir.is_dir():
+            for combined in sorted(crops_dir.glob(f"{prefix}*.png")):
+                if combined.name.endswith("_diff.png"):
+                    continue
+                name = combined.name[len(prefix) : -len(".png")]
+                diff = combined.with_name(f"{prefix}{name}_diff.png")
+                if diff.exists():
+                    crops.append({
+                        "name": name,
+                        "combined": f"{d.name}/crops/{combined.name}",
+                        "diff": f"{d.name}/crops/{diff.name}",
+                    })
+
         examples.append({
             "name": d.name,
             "orig": f"{d.name}/orig.png",
             "inline": f"{d.name}/inline.png",
             "diff": diff_md,
+            "crops": crops,
         })
     return examples
 
 
+def _json_for_script(value: object) -> str:
+    """Serialize JSON for safe insertion inside a <script> / template literal."""
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    text = re.sub(r"</", lambda m: "<\\/", text, flags=re.IGNORECASE)
+    return (
+        text
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("`", "\\u0060")
+        .replace("${", "\\u0024{")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 def build_html(examples: list[dict]) -> str:
-    examples_json = json.dumps(examples)
+    examples_json = _json_for_script(examples)
     return textwrap.dedent(f"""\
     <!DOCTYPE html>
     <html lang="en">
@@ -106,6 +146,23 @@ def build_html(examples: list[dict]) -> str:
       }}
       .status-pending {{ background: #444; color: #aaa; }}
       .status-reviewed {{ background: #2d4a2d; color: #50fa7b; }}
+      .crop-list {{
+        display: flex; flex-wrap: wrap; gap: 6px; max-width: 260px;
+      }}
+      .crop-thumb {{
+        display: flex; flex-direction: column; align-items: center;
+        cursor: zoom-in; width: 78px;
+      }}
+      .crop-thumb img {{
+        max-width: 76px; max-height: 56px; object-fit: contain;
+        border: 1px solid #333; border-radius: 4px; display: block;
+      }}
+      .crop-thumb img:hover {{ border-color: #8be9fd; }}
+      .crop-thumb span {{
+        font-size: 10px; color: #888; margin-top: 2px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        max-width: 76px;
+      }}
       /* Modal overlay for image zoom */
       #overlay {{
         display: none; position: fixed; top: 0; left: 0; width: 100%;
@@ -131,8 +188,9 @@ def build_html(examples: list[dict]) -> str:
       <thead>
         <tr>
           <th style="width:180px">Example</th>
-          <th style="width:360px">Original (Matplotlib)</th>
-          <th style="width:360px">Interactive (Plotly)</th>
+          <th style="width:320px">Original (Matplotlib)</th>
+          <th style="width:320px">Interactive (Plotly)</th>
+          <th style="width:280px">Local Crops</th>
           <th>Review Notes</th>
         </tr>
       </thead>
@@ -149,7 +207,7 @@ def build_html(examples: list[dict]) -> str:
     const stats = document.getElementById('stats');
 
     function parseDiff(text) {{
-      const m = text.match(/interactive vs inline.*?nonzero=([0-9.]+)%/);
+      const m = text.match(/orig vs inline.*?nonzero=([0-9.]+)%/);
       return m ? parseFloat(m[1]) : null;
     }}
 
@@ -158,6 +216,14 @@ def build_html(examples: list[dict]) -> str:
       tr.id = 'row-' + i;
       const diffPct = parseDiff(ex.diff);
       const diffStr = diffPct !== null ? diffPct.toFixed(1) + '%' : 'n/a';
+      const crops = ex.crops || [];
+      const cropsHtml = crops.length
+        ? '<div class="crop-list">' + crops.map((crop, ci) => `
+            <div class="crop-thumb" onclick="zoom('${{crop.combined}}', '${{ex.name}} — crop: ${{crop.name}} (combined)'); event.stopPropagation();">
+              <img src="${{crop.combined}}" loading="lazy" alt="${{crop.name}}">
+              <span>${{crop.name}}</span>
+            </div>`).join('') + '</div>'
+        : '<span style="color:#666;font-size:12px;">no crops</span>';
 
       tr.innerHTML = `
         <td class="ex-name">
@@ -171,10 +237,11 @@ def build_html(examples: list[dict]) -> str:
         <td class="img-cell" onclick="zoom('${{ex.inline}}', '${{ex.name}} — Interactive (Plotly)')">
           <img src="${{ex.inline}}" loading="lazy" alt="plotly">
         </td>
+        <td>${{cropsHtml}}</td>
         <td>
           <textarea
             id="notes-${{i}}"
-            placeholder="输入 review 意见... (留空 = 基本一致)"
+            placeholder="Enter review notes... (leave empty if no issues)"
             oninput="markReviewed(${{i}})"
           ></textarea>
         </td>
@@ -275,15 +342,11 @@ def build_html(examples: list[dict]) -> str:
     """)
 
 
-class ReviewHandler(SimpleHTTPRequestHandler):
-    """Serve files from comparison_outputs with CORS headers."""
+class ReviewHandler(SafeStaticHandler):
+    """Serve files from comparison_outputs without CORS or path traversal."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
-
-    def end_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        super().end_headers()
 
     def log_message(self, *args):
         pass  # suppress request logging

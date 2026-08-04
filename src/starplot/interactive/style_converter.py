@@ -18,8 +18,19 @@ MARKER_SYMBOL_MAP = {
     "circle_dot": "circle-dot",
     "comet": "star-diamond",
     "star_4": "star-square",
-    "star_8": "star",
-    "ellipse": "circle",  # approximation
+    # Plotly has no compact eight-point glyph; its native star variants are
+    # much more prominent than Matplotlib's rendered symbol at chart scale.
+    "star_8": "circle",
+    # plotly.py 5.24.1 does not validate arbitrary SVG path marker strings, so
+    # the Python adapter keeps the circle approximation. The browser JS adapter
+    # overrides this with the actual rotated ellipse SVG path.
+    "ellipse": "circle",
+    "circle_crosshair": "circle-cross",  # approximation
+    "circle_line": "circle",  # approximation
+    "circle_dotted_edge": "circle",  # approximation
+    "circle_dotted_rings": "circle-dot",  # approximation
+    "square_stripes_diagonal": "square",  # approximation
+    "sun": "star",  # approximation
     ".": "circle",
     "o": "circle",
     "s": "square",
@@ -66,18 +77,19 @@ def calibrate_marker_size(
     dpi: float = 100.0,
     source_axes_width: float = None,
     min_size: float = 1.5,
+    symbol: str | None = None,
 ) -> float:
     """Convert matplotlib scatter s parameter (points²) to Plotly marker size (px).
 
-    matplotlib marker area `s` is in points²; Plotly marker size is the diameter
-    in pixels.  The resulting figure width (in pixels) is used to scale the
-    diameter so the marker has the same apparent size as the matplotlib output.
+    Matplotlib's default circle marker is normalized to a one-point diameter,
+    so an area parameter ``s`` yields a ``sqrt(s)``-point extent. Plotly uses
+    a diameter in pixels; scale that extent to the target viewport.
     """
     if mpl_size <= 0:
         return float(min_size)
 
     source_width = source_axes_width or resolution
-    diameter = 2.0 * math.sqrt(mpl_size / math.pi) * _marker_scale(
+    diameter = math.sqrt(mpl_size) * _marker_extent_factor(symbol) * _marker_scale(
         dpi=dpi,
         target_width=width,
         source_axes_width=source_width,
@@ -101,6 +113,21 @@ def _marker_scale(
     )
 
 
+def _marker_extent_factor(symbol: str | None) -> float:
+    """Map Matplotlib marker-path extents to the equivalent Plotly diameter."""
+    # Plotly renders these compact Starplot glyphs at roughly twice the visual
+    # diameter of Matplotlib's corresponding marker path for the same scatter
+    # area. Ordinary circles and squares already agree directly.
+    if symbol in {"point", "star_4", "star_8"}:
+        return 0.5
+    # Matplotlib scales custom paths so the bounding-box width equals sqrt(s).
+    # The ellipse path's major axis is 2.0 units while its bbox width is ~1.9488,
+    # so the rendered major axis is 2/1.9488 times the sqrt(s) extent.
+    if symbol == "ellipse":
+        return 2.0 / 1.948776650870625
+    return 1.0
+
+
 def calibrate_marker_sizes_array(
     mpl_sizes,
     *,
@@ -109,8 +136,9 @@ def calibrate_marker_sizes_array(
     source_axes_width: float,
     min_size: float = 1.5,
     kaleido_scale: float = 1.15,
+    symbol: str | None = None,
 ) -> np.ndarray:
-    """Vectorized Matplotlib-area to calibrated Plotly-diameter conversion."""
+    """Vectorized Matplotlib default-circle extent to Plotly diameter conversion."""
     sizes = np.asarray(mpl_sizes, dtype=np.float32)
     if sizes.ndim != 1:
         raise ValueError("mpl_sizes must be one-dimensional")
@@ -145,8 +173,8 @@ def calibrate_marker_sizes_array(
         )
     )
     diameters = (
-        np.float32(2.0)
-        * np.sqrt(np.maximum(sizes, np.float32(0.0)) / np.float32(math.pi))
+        np.sqrt(np.maximum(sizes, np.float32(0.0)))
+        * np.float32(_marker_extent_factor(symbol))
         * scale
     )
     result = (

@@ -87,6 +87,100 @@ test("dense finite-palette ScatterGL data uses bounded scalar-colour batches", a
   assert.ok(traces.every((trace) => trace.meta.starplot_layer_id === "dense-stars"));
 });
 
+test("interactive dense palette layers keep hover rows aligned at the batching threshold", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const rowCount = 100_000;
+  const colorIndex = new Uint8Array(rowCount);
+  for (let index = 0; index < rowCount; index += 1) colorIndex[index] = index % 2;
+  const names = Array.from({ length: rowCount }, (_, index) => `star-${index}`);
+  const table = Arrow.tableFromArrays({
+    x: new Float64Array(rowCount), y: new Float64Array(rowCount),
+    size: new Float32Array(rowCount).fill(1), color_index: colorIndex,
+    opacity: new Float32Array(rowCount).fill(0.5), name: names,
+  });
+  const current = layer("dense-stars", "scatter", 1, { palette_id: "palette", symbol: "circle" });
+  current.group_id = "stars";
+  current.row_count = rowCount;
+  current.interactive = true;
+  current.interaction = "hover";
+  current.hover_fields = ["name"];
+  const traces = runtime.layerToPlotlyTraces(current, table, {
+    styles: [], palettes: [{ id: "palette", colors: ["#fff", "#f80"] }], clips: [],
+  });
+  assert.equal(traces.length, 1, "interactive rows must not be split away from customdata");
+  assert.equal(traces[0].customdata.length, rowCount);
+  assert.deepEqual(Array.from(traces[0].customdata.at(-1)), [`star-${rowCount - 1}`]);
+});
+
+test("dense palette batches preserve source opacity for resize correction", async () => {
+  const rowCount = 100_000;
+  const colorIndex = new Uint8Array(rowCount);
+  for (let index = 0; index < rowCount; index += 1) colorIndex[index] = index % 2;
+  const table = Arrow.tableFromArrays({
+    x: new Float64Array(rowCount), y: new Float64Array(rowCount),
+    size: new Float32Array(rowCount).fill(0.5), color_index: colorIndex,
+    opacity: new Float32Array(rowCount).fill(0.75),
+  });
+  const current = layer("dense-stars", "scatter", 1, { palette_id: "palette", symbol: "circle" });
+  current.group_id = "stars";
+  current.row_count = rowCount;
+  const scene = {
+    viewport: {
+      source_axes_width: 1000, target_axes_width: 500, reference_width: 1000,
+      dpi: 72, margin: { l: 0, r: 0, t: 0, b: 0 },
+    },
+    styles: [], palettes: [{ id: "palette", colors: ["#fff", "#f80"] }],
+    clips: [], layers: [current],
+  };
+  const source = {
+    async loadManifest() { return scene; },
+    async *loadLayer() { for (const batch of table.batches) yield batch; },
+  };
+  const calls = [];
+  const Plotly = {
+    async react(target) {
+      target._fullLayout = {
+        width: 400, height: 400, margin: { l: 0, r: 0, t: 0, b: 0 },
+        xaxis: { domain: [0, 1] }, yaxis: { domain: [0, 1] }, annotations: [],
+      };
+    },
+    async restyle(_target, update) { calls.push(update); },
+    async relayout() {},
+  };
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
+  await runtime.renderScene({ querySelectorAll() { return []; } }, source, { Plotly });
+  const markerUpdate = calls.find((update) => update["marker.size"]);
+  assert.ok(markerUpdate["marker.opacity"], "every dense batch must recompute opacity from source values");
+  assert.equal(markerUpdate["marker.opacity"].length, 2);
+});
+
+test("line hover, info-table cells, and legend names are escaped before Plotly sinks", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const attack = `<img src=x onerror="alert('x')">`;
+  const lineTable = Arrow.tableFromArrays({
+    path_id: new Uint32Array([0, 0]), vertex_index: new Uint32Array([0, 1]),
+    x: new Float64Array([0, 1]), y: new Float64Array([0, 1]), name: [attack, attack],
+  });
+  const lineLayer = layer(attack, "line", 1, { legend_label: attack });
+  lineLayer.interactive = true;
+  lineLayer.interaction = "hover";
+  lineLayer.hover_fields = ["name"];
+  const lineTrace = runtime.layerToPlotlyTrace(lineLayer, lineTable, { styles: [], palettes: [] });
+  assert.ok(lineTrace.text.every((value) => !value.includes("<img")));
+  assert.ok(!lineTrace.name.includes("<img"));
+
+  const infoTable = Arrow.tableFromArrays({
+    column: [attack], value: [attack], width: new Float32Array([1]),
+  });
+  const infoTrace = runtime.layerToPlotlyTrace(
+    layer("info", "info_table", 1), infoTable,
+    { viewport: {}, styles: [], palettes: [] },
+  );
+  const effects = runtime.layerToPlotlyLayoutEffects(infoTrace);
+  assert.ok(effects.annotations.every((annotation) => !annotation.text.includes("<img")));
+  assert.match(effects.annotations[0].text, /^<b>&lt;img/);
+});
+
 test("renderScene performs one final zorder-stable Plotly update", async () => {
   const calls = { react: [], restyle: [] };
   const Plotly = {
@@ -182,6 +276,26 @@ test("polygon and line artists preserve serialized Matplotlib custom dash patter
     fill_color: "rgba(0,0,0,0)", edge_color: "#f00", line_style: "(1, [2, 3])",
   });
   assert.equal(runtime.layerToPlotlyTrace(polygon, tables.polygon(), scene).line.dash, "dash");
+});
+
+test("Matplotlib line style short names map to Plotly dashes", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const scene = { styles: [], palettes: [], clips: [] };
+  for (const [raw, expected] of [
+    ["-", "solid"],
+    ["--", "dash"],
+    [":", "dot"],
+    ["-.", "dashdot"],
+    ["dotted", "dot"],
+    ["dashdot", "dashdot"],
+  ]) {
+    const line = layer(`line-${raw}`, "line", 0, { line_style: raw });
+    assert.equal(
+      runtime.layerToPlotlyTrace(line, tables.line(), scene).line.dash,
+      expected,
+      raw,
+    );
+  }
 });
 
 test("layout effects rebuild in stable zorder/id order instead of load order", async () => {
@@ -335,10 +449,11 @@ test("interactive scatter binds hover fields and retains calibrated WebGL marker
   const trace = runtime.layerToPlotlyTrace(current, table, {
     styles: [], palettes: [{ id: "p", colors: ["#111", "#eee"] }],
   });
+  const sizeValue = table.getChild("size").get(0);
   assert.equal(trace.type, "scattergl");
   assert.ok(trace.marker.color instanceof Uint8Array);
   assert.equal(trace.marker.size[0], 1);
-  assert.equal(trace.marker.opacity[0], Math.fround(0.5 * 0.2 * 1.15 * 0.2 * 1.15 * 6));
+  assert.equal(trace.marker.opacity[0], Math.fround(0.5 * sizeValue * sizeValue * 2));
   assert.deepEqual(trace.customdata[0], [2.5, "Sirius"]);
   assert.match(trace.hovertemplate, /magnitude/);
 });
@@ -353,10 +468,10 @@ test("scatter policy keeps small custom markers SVG and stars or large layers We
   custom.row_count = table.numRows;
   const svg = runtime.layerToPlotlyTrace(custom, table, scene);
   assert.equal(svg.type, "scatter");
-  assert.ok(Math.abs(svg.marker.size[0] - 2.3) < 1e-6);
+  assert.ok(Math.abs(svg.marker.size[0] - 2.0) < 1e-6);
   assert.equal(svg.marker.opacity[1], 0.5);
   assert.equal(svg.marker.line.color, "#abcdef");
-  assert.equal(svg.marker.line.width, 2.5);
+  assert.equal(svg.marker.line.width, 1.25);
 
   const stars = { ...custom, id: "stars", group_id: "stars" };
   const webgl = runtime.layerToPlotlyTrace(stars, table, scene);
@@ -368,6 +483,22 @@ test("scatter policy keeps small custom markers SVG and stars or large layers We
   assert.equal(runtime.traceTypeForLayer(custom), "scatter");
   assert.equal(runtime.traceTypeForLayer(stars), "scattergl");
   assert.equal(runtime.traceTypeForLayer(large), "scattergl");
+});
+
+test("ellipse scatter marker uses a rotated 2:1 SVG path instead of a circle", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const scene = { styles: [], palettes: [{ id: "p", colors: ["#fff"] }] };
+  const galaxy = layer("galaxy", "scatter", 1, { palette_id: "p", symbol: "ellipse" });
+  galaxy.row_count = 2;
+  const table = Arrow.tableFromArrays({
+    x: new Float64Array([1, 2]), y: new Float64Array([3, 4]),
+    size: new Float32Array([4, 4]), color_index: new Uint8Array([0, 0]),
+    opacity: new Float32Array([1, 1]),
+  });
+  const trace = runtime.layerToPlotlyTrace(galaxy, table, scene);
+  assert.equal(trace.type, "scatter");
+  assert.ok(trace.marker.symbol.startsWith("M "));
+  assert.ok(trace.marker.symbol.endsWith("Z"));
 });
 
 test("gradients honor clip identities, directions, and fail closed for unsupported modes", async () => {
@@ -383,8 +514,8 @@ test("gradients honor clip identities, directions, and fail closed for unsupport
     const trace = runtime.layerToPlotlyTrace(current, tables.gradient(), scene);
     assert.equal(trace.type, "heatmap");
     assert.ok(Number.isNaN(trace.z[0][0]), `${direction} must mask outside clip`);
-    assert.equal(trace.x.length, direction === "mollweide" ? 250 : 220);
-    assert.equal(trace.y.length, direction === "mollweide" ? 250 : 220);
+    assert.equal(trace.x.length, 512);
+    assert.equal(trace.y.length, 512);
     assert.equal(trace.zsmooth, direction === "linear" ? false : "best");
   }
   const unknown = layer("bad", "gradient", 0, { direction: "diagonal", color_stops: [[0, "#000"], [1, "#fff"]] });
@@ -405,8 +536,8 @@ test("gradient sampling honors radial center and radius plus Galactic Mollweide 
     color_stops: [[0, "#000"], [1, "#fff"]],
   });
   const radial = runtime.layerToPlotlyTrace(radialLayer, tables.gradient(), scene);
-  assert.equal(radial.x.length, 220);
-  assert.equal(radial.y.length, 220);
+  assert.equal(radial.x.length, 512);
+  assert.equal(radial.y.length, 512);
   let min = { value: Infinity, row: -1, col: -1 };
   for (let row = 0; row < radial.z.length; row += 1) {
     for (let col = 0; col < radial.z[row].length; col += 1) {
@@ -541,4 +672,468 @@ test("optional layer failures do not block safe layers and required failures pre
   assert.equal(calls.restyle.length, 0);
   assert.equal(calls.react.length, 1, "the completed safe layer remains visible");
   assert.equal(calls.react[0][1][0].meta.starplot_layer_id, "good");
+});
+
+// ---------------------------------------------------------------------------
+// Scale-correction tests (Fixes 1–5)
+// ---------------------------------------------------------------------------
+
+/** Build a minimal scene + source for scale-correction tests. */
+function scaleCorrectionScene(opts = {}) {
+  const {
+    sourceAxesWidth = 3600,
+    targetAxesWidth = sourceAxesWidth,
+    dpi = 100,
+    markerSize = 10,
+    lineWidth = 2,
+    fontSize = 12,
+    strokeColor = "#000",
+    strokeWidth = 1.5,
+    polygonEdgeWidth = 1.0,
+  } = opts;
+  const scatterTable = Arrow.tableFromArrays({
+    x: new Float64Array([1, 2]), y: new Float64Array([3, 4]),
+    size: new Float32Array([markerSize, markerSize]),
+    color_index: new Uint8Array([0, 0]), opacity: new Float32Array([1, 1]),
+  });
+  const lineTable = Arrow.tableFromArrays({
+    path_id: new Uint32Array([0, 0]), vertex_index: new Uint32Array([0, 1]),
+    x: new Float64Array([0, 1]), y: new Float64Array([0, 1]),
+  });
+  const textTable = Arrow.tableFromArrays({
+    x: new Float64Array([1]), y: new Float64Array([2]), text: ["M42"],
+    rotation: new Float32Array([0]), x_offset: new Float32Array([0]),
+    y_offset: new Float32Array([0]), style_id: new Uint16Array([0]),
+  });
+  const polygonTable = Arrow.tableFromArrays({
+    polygon_id: new Uint32Array([0, 0, 0]), ring_id: new Uint32Array([0, 0, 0]),
+    vertex_index: new Uint32Array([0, 1, 2]),
+    x: new Float64Array([0, 1, 0]), y: new Float64Array([0, 0, 1]),
+  });
+  const scatterLayer = layer("stars", "scatter", 0, { palette_id: "p", symbol: "circle" });
+  scatterLayer.row_count = 2;
+  const lineLayer = layer("grid", "line", 1, { width: lineWidth, color: "#888" });
+  const textLayer = layer("labels", "text", 2, {
+    font_size: fontSize, font_color: "#fff", stroke_color: strokeColor, stroke_width: strokeWidth,
+  });
+  const polygonLayer = layer("horizon", "polygon", 3, {
+    edge_width: polygonEdgeWidth, edge_color: "#555", fill_color: "none",
+  });
+  // Use axes coordinate space so polygonTrace emits shapes (exercising Fix 2)
+  polygonLayer.coordinate_space = "axes";
+  const scene = {
+    viewport: {
+      data_bounds: { x_min: 0, x_max: 10, y_min: 0, y_max: 10 },
+      source_axes_width: sourceAxesWidth,
+      target_axes_width: targetAxesWidth,
+      reference_width: sourceAxesWidth,
+      dpi,
+      margin: { l: 10, r: 10, t: 10, b: 10, autoexpand: false },
+    },
+    palettes: [{ id: "p", colors: ["#fff"] }],
+    styles: [],
+    clips: [],
+    layers: [scatterLayer, lineLayer, textLayer, polygonLayer],
+  };
+  const tables = {
+    stars: scatterTable, grid: lineTable, labels: textTable, horizon: polygonTable,
+  };
+  const source = {
+    async loadManifest() { return scene; },
+    async *loadLayer(l) { for (const b of tables[l.id].batches) yield b; },
+  };
+  return { scene, source, scatterLayer, lineLayer, textLayer, polygonLayer };
+}
+
+test("explicit compile width does not scale marker sizes twice", async () => {
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"]);
+  // SceneCompiler has already converted a 10px source marker to 5px for the
+  // requested 1800px target axes.  Rendering at that target must keep 5px.
+  const { source } = scaleCorrectionScene({
+    sourceAxesWidth: 3600,
+    targetAxesWidth: 1800,
+    markerSize: 5,
+  });
+  const { Plotly, calls } = mockPlotly({
+    layoutWidth: 1820, layoutHeight: 1000,
+    margin: { l: 10, r: 10, t: 10, b: 10 },
+    xDomain: [0, 1], yDomain: [0, 1],
+  });
+  const target = {
+    _fullLayout: null,
+    getBoundingClientRect() { return { width: 1820, height: 1000 }; },
+    querySelectorAll() { return []; },
+  };
+
+  await runtime.renderScene(target, source, { Plotly });
+
+  assert.deepEqual(Array.from(calls.react[0].traces[0].marker.size), [5, 5]);
+});
+
+test("responsive scaleanchor predicts the axes width before dense marker rendering", async () => {
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"]);
+  const { source, scene } = scaleCorrectionScene({
+    sourceAxesWidth: 1000,
+    targetAxesWidth: 1000,
+    markerSize: 10,
+  });
+  scene.viewport.data_bounds = { x_min: 0, x_max: 20, y_min: 0, y_max: 10 };
+  const xDomainInset = 10 / 980;
+  const { Plotly, calls } = mockPlotly({
+    layoutWidth: 1000,
+    layoutHeight: 500,
+    margin: { l: 10, r: 10, t: 10, b: 10 },
+    xDomain: [xDomainInset, 1 - xDomainInset],
+    yDomain: [0, 1],
+  });
+  const target = {
+    _fullLayout: null,
+    getBoundingClientRect() { return { width: 1000, height: 500 }; },
+    querySelectorAll() { return []; },
+  };
+
+  await runtime.renderScene(target, source, { Plotly });
+
+  const markerSizes = Array.from(calls.react[0].traces[0].marker.size);
+  assert.ok(markerSizes.every((size) => Math.abs(size - 9.6) < 1e-5));
+  assert.equal(calls.restyle.length, 0, "the initial render must not resend dense marker arrays");
+});
+
+/** Mock Plotly with a configurable _fullLayout simulating scaleanchor. */
+function mockPlotly(opts = {}) {
+  const {
+    layoutWidth = 1280, layoutHeight = 800,
+    margin = { l: 10, r: 10, t: 10, b: 10 },
+    xDomain = [0.19, 0.81],
+    yDomain = [0, 1],
+  } = opts;
+  const calls = { react: [], restyle: [], relayout: [] };
+  let fullLayout = {
+    width: layoutWidth, height: layoutHeight, margin,
+    xaxis: { domain: xDomain },
+    yaxis: { domain: yDomain },
+    annotations: [],
+  };
+  const Plotly = {
+    async react(target, traces, layout) {
+      calls.react.push({ traces, layout });
+      // Simulate Plotly computing _fullLayout annotations from layout
+      fullLayout = {
+        ...fullLayout,
+        annotations: (layout.annotations || []).map(a => ({ ...a })),
+      };
+      if (target) target._fullLayout = fullLayout;
+    },
+    async restyle(target, update, indices) { calls.restyle.push({ update, indices }); },
+    async relayout(target, update) { calls.relayout.push(update); },
+  };
+  return { Plotly, calls, getFullLayout: () => fullLayout };
+}
+
+test("_actualAxesSize returns the measured horizontal axes width", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  // Landscape 1280x800, xDomain shrunk by scaleanchor
+  const landscape = {
+    width: 1280, height: 800, margin: { l: 10, r: 10, t: 10, b: 10 },
+    xaxis: { domain: [0.19, 0.81] }, yaxis: { domain: [0, 1] },
+  };
+  const result1 = runtime._actualAxesSize(landscape);
+  const axesW1 = (1280 - 20) * (0.81 - 0.19);
+  const axesH1 = (800 - 20) * 1.0;
+  assert.equal(result1, axesW1);
+  assert.ok(axesH1 > 0);
+  // A non-square axes domain must not silently replace horizontal scale with height.
+  const portrait = {
+    width: 800, height: 1200, margin: { l: 10, r: 10, t: 10, b: 10 },
+    xaxis: { domain: [0, 1] }, yaxis: { domain: [0.19, 0.81] },
+  };
+  const result2 = runtime._actualAxesSize(portrait);
+  const axesW2 = (800 - 20) * 1.0;
+  const axesH2 = (1200 - 20) * (0.81 - 0.19);
+  assert.equal(result2, axesW2);
+  assert.ok(axesH2 < axesW2);
+  // Null guard
+  assert.equal(runtime._actualAxesSize(null), null);
+  assert.equal(runtime._actualAxesSize({}), null);
+});
+
+test("scale correction is idempotent and updates subpixel marker opacity with size", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const markerSize = new Float32Array([0.5]);
+  const markerOpacity = new Float32Array([0.125]);
+  const trace = { type: "scattergl", marker: { size: markerSize, opacity: markerOpacity } };
+  const annotation = { font: { size: 20 }, xshift: 4, yshift: 6 };
+  const layout = { annotations: [annotation], shapes: [] };
+  const state = {
+    scene: { viewport: { source_axes_width: 1000, dpi: 72 } },
+    slots: [{ id: "stars" }], traces: new Map([["stars", [trace]]]), layout,
+    metrics: { widthScale: 0.5, markerScale: 0.5, strokePixelScale: 0.5, fontPixelScale: 0.5 },
+    markerSources: new Map([[trace, {
+      size: new Float32Array([0.5]), opacity: new Float32Array([1]), webgl: true,
+    }]]),
+    polygonShapeIndices: [], textStrokes: [],
+  };
+  const target = {
+    _fullLayout: {
+      width: 420, height: 420, margin: { l: 10, r: 10, t: 10, b: 10 },
+      xaxis: { domain: [0, 1] }, yaxis: { domain: [0, 1] },
+      annotations: [structuredClone(annotation)],
+    },
+  };
+  const calls = { restyle: [], relayout: [] };
+  const Plotly = {
+    async restyle(_target, update, indices) { calls.restyle.push({ update, indices }); },
+    async relayout(_target, update) {
+      calls.relayout.push(update);
+      if (update.annotations) target._fullLayout.annotations = structuredClone(update.annotations);
+    },
+  };
+  await runtime._applyScaleCorrection(target, state, Plotly);
+  await runtime._applyScaleCorrection(target, state, Plotly);
+  const markerCalls = calls.restyle.filter((call) => call.update["marker.size"]);
+  assert.equal(markerCalls.length, 1, "an unchanged axes size must not be corrected twice");
+  assert.ok(markerCalls[0].update["marker.opacity"], "subpixel opacity must follow marker size");
+  assert.ok(markerCalls[0].update["marker.opacity"][0][0] < markerOpacity[0]);
+  const annotationCalls = calls.relayout.filter((update) => update.annotations);
+  assert.equal(annotationCalls.length, 1, "annotation correction must be idempotent");
+});
+
+test("_collectTextStrokes preserves stroke info parallel to annotations array", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  // Create a text trace with stroke so textStrokeByAnnotation gets populated
+  const textTable = Arrow.tableFromArrays({
+    x: new Float64Array([1, 2]), y: new Float64Array([3, 4]), text: ["A", "B"],
+    rotation: new Float32Array([0, 0]), x_offset: new Float32Array([0, 0]),
+    y_offset: new Float32Array([0, 0]), style_id: new Uint16Array([0, 0]),
+  });
+  const textLayer = layer("labels", "text", 0, {
+    font_size: 12, font_color: "#fff", stroke_color: "#000", stroke_width: 2.0,
+  });
+  const scene = {
+    viewport: { data_bounds: { x_min: 0, x_max: 10, y_min: 0, y_max: 10 } },
+    palettes: [], styles: [], clips: [],
+  };
+  // Pass fontPixelScale so stroke width is scaled
+  const fontPixelScale = 100 / 72;
+  const trace = runtime.layerToPlotlyTrace(textLayer, textTable, scene, { fontPixelScale });
+  const effects = runtime.layerToPlotlyLayoutEffects(trace);
+  const layout = { annotations: effects.annotations || [] };
+  const strokes = runtime._collectTextStrokes(layout, [effects]);
+  assert.equal(strokes.length, 2);
+  assert.ok(strokes[0], "first annotation stroke must be collected");
+  assert.equal(strokes[0].color, "#000");
+  assert.equal(strokes[0].width, 2.0 * fontPixelScale);
+  assert.ok(strokes[1], "second annotation stroke must be collected");
+});
+
+test("_polygonShapeIndices returns indices of polygon shapes in layout.shapes", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const polygonTable = Arrow.tableFromArrays({
+    polygon_id: new Uint32Array([0, 0, 0]), ring_id: new Uint32Array([0, 0, 0]),
+    vertex_index: new Uint32Array([0, 1, 2]),
+    x: new Float64Array([0, 1, 0]), y: new Float64Array([0, 0, 1]),
+  });
+  const polygonLayer = layer("horizon", "polygon", 0, {
+    edge_width: 1.5, edge_color: "#555", fill_color: "none",
+  });
+  // Use axes coordinate space so polygonTrace emits shapes (not scatter)
+  polygonLayer.coordinate_space = "axes";
+  const scene = {
+    viewport: { data_bounds: { x_min: 0, x_max: 10, y_min: 0, y_max: 10 } },
+    palettes: [], styles: [], clips: [],
+  };
+  const trace = runtime.layerToPlotlyTrace(polygonLayer, polygonTable, scene);
+  const effects = runtime.layerToPlotlyLayoutEffects(trace);
+  assert.ok(effects.shapes && effects.shapes.length > 0, "axes-space polygon must produce shapes");
+  // Simulate layout.shapes with a pre-existing shape at index 0
+  const layout = {
+    shapes: [{ type: "rect", line: { width: 1 } }, ...(effects.shapes || [])],
+  };
+  const indices = runtime._polygonShapeIndices(layout, [effects]);
+  assert.ok(indices.length > 0, "polygon shape indices must be found");
+  // The polygon shapes start at index 1 (after the pre-existing rect)
+  for (const idx of indices) assert.ok(idx >= 1, "indices must skip pre-existing shapes");
+  // Verify the shape at that index has a line.width
+  for (const idx of indices) assert.ok(layout.shapes[idx].line, "indexed shape must have line");
+});
+
+test("Fix 1: annotation strokes are re-applied with corrected scale after restyle", async () => {
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"]);
+  const { source } = scaleCorrectionScene({
+    sourceAxesWidth: 3600, strokeWidth: 2.0,
+  });
+  const { Plotly, calls } = mockPlotly({
+    layoutWidth: 1280, layoutHeight: 800,
+    xDomain: [0.19, 0.81], // triggers scale correction
+  });
+  // Mock target with querySelectorAll
+  const strokeNodes = [];
+  const target = {
+    _fullLayout: null,
+    getBoundingClientRect() { return { width: 1280, height: 800 }; },
+    querySelectorAll(sel) {
+      if (sel === ".annotation-text") return strokeNodes;
+      return [];
+    },
+  };
+  // Create fake annotation text nodes
+  strokeNodes.push({ style: {}, textContent: "M42" });
+  await runtime.renderScene(target, source, { Plotly });
+  // After restyle, the stroke must have been applied to the DOM node
+  assert.ok(strokeNodes[0].style.stroke, "stroke color must be set");
+  assert.ok(strokeNodes[0].style.strokeWidth, "stroke width must be set");
+  assert.equal(strokeNodes[0].style.paintOrder, "stroke fill");
+});
+
+test("Fix 2: polygon shape line widths are restyled via relayout", async () => {
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"]);
+  const { source } = scaleCorrectionScene({
+    sourceAxesWidth: 3600, polygonEdgeWidth: 2.0,
+  });
+  const { Plotly, calls } = mockPlotly({
+    layoutWidth: 1280, layoutHeight: 800,
+    // Deliberately differ from the 780px pre-render estimate so this test
+    // exercises the post-render fallback rather than the normal no-op path.
+    xDomain: [0.25, 0.75],
+  });
+  const target = {
+    _fullLayout: null,
+    getBoundingClientRect() { return { width: 1280, height: 800 }; },
+    querySelectorAll() { return []; },
+  };
+  await runtime.renderScene(target, source, { Plotly });
+  // Check that a relayout call contains shapes[N].line.width
+  const shapeRelayout = calls.relayout.find(u =>
+    Object.keys(u).some(k => k.startsWith("shapes[") && k.endsWith(".line.width")),
+  );
+  assert.ok(shapeRelayout, "polygon shape line widths must be restyled via relayout");
+});
+
+test("Fix 3: resize handler is registered and re-corrects on resize", async () => {
+  const resizeListeners = [];
+  // We need to inject a window with addEventListener into the VM context.
+  // loadRuntime spreads extras into the context's `window`, so we add
+  // addEventListener directly as a window property.
+  const windowExtras = {
+    addEventListener(event, handler) { if (event === "resize") resizeListeners.push(handler); },
+  };
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], windowExtras);
+  const { source } = scaleCorrectionScene({ sourceAxesWidth: 3600 });
+  const { Plotly, calls } = mockPlotly({
+    layoutWidth: 1280, layoutHeight: 800,
+    xDomain: [0.19, 0.81],
+  });
+  const target = {
+    _fullLayout: null,
+    getBoundingClientRect() { return { width: 1280, height: 800 }; },
+    querySelectorAll() { return []; },
+  };
+  await runtime.renderScene(target, source, { Plotly });
+  assert.ok(resizeListeners.length > 0, "resize listener must be registered");
+  assert.ok(target._starplotResizeHandler, "handler must be stored on target");
+  // Simulate resize to a smaller window — should trigger more restyle calls
+  const restyleCountBefore = calls.restyle.length;
+  const initialFullLayout = target._fullLayout;
+  // Update _fullLayout to reflect new smaller size
+  target._fullLayout = {
+    ...initialFullLayout,
+    width: 800, height: 600,
+    xaxis: { domain: [0.25, 0.75] }, // smaller axes
+    annotations: initialFullLayout.annotations,
+  };
+  // Trigger resize (debounced — we need to wait)
+  for (const listener of resizeListeners) listener();
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.ok(calls.restyle.length > restyleCountBefore, "resize must trigger restyle");
+});
+
+test("Fix 4: sceneLayout uses xaxis.scaleanchor='y' matching Python adapter", async () => {
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"]);
+  const { source } = scaleCorrectionScene({ sourceAxesWidth: 3600 });
+  const { Plotly, calls } = mockPlotly({ layoutWidth: 800, layoutHeight: 800 });
+  const target = {
+    _fullLayout: null,
+    getBoundingClientRect() { return { width: 800, height: 800 }; },
+    querySelectorAll() { return []; },
+  };
+  await runtime.renderScene(target, source, { Plotly });
+  const layout = calls.react[0].layout;
+  assert.equal(layout.xaxis.scaleanchor, "y", "xaxis must anchor to y (matching Python)");
+  assert.equal(layout.xaxis.scaleratio, 1);
+  assert.equal(layout.yaxis.scaleanchor, undefined, "yaxis must not have scaleanchor");
+});
+
+test("portrait container does not substitute vertical domain height for horizontal scale", async () => {
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"]);
+  const { source } = scaleCorrectionScene({ sourceAxesWidth: 3600 });
+  // Portrait container 800x1200 with yDomain shrunk
+  const { Plotly, calls } = mockPlotly({
+    layoutWidth: 800, layoutHeight: 1200,
+    xDomain: [0, 1], yDomain: [0.19, 0.81],
+  });
+  const target = {
+    _fullLayout: null,
+    getBoundingClientRect() { return { width: 800, height: 1200 }; },
+    querySelectorAll() { return []; },
+  };
+  await runtime.renderScene(target, source, { Plotly });
+  assert.equal(
+    calls.restyle.length, 0,
+    "vertical domain height alone must not trigger horizontal size correction",
+  );
+});
+
+test("scale correction is skipped when container is already square (no restyle)", async () => {
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"]);
+  const { source } = scaleCorrectionScene({ sourceAxesWidth: 3600 });
+  // Square container, axes fill the whole area
+  const { Plotly, calls } = mockPlotly({
+    layoutWidth: 3600, layoutHeight: 3600,
+    xDomain: [0, 1], yDomain: [0, 1],
+  });
+  const target = {
+    _fullLayout: null,
+    getBoundingClientRect() { return { width: 3600, height: 3600 }; },
+    querySelectorAll() { return []; },
+  };
+  await runtime.renderScene(target, source, { Plotly });
+  // No restyle should be needed (difference < 0.01)
+  assert.equal(calls.restyle.length, 0, "no restyle when scale is already correct");
+  assert.equal(calls.relayout.length, 0, "no relayout when scale is already correct");
+});
+
+test("marker sizes are correctly rescaled by the corrected width scale", async () => {
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"]);
+  const markerSize = 20;
+  const { source } = scaleCorrectionScene({ sourceAxesWidth: 3600, markerSize });
+  const { Plotly, calls } = mockPlotly({
+    layoutWidth: 1280, layoutHeight: 800,
+    // Deliberately differ from the 780px pre-render estimate so this test
+    // exercises the post-render fallback rather than the normal no-op path.
+    xDomain: [0.25, 0.75],
+  });
+  const target = {
+    _fullLayout: null,
+    getBoundingClientRect() { return { width: 1280, height: 800 }; },
+    querySelectorAll() { return []; },
+  };
+  await runtime.renderScene(target, source, { Plotly });
+  // Find the marker.size restyle call
+  const markerRestyle = calls.restyle.find(c =>
+    c.update && c.update["marker.size"] !== undefined,
+  );
+  assert.ok(markerRestyle, "marker.size must be restyled");
+  // The first scatter trace has 2 markers
+  const sizes = markerRestyle.update["marker.size"][0];
+  assert.ok(Array.isArray(sizes) || ArrayBuffer.isView(sizes), "sizes must be an array");
+  // Verify the rescaled value matches the expected formula
+  const correctedScale = ((1280 - 20) * 0.5) / 3600;
+  // Initial marker size after scatterTrace uses the predicted axes scale.
+  // But markerSize in the table is the raw mpl_size; calibrate happens in Python.
+  // In JS, size[index] * markerScale is the rendered size.
+  // After restyle the source marker size is multiplied by correctedWidthScale.
+  // So the restyled value should be size[j] * correctedScale (clamped to >= 1)
+  const expectedRaw = markerSize * correctedScale;
+  const expected = Math.max(expectedRaw, 1);
+  assert.ok(Math.abs(sizes[0] - expected) < 0.01, `marker ${sizes[0]} should match ${expected}`);
 });

@@ -14,23 +14,27 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections.abc import Mapping
 import hashlib
 from html.parser import HTMLParser
+from http.server import ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import threading
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from typing import Mapping
+from urllib.parse import unquote
 from urllib.request import Request, urlopen
 
 if __package__:
     from . import crops
+    from .server import SafeStaticHandler
 else:
     import crops
+    from server import SafeStaticHandler
 import numpy as np
 
 from starplot.interactive.arrow_transport import decode_layer_stream
@@ -42,9 +46,17 @@ ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "comparison_outputs"
 DATA_CACHE = OUTPUT / ".data-cache"
 ALL_TRANSPORTS = ("inline", "external", "provider")
+_EXAMPLE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_name(name: str) -> None:
+    if not name or not _EXAMPLE_NAME_RE.fullmatch(name):
+        raise ValueError(f"invalid example name: {name!r}")
 
 
 class _InlinePayloadParser(HTMLParser):
+    """Extract manifest and layer payloads from an inline HTML export."""
+
     def __init__(self):
         super().__init__()
         self._current_id: str | None = None
@@ -77,11 +89,11 @@ def _read_inline_export(path: Path) -> tuple[bytes, Mapping[str, bytes]]:
     return manifest_bytes, layers
 
 
-def _read_external_export(folder: Path) -> tuple[bytes, Mapping[str, bytes]]:
-    manifest_bytes = (folder / "external.scene" / "manifest.json").read_bytes()
+def _read_external_export(bundle: Path) -> tuple[bytes, Mapping[str, bytes]]:
+    manifest_bytes = (bundle / "manifest.json").read_bytes()
     manifest = parse_scene_manifest(manifest_bytes)
     return manifest_bytes, {
-        layer.id: (folder / "external.scene" / layer.data_source.uri).read_bytes()
+        layer.id: (bundle / layer.data_source.uri).read_bytes()
         for layer in manifest.layers
     }
 
@@ -109,12 +121,12 @@ def _assert_decoded_columns_equal(manifest_bytes: bytes, expected: Mapping[str, 
             )
 
 
-class _ProviderHandler(SimpleHTTPRequestHandler):
-    provider: SceneProvider | None = None
-    manifest = None
+class _ProviderHandler(SafeStaticHandler):
+    """Serve provider transport requests over the test HTTP server."""
 
-    def __init__(self, *args, directory: str, **kwargs):
-        super().__init__(*args, directory=directory, **kwargs)
+    def __init__(self, *args, state: dict, **kwargs):
+        self._state = state
+        super().__init__(*args, **kwargs)
 
     def log_message(self, _format, *_args):
         pass
@@ -128,30 +140,52 @@ class _ProviderHandler(SimpleHTTPRequestHandler):
             self.wfile.write(chunk)
 
     def do_GET(self):
-        if self.path.split("?", 1)[0] == "/provider/manifest.json":
-            assert self.provider is not None
-            self._send_response(self.provider.manifest(self.headers.get("If-None-Match")))
+        path = self.path.split("?", 1)[0]
+        provider = self._state.get("provider")
+        manifest = self._state.get("manifest")
+        if path == "/provider/manifest.json":
+            if provider is None:
+                self.send_error(500, "Provider not configured")
+                return
+            self._send_response(provider.manifest(self.headers.get("If-None-Match")))
             return
-        if self.path.startswith("/provider/"):
-            assert self.provider is not None and self.manifest is not None
-            name = self.path.split("?", 1)[0].removeprefix("/provider/")
+        if path.startswith("/provider/"):
+            if provider is None or manifest is None:
+                self.send_error(500, "Provider not configured")
+                return
+            name = unquote(path.removeprefix("/provider/"))
+            if not name or "/" in name or name.startswith(".."):
+                self.send_error(404)
+                return
             layer = next(
-                (item for item in self.manifest.layers if item.data_source.uri == name), None
+                (item for item in manifest.layers if item.data_source.uri == name), None
             )
             if layer is None:
                 self.send_error(404)
                 return
-            self._send_response(self.provider.layer(layer.id, if_none_match=self.headers.get("If-None-Match")))
+            self._send_response(provider.layer(layer.id, if_none_match=self.headers.get("If-None-Match")))
             return
         super().do_GET()
 
 
 class _ProviderServer:
+    """A local HTTP server that can switch to provider mode on demand.
+
+    Serves the example output folder so inline/external/provider HTML pages
+    and the external ``.scene`` bundle can be loaded from a single origin.
+    """
+
     def __init__(self, folder: Path):
-        self.folder = folder
+        self._state = {"provider": None, "manifest": None}
+        self._folder = folder
 
         def handler(*args, **kwargs):
-            return _ProviderHandler(*args, directory=str(folder), **kwargs)
+            return _ProviderHandler(
+                *args,
+                state=self._state,
+                directory=str(self._folder),
+                **kwargs,
+            )
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -166,56 +200,89 @@ class _ProviderServer:
 
     def configure(self, manifest_bytes: bytes, layers: Mapping[str, bytes]):
         manifest = parse_scene_manifest(manifest_bytes)
-        _ProviderHandler.provider = SceneProvider(manifest, manifest_bytes, layers)
-        _ProviderHandler.manifest = manifest
+        self._state["provider"] = SceneProvider(manifest, manifest_bytes, layers)
+        self._state["manifest"] = manifest
 
     def close(self):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)
-        _ProviderHandler.provider = None
-        _ProviderHandler.manifest = None
+        self._state["provider"] = None
+        self._state["manifest"] = None
 
 
 def _request_bytes(url: str) -> tuple[bytes, Mapping[str, str]]:
     with urlopen(Request(url), timeout=60) as response:
-        return response.read(), dict(response.headers.items())
+        return response.read(), {k.lower(): v for k, v in response.headers.items()}
 
 
-def _verify_transports(folder: Path, server: _ProviderServer) -> dict:
-    inline_manifest, inline_layers = _read_inline_export(folder / "inline.html")
-    external_manifest, external_layers = _read_external_export(folder)
-    if inline_manifest != external_manifest:
-        raise AssertionError("inline and external canonical manifest bytes differ")
-    if inline_layers != external_layers:
-        raise AssertionError("inline and external Arrow bytes differ")
-    server.configure(external_manifest, external_layers)
-    provider_manifest, manifest_headers = _request_bytes(f"{server.origin}/provider/manifest.json")
-    if provider_manifest != external_manifest:
-        raise AssertionError("provider HTTP manifest bytes differ")
-    if manifest_headers.get("Cache-Control") != "no-cache":
-        raise AssertionError("provider manifest cache policy differs")
-    manifest = parse_scene_manifest(external_manifest)
-    provider_layers: dict[str, bytes] = {}
-    for layer in manifest.layers:
-        url = f"{server.origin}/provider/{layer.data_source.uri}"
-        payload, headers = _request_bytes(url)
-        if headers.get("Content-Type") != "application/vnd.apache.arrow.stream":
-            raise AssertionError(f"provider/{layer.id}: Arrow media type differs")
-        if payload != external_layers[layer.id]:
-            raise AssertionError(f"provider/{layer.id}: HTTP Arrow bytes differ")
-        provider_layers[layer.id] = payload
-    _assert_decoded_columns_equal(external_manifest, external_layers, inline_layers, "inline")
-    _assert_decoded_columns_equal(external_manifest, external_layers, provider_layers, "provider")
+def _verify_transports(folder: Path, server: _ProviderServer, exports: dict, transports: tuple[str, ...]) -> dict:
+    """Verify that every selected transport exposes the same canonical Scene bytes."""
+    selected = set(transports)
+    if not selected:
+        raise ValueError("at least one transport must be selected")
+
+    def load_transport(name: str) -> tuple[bytes, Mapping[str, bytes]]:
+        if name == "inline":
+            return _read_inline_export(folder / exports["inline_html"])
+        if name == "external":
+            return _read_external_export(folder / exports["external_bundle"])
+        if name == "provider":
+            manifest, headers = _request_bytes(f"{server.origin}/provider/manifest.json")
+            cache_control = {
+                d.strip().lower()
+                for d in headers.get("cache-control", "").split(",")
+            }
+            if "no-cache" not in cache_control:
+                raise AssertionError("provider manifest cache policy differs")
+            parsed = parse_scene_manifest(manifest)
+            layers: dict[str, bytes] = {}
+            for layer in parsed.layers:
+                url = f"{server.origin}/provider/{layer.data_source.uri}"
+                payload, layer_headers = _request_bytes(url)
+                content_type = layer_headers.get("content-type", "").split(";")[0].strip().lower()
+                if content_type != "application/vnd.apache.arrow.stream":
+                    raise AssertionError(f"provider/{layer.id}: Arrow media type differs")
+                layers[layer.id] = payload
+            return manifest, layers
+        raise ValueError(f"unknown transport: {name}")
+
+    # Use a local file-based transport as the reference so the server can be
+    # configured before the provider transport is queried.
+    reference_candidates = [t for t in ("external", "inline") if t in selected]
+    if "provider" in selected and not reference_candidates:
+        raise ValueError("provider transport requires inline or external as a reference")
+    reference_name = reference_candidates[0]
+    reference_manifest, reference_layers = load_transport(reference_name)
+    server.configure(reference_manifest, reference_layers)
+
+    by_transport: dict[str, tuple[bytes, Mapping[str, bytes]]] = {
+        reference_name: (reference_manifest, reference_layers),
+    }
+    for name in selected:
+        if name == reference_name:
+            continue
+        by_transport[name] = load_transport(name)
+
+    for name, (manifest, layers) in by_transport.items():
+        if name == reference_name:
+            continue
+        if manifest != reference_manifest:
+            raise AssertionError(f"{name} canonical manifest bytes differ from {reference_name}")
+        if layers != reference_layers:
+            raise AssertionError(f"{name} Arrow bytes differ from {reference_name}")
+        _assert_decoded_columns_equal(reference_manifest, reference_layers, layers, name)
+
+    manifest = parse_scene_manifest(reference_manifest)
     return {
         "scene_hash": manifest.content_hash,
-        "manifest_sha256": hashlib.sha256(external_manifest).hexdigest(),
+        "manifest_sha256": hashlib.sha256(reference_manifest).hexdigest(),
         "layers": [
             {
                 "id": layer.id,
                 "rows": layer.row_count,
                 "bytes": layer.byte_length,
-                "sha256": hashlib.sha256(external_layers[layer.id]).hexdigest(),
+                "sha256": hashlib.sha256(reference_layers[layer.id]).hexdigest(),
             }
             for layer in manifest.layers
         ],
@@ -225,18 +292,32 @@ def _verify_transports(folder: Path, server: _ProviderServer) -> dict:
 def _launch_browser(playwright):
     try:
         return playwright.chromium.launch(headless=True)
-    except Exception:
-        for candidate in (
+    except Exception as error:
+        candidates = [
+            Path("/usr/bin/chromium"),
+            Path("/usr/bin/chromium-browser"),
+            Path("/usr/bin/google-chrome"),
+            Path("/usr/bin/google-chrome-stable"),
             Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
             Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
-        ):
+        ]
+        for candidate in candidates:
             if candidate.is_file():
                 return playwright.chromium.launch(executable_path=str(candidate), headless=True)
-        raise
+        raise RuntimeError(
+            "Could not launch a Chromium browser. Install Playwright browsers with "
+            "'playwright install chromium' or put a Chrome/Chromium binary on PATH."
+        ) from error
 
 
-def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, height: int, transports: tuple[str, ...]) -> dict[str, dict]:
-    from playwright.sync_api import sync_playwright
+def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, height: int, transports: tuple[str, ...], html_files: dict[str, str]) -> dict[str, dict]:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as error:
+        raise RuntimeError(
+            "playwright is required for browser screenshots. "
+            "Install it with: pip install playwright && playwright install chromium"
+        ) from error
 
     reports: dict[str, dict] = {}
     with sync_playwright() as playwright:
@@ -245,44 +326,48 @@ def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, heig
             for name in transports:
                 page_errors: list[str] = []
                 page = browser.new_page(viewport={"width": width, "height": height}, device_scale_factor=1)
-                page.on("pageerror", lambda error: page_errors.append(str(error)))
-                print(f"  browser {name}: loading", flush=True)
-                page.goto(f"{server.origin}/{name}.html", wait_until="load", timeout=300_000)
-                page.wait_for_function(
-                    "() => document.body.dataset.starplotRendered === 'true' || document.body.dataset.starplotError",
-                    timeout=300_000,
-                )
-                error = page.locator("body").get_attribute("data-starplot-error")
-                if error:
-                    raise RuntimeError(f"{name} browser export failed: {error}")
-                if page_errors:
-                    raise RuntimeError(f"{name} browser page errors: {page_errors}")
-                if page.locator("#starplot-chart .plotly").count() != 1:
-                    raise RuntimeError(f"{name} did not create a Plotly chart")
-                report = page.evaluate("""() => {
-                    const graph = document.getElementById('starplot-chart');
-                    const traces = Array.from(graph.data || []);
-                    return {
-                      trace_count: traces.length,
-                      layer_ids: traces.map((trace) => trace.meta && trace.meta.starplot_layer_id),
-                      trace_types: traces.reduce((counts, trace) => {
-                        counts[trace.type] = (counts[trace.type] || 0) + 1;
-                        return counts;
-                      }, {}),
-                      svg_trace_count: graph.querySelectorAll('.scatterlayer > .trace').length,
-                      canvas_count: graph.querySelectorAll('canvas').length,
-                    };
-                }""")
-                reports[name] = report
-                page.screenshot(path=str(folder / f"{name}.png"), full_page=False)
-                page.close()
-                print(f"  browser {name}: captured", flush=True)
+                try:
+                    page.on("pageerror", lambda error: page_errors.append(str(error)))
+                    html_file = html_files[name]
+                    print(f"  browser {name}: loading {html_file}", flush=True)
+                    page.goto(f"{server.origin}/{html_file}", wait_until="load", timeout=300_000)
+                    page.wait_for_function(
+                        "() => document.body.dataset.starplotRendered === 'true' || document.body.dataset.starplotError",
+                        timeout=300_000,
+                    )
+                    error = page.locator("body").get_attribute("data-starplot-error")
+                    if error:
+                        raise RuntimeError(f"{name} browser export failed: {error}")
+                    if page_errors:
+                        raise RuntimeError(f"{name} browser page errors: {page_errors}")
+                    if page.locator("#starplot-chart .plotly").count() != 1:
+                        raise RuntimeError(f"{name} did not create a Plotly chart")
+                    report = page.evaluate("""() => {
+                        const graph = document.getElementById('starplot-chart');
+                        const traces = Array.from(graph.data || []);
+                        return {
+                          trace_count: traces.length,
+                          layer_ids: traces.map((trace) => trace.meta && trace.meta.starplot_layer_id),
+                          trace_types: traces.reduce((counts, trace) => {
+                            counts[trace.type] = (counts[trace.type] || 0) + 1;
+                            return counts;
+                          }, {}),
+                          svg_trace_count: graph.querySelectorAll('.scatterlayer > .trace').length,
+                          canvas_count: graph.querySelectorAll('canvas').length,
+                        };
+                    }""")
+                    reports[name] = report
+                    page.screenshot(path=str(folder / f"{name}.png"), full_page=False)
+                    print(f"  browser {name}: captured", flush=True)
+                finally:
+                    page.close()
         finally:
             browser.close()
     return reports
 
 
-def _write_diff(folder: Path, name: str, transports: tuple[str, ...]) -> None:
+def _write_diff(folder: Path, name: str, transports: tuple[str, ...], exports: dict) -> None:
+    from contextlib import ExitStack
     from PIL import Image
 
     def compare(left, right):
@@ -296,28 +381,56 @@ def _write_diff(folder: Path, name: str, transports: tuple[str, ...]) -> None:
         delta = np.abs(left_array - right_array)
         return f"mean={delta.mean():.2f}; nonzero={np.count_nonzero(delta) / delta.size * 100:.2f}%"
 
-    original = Image.open(folder / "orig.png")
-    interactive = Image.open(folder / "interactive.png")
-    browser_images = {transport: Image.open(folder / f"{transport}.png") for transport in transports}
-    interactive_for_orig = interactive.resize(original.size, Image.Resampling.LANCZOS)
-    rows = [("orig vs interactive", compare(original, interactive_for_orig))]
-    for transport_name, image in browser_images.items():
-        resized = interactive.resize(image.size, Image.Resampling.LANCZOS)
-        rows.append((f"interactive vs {transport_name}", compare(resized, image)))
-    for index, left_name in enumerate(transports):
-        for right_name in transports[index + 1:]:
-            rows.append((f"{left_name} vs {right_name}", compare(browser_images[left_name], browser_images[right_name])))
+    # Prefer the Plotly static snapshot when kaleido produced one; otherwise fall
+    # back to the matplotlib export from the Interactive*Plot class.
+    plotly_path = exports.get("plotly_png")
+    rows = []
+    with ExitStack() as stack:
+        original = stack.enter_context(Image.open(folder / "orig.png"))
+        static_interactive = stack.enter_context(Image.open(folder / "interactive.png"))
+        interactive = (
+            stack.enter_context(Image.open(folder / plotly_path))
+            if plotly_path
+            else static_interactive
+        )
+        browser_images = {
+            transport: stack.enter_context(Image.open(folder / f"{transport}.png"))
+            for transport in transports
+        }
+
+        rows.append(("orig vs interactive", compare(original, interactive.resize(original.size, Image.Resampling.LANCZOS))))
+        if plotly_path:
+            rows.append(("orig vs interactive_matplotlib", compare(original, static_interactive.resize(original.size, Image.Resampling.LANCZOS))))
+        for transport_name, image in browser_images.items():
+            orig_for_browser = original.resize(image.size, Image.Resampling.LANCZOS)
+            rows.append((f"orig vs {transport_name}", compare(orig_for_browser, image)))
+        for transport_name, image in browser_images.items():
+            rows.append((f"interactive vs {transport_name}", compare(interactive.resize(image.size, Image.Resampling.LANCZOS), image)))
+        if plotly_path:
+            rows.append(("interactive_matplotlib vs interactive", compare(static_interactive.resize(interactive.size, Image.Resampling.LANCZOS), interactive)))
+        for index, left_name in enumerate(transports):
+            for right_name in transports[index + 1:]:
+                rows.append((f"{left_name} vs {right_name}", compare(browser_images[left_name], browser_images[right_name])))
     (folder / "diff.md").write_text(
         "\n".join([f"# {name} transport diff", "", "| pair | diagnostic |", "|---|---|"] + [f"| {label} | {result} |" for label, result in rows]) + "\n",
         encoding="utf-8",
     )
 
-    # Local semantic crop comparisons for every pair, resizing to a common size.
+    # Local semantic crop comparisons.  Use a curated set that covers the
+    # static-interactive comparison, original-to-each-transport,
+    # interactive-to-each-transport, and transport-to-transport consistency.
     crops_dir = folder / "crops"
-    crops_dir.mkdir(exist_ok=True)
-    pairs = [("orig vs interactive", folder / "orig.png", folder / "interactive.png", "left")]
+    crops_dir.mkdir(parents=True, exist_ok=True)
+    pairs: list[tuple[str, Path, Path, str]] = [
+        ("orig vs interactive", folder / "orig.png", folder / (plotly_path or "interactive.png"), "left"),
+    ]
+    if plotly_path:
+        pairs.append(("orig vs interactive_matplotlib", folder / "orig.png", folder / "interactive.png", "left"))
     for transport_name in transports:
-        pairs.append((f"interactive vs {transport_name}", folder / "interactive.png", folder / f"{transport_name}.png", "right"))
+        pairs.append((f"orig vs {transport_name}", folder / "orig.png", folder / f"{transport_name}.png", "right"))
+        pairs.append((f"interactive vs {transport_name}", folder / (plotly_path or "interactive.png"), folder / f"{transport_name}.png", "right"))
+    if plotly_path:
+        pairs.append(("interactive_matplotlib vs interactive", folder / "interactive.png", folder / plotly_path, "right"))
     for index, left_name in enumerate(transports):
         for right_name in transports[index + 1:]:
             pairs.append((f"{left_name} vs {right_name}", folder / f"{left_name}.png", folder / f"{right_name}.png", "left"))
@@ -352,41 +465,59 @@ def _write_diff(folder: Path, name: str, transports: tuple[str, ...]) -> None:
     )
 
 
+def _snapshot_pngs(folder: Path) -> frozenset[Path]:
+    """Return the set of PNG file paths currently in ``folder``."""
+    return frozenset(p for p in folder.glob("*.png") if p.is_file())
+
+
+def _find_new_png(
+    folder: Path,
+    before: frozenset[Path],
+    preferred_name: str | None = None,
+    excluded: set[str] | None = None,
+) -> Path:
+    """Return a PNG created after ``before``.
+
+    If a ``preferred_name`` exists among the new files, it is used; otherwise
+    exactly one new PNG (not in ``excluded``) is required.
+    """
+    after = _snapshot_pngs(folder)
+    new = sorted(after - before)
+    excluded = excluded or set()
+    new = [p for p in new if p.name not in excluded]
+    if preferred_name:
+        preferred = folder / preferred_name
+        if preferred in new:
+            return preferred
+    if not new:
+        raise RuntimeError(f"no PNG was produced in {folder}")
+    if len(new) > 1:
+        raise RuntimeError(
+            f"expected one new PNG in {folder}, found: {[p.name for p in new]}"
+        )
+    return new[0]
+
+
 def _run_interactive(name: str, folder: Path, environment: Mapping[str, str]) -> None:
+    """Run the interactive example through the comparison-export harness."""
     interactive = ROOT / "examples" / "interactive" / f"{name}_interactive.py"
-    wrapper = f'''
-import hashlib, json, os, pathlib, runpy
-import starplot.interactive.plots as plots
-from starplot.interactive.web_export import DataMode, LibraryMode, export_scene_html
-
-def export_once(self, filename, width=None, height=None, transparent=False, **_kwargs):
-    scene = self._compile_scene(width=width, height=height, transparent=transparent)
-    base = pathlib.Path.cwd()
-    inline = export_scene_html(scene, base / "inline.html", data_mode=DataMode.INLINE, library_mode=LibraryMode.INLINE)
-    external = export_scene_html(scene, base / "external.html", data_mode=DataMode.EXTERNAL, library_mode=LibraryMode.DIRECTORY)
-    remote = export_scene_html(scene, base / "provider.html", data_mode=DataMode.REMOTE, library_mode=LibraryMode.INLINE, data_url=os.environ["STARPLOT_COMPARISON_PROVIDER_MANIFEST_URL"])
-    assert inline.scene_hash == external.scene_hash == remote.scene_hash
-    assert inline.manifest_bytes == external.manifest_bytes == remote.manifest_bytes
-    assert inline.layer_bytes == external.layer_bytes == remote.layer_bytes
-    (base / "scene-export.json").write_text(json.dumps({{
-        "scene_hash": inline.scene_hash,
-        "manifest_sha256": hashlib.sha256(inline.manifest_bytes).hexdigest(),
-        "layers": [{{"id": layer_id, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}} for layer_id, data in inline.layer_bytes.items()],
-    }}, indent=2) + "\\n", encoding="utf-8")
-    return external
-
-plots._InteractiveMixin.export_html = export_once
-runpy.run_path({str(interactive)!r}, run_name="__main__")
-'''
+    runner = ROOT / "tools" / "visual_parity" / "_example_runner.py"
     result = subprocess.run(
-        [sys.executable, "-c", wrapper], cwd=folder, stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE, text=True, timeout=900, env=dict(environment),
+        [sys.executable, str(runner), str(interactive)],
+        cwd=folder,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=900,
+        env=dict(environment),
     )
     if result.returncode:
         raise RuntimeError(result.stderr)
 
 
 def run_example(name: str, transports: tuple[str, ...]) -> Path:
+    """Render and verify one example through the requested transports."""
+    _validate_name(name)
     original = ROOT / "examples" / f"{name}.py"
     if not original.is_file() or not (ROOT / "examples" / "interactive" / f"{name}_interactive.py").is_file():
         raise ValueError(f"unknown example: {name}")
@@ -396,23 +527,55 @@ def run_example(name: str, transports: tuple[str, ...]) -> Path:
     folder.mkdir(parents=True)
     DATA_CACHE.mkdir(parents=True, exist_ok=True)
     environment = {**os.environ, "STARPLOT_DATA_PATH": str(DATA_CACHE)}
+    # The runner subprocess must be able to import starplot from src/.
+    pythonpath_parts = [str(ROOT / "src")]
+    existing_pythonpath = os.environ.get("PYTHONPATH")
+    if existing_pythonpath:
+        pythonpath_parts.append(existing_pythonpath)
+    environment["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+    # Tell the runner which transports to export and verify.
+    environment["STARPLOT_COMPARISON_TRANSPORTS"] = ",".join(transports)
     server = _ProviderServer(folder)
     server.start()
-    environment["STARPLOT_COMPARISON_PROVIDER_MANIFEST_URL"] = f"{server.origin}/provider/manifest.json"
+    if "provider" in transports:
+        environment["STARPLOT_COMPARISON_PROVIDER_MANIFEST_URL"] = f"{server.origin}/provider/manifest.json"
     try:
         print(f"[1/4] Running original: {original.name}")
+        pngs_before = _snapshot_pngs(folder)
         result = subprocess.run([sys.executable, str(original)], cwd=folder, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=900, env=environment)
         if result.returncode:
             raise RuntimeError(result.stderr)
-        (folder / f"{name}.png").replace(folder / "orig.png")
+        original_png = _find_new_png(folder, pngs_before, preferred_name=f"{name}.png")
+        original_png.replace(folder / "orig.png")
         print(f"[2/4] Compiling one Scene and exporting: {name}_interactive.py")
+        pngs_before = _snapshot_pngs(folder)
         _run_interactive(name, folder, environment)
-        (folder / f"{name}.png").replace(folder / "interactive.png")
+        interactive_png = _find_new_png(
+            folder,
+            pngs_before,
+            preferred_name=f"{name}.png",
+            excluded={"plotly.png"},
+        )
+        interactive_png.replace(folder / "interactive.png")
+        exports = json.loads((folder / "comparison-exports.json").read_text(encoding="utf-8"))
+        exports["interactive_png"] = "interactive.png"
+        (folder / "comparison-exports.json").write_text(json.dumps(exports, indent=2) + "\n", encoding="utf-8")
         print("[3/4] Verifying canonical transport bytes and decoded columns")
-        report = _verify_transports(folder, server)
+        report = _verify_transports(folder, server, exports, transports)
         print("[4/4] Rendering browser screenshots")
-        manifest = parse_scene_manifest((folder / "external.scene" / "manifest.json").read_bytes())
-        browser_report = _browser_screenshots(folder, server, int(manifest.viewport.get("reference_width", 1200)), int(manifest.viewport.get("reference_height", 900)), transports)
+        if exports.get("external_bundle"):
+            manifest_bytes = (folder / exports["external_bundle"] / "manifest.json").read_bytes()
+        elif exports.get("inline_html"):
+            manifest_bytes, _ = _read_inline_export(folder / exports["inline_html"])
+        else:
+            raise RuntimeError("no exported manifest available for browser sizing")
+        manifest = parse_scene_manifest(manifest_bytes)
+        html_files = {
+            transport: exports[f"{transport}_html"]
+            for transport in transports
+            if f"{transport}_html" in exports
+        }
+        browser_report = _browser_screenshots(folder, server, int(manifest.viewport.get("reference_width", 1200)), int(manifest.viewport.get("reference_height", 900)), transports, html_files)
         expected_layer_ids = [layer.id for layer in manifest.layers]
         for transport, browser_metrics in browser_report.items():
             layer_ids = browser_metrics["layer_ids"]
@@ -427,14 +590,20 @@ def run_example(name: str, transports: tuple[str, ...]) -> Path:
             if collapsed_ids != expected_layer_ids:
                 raise AssertionError(f"{transport}: browser traces do not preserve the canonical layer order")
         (folder / "browser-render.json").write_text(json.dumps(browser_report, indent=2) + "\n", encoding="utf-8")
-        _write_diff(folder, name, transports)
+        _write_diff(folder, name, transports, exports)
+        verified = ", ".join(transports)
+        provider_note = (
+            "- Provider HTTP manifest/layer bytes and headers: PASS\n"
+            if "provider" in transports
+            else ""
+        )
         (folder / "transport.md").write_text(
             "# Transport verification\n\n"
             f"- Scene hash: `{report['scene_hash']}`\n"
             f"- Manifest SHA-256: `{report['manifest_sha256']}`\n"
-            "- Inline = external = provider raw Arrow bytes: PASS\n"
-            "- Inline = external = provider decoded columns/dtypes: PASS\n"
-            "- Provider HTTP manifest/layer bytes and headers: PASS\n\n"
+            f"- Selected transports ({verified}) share canonical raw Arrow bytes and decoded columns: PASS\n"
+            f"{provider_note}"
+            "\n"
             "| layer | rows | Arrow bytes | SHA-256 |\n|---|---:|---:|---|\n"
             + "\n".join(f"| {item['id']} | {item['rows']} | {item['bytes']} | `{item['sha256']}` |" for item in report["layers"])
             + "\n", encoding="utf-8",
@@ -446,6 +615,7 @@ def run_example(name: str, transports: tuple[str, ...]) -> Path:
 
 
 def main() -> None:
+    """Command-line entry point."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("example")
     parser.add_argument("--transports", default=",".join(ALL_TRANSPORTS))

@@ -15,9 +15,15 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+import re
+from http.server import HTTPServer
 import threading
 import webbrowser
+
+if __package__:
+    from .server import SafeStaticHandler
+else:
+    from server import SafeStaticHandler
 
 if __package__:
     from . import crops
@@ -28,19 +34,29 @@ ROOT = pathlib.Path(__file__).resolve().parents[2] / "comparison_outputs"
 CROP_DIR = ROOT / "_crops"
 HTML_PATH = ROOT / "_enhanced_review.html"
 PORT = 8766
+_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def build(semantic: bool = True):
-    CROP_DIR.mkdir(exist_ok=True)
-    # Clean old crops
-    for p in CROP_DIR.iterdir():
-        if p.is_file():
-            p.unlink()
+    CROP_DIR.mkdir(parents=True, exist_ok=True)
 
     rows = []
     for d in sorted(ROOT.iterdir()):
-        if not d.is_dir():
+        if not d.is_dir() or not _SAFE_NAME_RE.fullmatch(d.name):
             continue
+        # Remove only the crops previously generated for this example.
+        # `crops.build_pair_review` slugifies the pair name with the same rule
+        # below, so the cleanup glob must use the slug, not the raw directory
+        # name, or hyphenated example names will be missed.
+        slug = re.sub(r"[^\w]+", "_", d.name).strip("_")
+        prefix = f"{slug}_"
+        crop_name_re = re.compile(r"^[A-Za-z0-9\-]+(_diff)?\.png$")
+        for p in CROP_DIR.glob(f"{slug}_*.png"):
+            if not p.is_file() or not p.name.startswith(prefix):
+                continue
+            rest = p.name[len(prefix):]
+            if crop_name_re.fullmatch(rest):
+                p.unlink()
         orig_path = d / "orig.png"
         inline_path = d / "inline.png"
         if not orig_path.exists() or not inline_path.exists():
@@ -76,8 +92,23 @@ def build(semantic: bool = True):
     return rows
 
 
+def _json_for_script(value: object) -> str:
+    """Serialize JSON for safe insertion inside a <script> / template literal."""
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    text = re.sub(r"</", lambda m: "<\\/", text, flags=re.IGNORECASE)
+    return (
+        text
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("`", "\\u0060")
+        .replace("${", "\\u0024{")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 def generate_html(rows: list[dict]) -> str:
-    rows_json = json.dumps(rows)
+    rows_json = _json_for_script(rows)
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -197,13 +228,9 @@ rows.forEach(row => {{
 </html>"""
 
 
-class Handler(SimpleHTTPRequestHandler):
+class Handler(SafeStaticHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
-
-    def end_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        super().end_headers()
 
     def log_message(self, *args):
         pass

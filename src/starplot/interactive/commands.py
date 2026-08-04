@@ -1,14 +1,22 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import Enum
 
 
-class CoordinateSpace(StrEnum):
+class _StringEnum(str, Enum):
+    """Python 3.10-compatible string enum with ``StrEnum`` string behavior."""
+
+    __str__ = str.__str__
+
+
+class CoordinateSpace(_StringEnum):
     DATA = "data"  # final x/y in x_min/x_max/y_min/y_max
     AXES = "axes"  # normalized [0, 1] in Matplotlib axes
     PAPER = "paper"  # normalized [0, 1] in full figure
 
 
-class CommandType(StrEnum):
+class CommandType(_StringEnum):
     SCATTER = "scatter"
     LINE = "line"
     LINE_COLLECTION = "line_collection"

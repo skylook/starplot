@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 import hashlib
 import json
+from threading import Lock
 from types import MappingProxyType
 from typing import Protocol
 
@@ -59,6 +61,8 @@ class SceneResponse:
 class SceneProvider:
     """Serve prevalidated manifest/layer bytes without selecting a web framework."""
 
+    DEFAULT_VIEWPORT_CACHE_BYTES = 64 * 1024 * 1024
+
     def __init__(
         self,
         manifest: SceneManifestModel,
@@ -66,6 +70,7 @@ class SceneProvider:
         layer_bytes: Mapping[str, bytes],
         detail_provider: CatalogDetailProvider | None = None,
         lod_policies: Mapping[str, LodPolicy] | None = None,
+        viewport_cache_bytes: int = DEFAULT_VIEWPORT_CACHE_BYTES,
     ):
         if not isinstance(manifest, SceneManifestModel):
             raise TypeError("manifest must be a SceneManifestModel")
@@ -90,9 +95,18 @@ class SceneProvider:
             raise ValueError("lod_policies reference unknown manifest layers")
         if not all(hasattr(policy, "select") for policy in policies.values()):
             raise TypeError("lod_policies values must implement select(layer, request)")
+        if (
+            not isinstance(viewport_cache_bytes, int)
+            or isinstance(viewport_cache_bytes, bool)
+            or viewport_cache_bytes < 0
+        ):
+            raise ValueError("viewport_cache_bytes must be a non-negative integer")
         self._lod_policies = MappingProxyType(policies)
         self._full_resolution_policy = FullResolutionPolicy()
-        self._dynamic_cache: dict[tuple[object, ...], bytes] = {}
+        self._dynamic_cache: OrderedDict[tuple[object, ...], bytes] = OrderedDict()
+        self._dynamic_cache_lock = Lock()
+        self._dynamic_cache_bytes = 0
+        self._viewport_cache_bytes = viewport_cache_bytes
         self._validate_interaction_policy()
 
     @staticmethod
@@ -181,9 +195,11 @@ class SceneProvider:
             *request.cache_key_parts(),
             self.manifest_model.schema_version,
         )
-        cached = self._dynamic_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        with self._dynamic_cache_lock:
+            cached = self._dynamic_cache.get(cache_key)
+            if cached is not None:
+                self._dynamic_cache.move_to_end(cache_key)
+                return cached
         layer = decode_layer_stream(
             self._layer_bytes[layer_id], self.manifest_model.resolve_layer(layer_id)
         )
@@ -200,7 +216,22 @@ class SceneProvider:
             ),
         )
         payload = encode_layer_stream(selected_layer)
-        self._dynamic_cache[cache_key] = payload
+        payload_size = len(payload)
+        if payload_size <= self._viewport_cache_bytes:
+            with self._dynamic_cache_lock:
+                cached = self._dynamic_cache.get(cache_key)
+                if cached is not None:
+                    self._dynamic_cache.move_to_end(cache_key)
+                    return cached
+                while (
+                    self._dynamic_cache
+                    and self._dynamic_cache_bytes + payload_size
+                    > self._viewport_cache_bytes
+                ):
+                    _, evicted = self._dynamic_cache.popitem(last=False)
+                    self._dynamic_cache_bytes -= len(evicted)
+                self._dynamic_cache[cache_key] = payload
+                self._dynamic_cache_bytes += payload_size
         return payload
 
     def object_detail(self, object_id: str) -> SceneResponse:

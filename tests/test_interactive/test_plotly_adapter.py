@@ -340,6 +340,49 @@ def _compile(command, *, width=500, height=500):
     return SceneCompiler().compile([command], PROJECTION, STYLE, width, height, False)
 
 
+def test_scene_adapter_escapes_all_html_metacharacters_in_text_sinks():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    malicious = '<a title="double" data-note=\'single\'>& link</a>'
+    expected = (
+        "&lt;a title=&quot;double&quot; data-note=&#x27;single&#x27;&gt;"
+        "&amp; link&lt;/a&gt;"
+    )
+
+    scatter = primitive_commands()["scatter"]
+    scatter.metadata[0]["name"] = malicious
+    scatter.style["legend_label"] = malicious
+    scatter_figure = PlotlySceneAdapter().render(_compile(scatter))
+    assert scatter_figure.data[0].name == expected
+    assert expected in scatter_figure.data[0].text[0]
+
+    text = primitive_commands()["text"]
+    text.data["text"] = malicious
+    text_figure = PlotlySceneAdapter().render(_compile(text))
+    assert text_figure.layout.annotations[0].text == expected
+
+    info_table = primitive_commands()["info_table"]
+    info_table.data["columns"] = [malicious]
+    info_table.data["values"] = [malicious]
+    info_table.data["widths"] = [1.0]
+    table_figure = PlotlySceneAdapter().render(_compile(info_table))
+    assert table_figure.layout.annotations[0].text == f"<b>{expected}</b>"
+    assert table_figure.layout.annotations[1].text == expected
+
+
+def test_scene_adapter_escapes_unknown_group_id_before_using_it_as_legend_name():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    command = primitive_commands()["scatter"]
+    command.gid = '<img title="double" note=\'single\' src=x>'
+    figure = PlotlySceneAdapter().render(_compile(command))
+
+    assert figure.data[0].name == (
+        "&lt;Img Title=&quot;Double&quot; Note=&#x27;Single&#x27; Src=X&gt;"
+    )
+    assert "<" not in figure.data[0].name
+
+
 def test_legacy_primitive_snapshot_fixture_exists_and_covers_every_kind():
     payload = json.loads(GOLDEN_PATH.read_text())
     assert set(payload) == set(primitive_commands())
@@ -536,6 +579,40 @@ def test_plotly_marker_calibration_is_applied_only_after_scene_compilation():
 
     assert scene.layers[0].data["size"][0] == pytest.approx(neutral_size)
     assert trace.marker.size[0] == pytest.approx(neutral_size * 1.0)
+
+
+def test_ellipse_marker_has_larger_extent_than_circle():
+    """The ellipse marker's major axis is larger than its bbox width, so its
+    calibrated Plotly diameter must exceed a circle's for the same matplotlib s.
+    The Python plotly.py backend still receives the circle fallback because
+    plotly.py (as of 5.24.1) does not accept arbitrary SVG path marker strings;
+    the browser JS adapter supplies the actual rotated ellipse path.
+    """
+    from starplot.interactive.style_converter import (
+        MARKER_SYMBOL_MAP,
+        _marker_extent_factor,
+    )
+
+    extent = _marker_extent_factor("ellipse")
+    assert extent == pytest.approx(2.0 / 1.948776650870625)
+    assert extent > _marker_extent_factor("circle")
+    # Python adapter keeps the safe circle approximation until plotly.py supports
+    # custom SVG marker paths.
+    assert MARKER_SYMBOL_MAP["ellipse"] == "circle"
+
+    circle = DrawingCommand(
+        kind="scatter",
+        data={"x": [0.0], "y": [0.0], "sizes": [9.0], "colors": ["#ffffff"], "alphas": [1.0]},
+        style={"symbol": "circle"},
+        gid="dso",
+        clip_id=None,
+    )
+    ellipse = replace(circle, style={"symbol": "ellipse"})
+    circle_scene = _compile(circle)
+    ellipse_scene = _compile(ellipse)
+    assert ellipse_scene.layers[0].data["size"][0] == pytest.approx(
+        circle_scene.layers[0].data["size"][0] * extent
+    )
 
 
 def test_relative_identity_coordinates_stay_float32_typed_arrays():

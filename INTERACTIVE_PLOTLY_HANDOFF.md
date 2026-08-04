@@ -71,15 +71,9 @@
 
 ### 历史诊断：视觉一致性当时尚未完成（现已解决）
 
-这是核心待解决问题。22 个示例的 `int vs plotly` 像素差异（`nonzero%` = 像素差异比例）：
-
-| 差异等级 | 示例 | nonzero% |
-|---------|------|----------|
-| 较好 (<10%) | `map_big_dipper` | 5.81% |
-| 一般 (10-30%) | `galaxy_custom_marker` (19.53%), `map_canis_major` (21.08%), `map_cas` (23.57%) | |
-| 较差 (30-50%) | `horizon_sgr` (33.91%), `map_carina` (33.56%), `map_big` (42.58%) | |
-| 很差 (>50%) | `horizon_double_cluster` (54.58%), `horizon_gradient` (68.14%), `star_chart_basic` (36.73%), `star_chart_detail` (64.93%), `star_chart_french` (66.44%), `optic_iss_transit` (62.52%), `optic_m45` (25.46%), `optic_orion_nebula` (29.88%), `optic_solar_eclipse` (59.19%) | |
-| 缺失 | `map_milky_way_stars` | missing |
+历史像素差异（`nonzero%`）是开发初期的诊断数据，现已由
+[`docs/interactive-parity-ledger.md`](docs/interactive-parity-ledger.md)
+中的最终验收结论取代，不应作为当前状态参考。
 
 ## 历史待解决问题（均已解决或由最终 ledger 验收）
 

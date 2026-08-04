@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 import hashlib
 import json
 import os
@@ -31,13 +31,13 @@ from starplot.interactive.scene_manifest import (
 )
 
 
-class DataMode(StrEnum):
+class DataMode(str, Enum):
     INLINE = "inline"
     EXTERNAL = "external"
     REMOTE = "remote"
 
 
-class LibraryMode(StrEnum):
+class LibraryMode(str, Enum):
     CDN = "cdn"
     DIRECTORY = "directory"
     INLINE = "inline"
@@ -66,6 +66,15 @@ class _LibraryAssets:
 
 _ASSETS = Path(__file__).with_name("assets")
 _ARROW_CDN = "https://cdn.jsdelivr.net/npm/apache-arrow@21.1.0/Arrow.es2015.min.js"
+
+# These hashes are reviewed release metadata for the exact immutable CDN URLs
+# below.  Keep each version/hash update in the same change as the dependency
+# upgrade; deriving SRI from the download being protected would make a CDN
+# compromise self-validating.
+_PLOTLY_CDN_SRI = {
+    "3.0.1": "sha384-8cEu0XVLh4s92OG4Ua4ZS75MN//b+0KqyCrhQqaXgHMVHnKC3DNVhwUyH5spa1J2",
+}
+_ARROW_CDN_SRI = "sha384-ZLJeD2tDjUehiBbpE2rlA9XezXOj3fe6wSDijZ2/fB3S+vLWujzDGYI4GfPY5Bqz"
 
 # Allowed unencoded URL characters, plus '%' for percent-encoding.  Anything
 # outside this set must be percent-encoded before being passed to export.
@@ -139,7 +148,19 @@ def _safe_output_path(filename: str | Path) -> Path:
         raise ValueError("filename must name an .html file")
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F or ch in "#?%\\<>\"|" for ch in path.name):
         raise ValueError("filename contains unsafe characters")
-    return path.resolve()
+    if path.is_absolute():
+        # Absolute paths are accepted so existing callers that pass
+        # ``export_html("/tmp/chart.html")`` continue to work.  The path is
+        # still validated for extension and unsafe characters above.
+        return path.resolve()
+    # Relative paths must stay inside the current working directory to avoid
+    # directory traversal via ".." or symlink escape.  Resolve the working
+    # directory too, so a symlinked cwd is compared against its real target.
+    base = Path.cwd().resolve()
+    resolved = (base / path).resolve()
+    if not resolved.is_relative_to(base):
+        raise ValueError("filename must be inside the current working directory")
+    return resolved
 
 
 def _data_url(value: str) -> str:
@@ -162,9 +183,9 @@ def _data_url(value: str) -> str:
 
 
 def _allowed_origins(values: tuple[str, ...], manifest_url: str | None) -> tuple[str, ...]:
-    """Normalize explicit HTTP(S) origins; remote defaults to its manifest origin."""
-    origins = tuple(values)
-    if not origins and manifest_url is not None:
+    """Normalize explicit HTTP(S) origins; the manifest origin is always allowed."""
+    normalized = []
+    if manifest_url is not None:
         try:
             parsed = urlparse(manifest_url)
         except ValueError as exc:
@@ -172,9 +193,8 @@ def _allowed_origins(values: tuple[str, ...], manifest_url: str | None) -> tuple
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("manifest_url must be an absolute http(s) URL")
         _validate_netloc(parsed)
-        origins = (f"{parsed.scheme}://{parsed.netloc}",)
-    normalized = []
-    for origin in origins:
+        normalized.append(f"{parsed.scheme}://{parsed.netloc}")
+    for origin in values:
         try:
             parsed = urlparse(origin)
         except ValueError as exc:
@@ -193,14 +213,27 @@ def _allowed_origins(values: tuple[str, ...], manifest_url: str | None) -> tuple
     return tuple(dict.fromkeys(normalized))
 
 
+def _escape_script_text(text: str) -> str:
+    """Escape ``</`` (case-insensitive) so it cannot close the containing ``<script>``."""
+    return re.sub(r"</", lambda m: "<\\/", text, flags=re.IGNORECASE)
+
+
 def _json_script(value: object) -> str:
-    """Embed JSON as inert text without permitting a closing-script escape."""
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    """Embed JSON as inert text without permitting a closing-script escape.
+
+    Also escape U+2028/2029 so the result is safe inside JavaScript string
+    literals and template literals, not just inside ``<script type="...">`` tags.
+    """
+    text = _escape_script_text(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+    # Escape '<' so the JSON cannot contain a literal '</script>' sequence
+    # regardless of how it is later unescaped by consumers.
+    text = text.replace("<", "\\u003c")
+    return text.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
 
 
 def _escape_inline_script(text: str) -> str:
-    """Escape any ``</`` sequence so it cannot close the containing ``<script>``."""
-    return text.replace("</", "<\\/")
+    """Escape any ``</`` sequence (case-insensitive) inside inline ``<script>``."""
+    return _escape_script_text(text)
 
 
 def _scene_id(layer_bytes: Mapping[str, bytes]) -> str:
@@ -218,17 +251,25 @@ def _libraries(mode: LibraryMode, bundle: Path | None) -> _LibraryAssets:
     except ImportError as error:  # pragma: no cover - optional extra boundary
         raise RuntimeError("plotly is required for interactive HTML export") from error
     plotly_version = get_plotlyjs_version()
-    plotly_content = get_plotlyjs().encode()
-    arrow_content = (_ASSETS / "vendor" / "apache-arrow.min.js").read_bytes()
     if mode is LibraryMode.CDN:
+        try:
+            plotly_integrity = _PLOTLY_CDN_SRI[plotly_version]
+        except KeyError as error:
+            raise RuntimeError(
+                f"CDN integrity is not pinned for Plotly.js {plotly_version}; "
+                "use library_mode='directory' or 'inline', or add reviewed release metadata"
+            ) from error
+        plotly_url = f"https://cdn.jsdelivr.net/npm/plotly.js-dist-min@{plotly_version}/plotly.min.js"
         return _LibraryAssets(
-            plotly=f"https://cdn.plot.ly/plotly-{plotly_version}.min.js",
+            plotly=plotly_url,
             arrow=_ARROW_CDN,
-            plotly_integrity=_sri_hash(plotly_content),
-            arrow_integrity=_sri_hash(arrow_content),
+            plotly_integrity=plotly_integrity,
+            arrow_integrity=_ARROW_CDN_SRI,
             cross_origin=True,
             directory=False,
         )
+    plotly_content = get_plotlyjs().encode()
+    arrow_content = (_ASSETS / "vendor" / "apache-arrow.min.js").read_bytes()
     if mode is LibraryMode.INLINE:
         return _LibraryAssets(
             plotly=plotly_content.decode("utf-8"),
@@ -293,7 +334,7 @@ def _csp_header(
     """Build a Content-Security-Policy for the exported page."""
     script_src = ["'self'", f"'nonce-{nonce}'", "'unsafe-eval'"]
     if libraries is LibraryMode.CDN:
-        script_src.extend(["https://cdn.plot.ly", "https://cdn.jsdelivr.net"])
+        script_src.extend(["https://cdn.jsdelivr.net"])
 
     connect_src = ["'self'"]
     if mode is DataMode.REMOTE and base_url is not None:
@@ -304,11 +345,16 @@ def _csp_header(
     elif mode is DataMode.INLINE:
         connect_src = ["'none'"]
 
+    # Plotly.js 6.x still injects inline styles and style attributes at runtime
+    # (e.g. for the modebar and hover interactions).  It does not yet ship with a
+    # static CSS file or a nonce-aware configuration, so the exported page must
+    # allow inline styles.  The trusted library and layer scripts still use nonces.
+    style_src = ["'self'", "'unsafe-inline'"]
     policy = (
         f"default-src 'self'; "
         f"script-src {' '.join(script_src)}; "
         f"connect-src {' '.join(connect_src)}; "
-        f"style-src 'self' 'unsafe-inline'; "
+        f"style-src {' '.join(style_src)}; "
         f"img-src 'self' data: blob:; "
         f"font-src 'self' data:; "
         f"base-uri 'self'; "
@@ -363,9 +409,8 @@ def _html_shell(*, mode: DataMode, libraries: LibraryMode, manifest: dict | None
 
     payload_tags = ""
     if mode is DataMode.INLINE:
-        safe_manifest = manifest_json.replace("</", "<\\/")
         payload_tags = _script_inline(
-            safe_manifest,
+            manifest_json,
             nonce=nonce,
             script_type="application/json",
             element_id="starplot-manifest",
@@ -380,7 +425,7 @@ def _html_shell(*, mode: DataMode, libraries: LibraryMode, manifest: dict | None
             for index, layer in enumerate(manifest["layers"])
             for data in (layers[layer["id"]],)
         )
-        bootstrap = """const manifestJson=document.getElementById('starplot-manifest').textContent.split("<"+String.fromCharCode(92)+"/").join("</");
+        bootstrap = """const manifestJson=document.getElementById('starplot-manifest').textContent;
 const manifest=JSON.parse(manifestJson); const layers={};
 for(const [index,layer] of manifest.layers.entries()){layers[layer.id]=document.getElementById(`starplot-layer-${index}`).textContent;}
 const source=new StarplotScene.InlineSceneSource({manifest,manifestJson,layers});"""
@@ -404,7 +449,7 @@ const source=new StarplotScene.InlineSceneSource({manifest,manifestJson,layers})
     main_script_tag = _script_inline(main_script, nonce=nonce)
 
     return f"""<!doctype html><html><head><meta charset=\"utf-8\">{csp}<title>Starplot chart</title>
-<style>html,body,#starplot-chart{{width:100%;height:100%;margin:0;overflow:hidden}}</style></head>
+<style nonce=\"{_html_attr(nonce)}\">html,body,#starplot-chart{{width:100%;height:100%;margin:0;overflow:hidden}}.js-plotly-plot .main-svg{{position:absolute;top:0;left:0;pointer-events:none}}</style></head>
 <body><div id=\"starplot-chart\"></div>{payload_tags}{library_tags}{runtime_tags}
 {main_script_tag}
 </body></html>"""
@@ -418,7 +463,18 @@ def export_scene_html(
     data_url: str | None = None,
     allowed_data_origins: tuple[str, ...] = (),
 ) -> ExportResult:
-    """Export one compiled Scene without changing its Arrow representation."""
+    """Export one compiled Scene without changing its Arrow representation.
+
+    ``filename`` may be absolute or relative.  Relative paths are resolved
+    against the current working directory and must stay inside it; directory
+    traversal via ``..`` is rejected.
+
+    ``library_mode='cdn'`` writes version-pinned remote script URLs and needs
+    network access when the page is opened.  ``'directory'`` copies libraries
+    beside an external Scene bundle, while ``'inline'`` embeds them in the HTML;
+    those two modes are offline-capable.  Delivery modes are explicit and do
+    not silently fall back to one another.
+    """
     if not isinstance(scene, ScenePackage):
         raise TypeError("scene must be a ScenePackage")
     output = _safe_output_path(filename)
@@ -426,6 +482,8 @@ def export_scene_html(
     libraries = LibraryMode(library_mode) if library_mode is not None else (
         LibraryMode.INLINE if mode is DataMode.INLINE else LibraryMode.CDN
     )
+    if libraries is LibraryMode.DIRECTORY and mode is not DataMode.EXTERNAL:
+        raise ValueError("library_mode='directory' requires data_mode='external'")
     if mode is DataMode.REMOTE and not data_url:
         raise ValueError("data_url is required for remote export")
     remote_url = _data_url(data_url) if mode is DataMode.REMOTE else None
@@ -461,10 +519,14 @@ def export_scene_html(
     parse_scene_manifest(manifest_bytes)
     manifest_value = json.loads(manifest_bytes)
     if mode is DataMode.EXTERNAL:
+        bundle.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=f".{bundle.name}.", dir=bundle.parent))
         try:
             _atomic_write(temporary / "manifest.json", manifest_bytes)
-            _atomic_write(temporary / "palettes.json", _json_script(manifest_value["palettes"]).encode())
+            _atomic_write(
+                temporary / "palettes.json",
+                json.dumps(manifest_value["palettes"], ensure_ascii=False).encode("utf-8"),
+            )
             for layer in manifest.layers:
                 _atomic_write(temporary / layer.data_source.uri, layer_bytes[layer.id])
             html = _html_shell(mode=mode, libraries=libraries, manifest=None, manifest_json=None,
@@ -490,7 +552,7 @@ def export_scene_html(
                 shutil.rmtree(temporary)
     else:
         html = _html_shell(mode=mode, libraries=libraries, manifest=manifest_value,
-                           manifest_json=manifest_bytes.decode(), layers=layer_bytes,
+                           manifest_json=_json_script(manifest_value), layers=layer_bytes,
                            base_url=remote_url, allowed_data_origins=origins, bundle=None)
     _atomic_write(output, html.encode("utf-8"))
     return ExportResult(output, bundle, manifest.content_hash, manifest_bytes, layer_bytes)

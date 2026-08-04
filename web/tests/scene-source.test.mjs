@@ -431,7 +431,7 @@ test("fetch sources resolve document, root, and manifest-relative URLs", async (
   assert.equal(calls.at(-1), "https://example.test/assets/scene/manifest.json");
 });
 
-test("fetch sources resolve layer URLs from the final redirected manifest URL", async () => {
+test("fetch sources resolve layer URLs from the manifest response URL", async () => {
   const fixture = await sceneFixture();
   const calls = [];
   const fetch = async (url) => {
@@ -448,6 +448,154 @@ test("fetch sources resolve layer URLs from the final redirected manifest URL", 
     "https://example.test/original/manifest.json",
     "https://cdn.example.test/scenes/final/layers/stars.arrow",
   ]);
+});
+
+test("fetch sources request manual redirect handling and fail closed on opaque redirects", async () => {
+  const calls = [];
+  const fetch = async (url, options) => {
+    calls.push({ url: String(url), options });
+    return {
+      ok: false,
+      status: 0,
+      type: "opaqueredirect",
+      url: "",
+      headers: { get() { return null; } },
+    };
+  };
+  const runtime = await loadRuntime(["starplot-scene-loader.js"], { fetch });
+  const source = new runtime.StaticSceneSource({ baseUrl: "https://example.test/scene/", fetch });
+  await assert.rejects(source.loadManifest(), /Scene redirects are not permitted/);
+  assert.equal(calls.length, 1, "opaque redirects must not be retried");
+  assert.equal(calls[0].options.redirect, "manual");
+});
+
+test("explicit data origins augment the manifest origin", async () => {
+  const fixture = await sceneFixture();
+  const calls = [];
+  const fetch = async (url, options) => {
+    calls.push({ url: String(url), options });
+    return String(url).endsWith("manifest.json")
+      ? response(fixture.manifestJson, { url: "https://manifest.example.test/scene/manifest.json" })
+      : response(fixture.bytes);
+  };
+  const runtime = await loadRuntime(["starplot-scene-loader.js"], { fetch });
+  const source = new runtime.StaticSceneSource({
+    baseUrl: "https://entry.example.test/scene/",
+    allowedDataOrigins: ["https://data.example.test"],
+    fetch,
+  });
+  const manifest = await source.loadManifest();
+  for await (const _batch of source.loadLayer(manifest.layers[0])) { /* consume */ }
+  const explicitLayer = {
+    ...manifest.layers[0],
+    data_source: { ...manifest.layers[0].data_source, uri: "https://data.example.test/stars.arrow" },
+  };
+  for await (const _batch of source.loadLayer(explicitLayer)) { /* consume */ }
+  assert.deepEqual(calls.map((call) => call.url), [
+    "https://entry.example.test/scene/manifest.json",
+    "https://manifest.example.test/scene/layers/stars.arrow",
+    "https://data.example.test/stars.arrow",
+  ]);
+  assert.ok(calls.every((call) => call.options.redirect === "manual"));
+});
+
+test("fetch sources reject oversized responses before reading their bodies", async () => {
+  const fixture = await sceneFixture();
+  let manifestRead = false;
+  const oversizedManifest = {
+    ok: true,
+    status: 200,
+    url: "https://example.test/scene/manifest.json",
+    headers: { get(name) { return name.toLowerCase() === "content-length" ? "4194305" : null; } },
+    async text() { manifestRead = true; return fixture.manifestJson; },
+  };
+  let runtime = await loadRuntime(["starplot-scene-loader.js"], { fetch: async () => oversizedManifest });
+  let source = new runtime.StaticSceneSource({ baseUrl: "https://example.test/scene/", fetch: async () => oversizedManifest });
+  await assert.rejects(source.loadManifest(), /configured byte limit/);
+  assert.equal(manifestRead, false, "manifest body must not be allocated after a declared oversize");
+
+  let layerRead = false;
+  const fetch = async (url) => String(url).endsWith("manifest.json")
+    ? response(fixture.manifestJson, { url: "https://example.test/scene/manifest.json" })
+    : {
+      ok: true,
+      status: 200,
+      url: "https://example.test/scene/layers/stars.arrow",
+      headers: { get(name) { return name.toLowerCase() === "content-length" ? String(fixture.layer.byte_length + 1) : null; } },
+      async arrayBuffer() { layerRead = true; return fixture.bytes.buffer; },
+    };
+  runtime = await loadRuntime(["starplot-scene-loader.js"], { fetch });
+  source = new runtime.StaticSceneSource({ baseUrl: "https://example.test/scene/", fetch });
+  const manifest = await source.loadManifest();
+  await assert.rejects(async () => {
+    for await (const _batch of source.loadLayer(manifest.layers[0])) { /* consume */ }
+  }, /byte length does not match manifest/);
+  assert.equal(layerRead, false, "layer body must not be allocated after a declared mismatch");
+});
+
+test("fetch sources cap streamed bodies when content-length is absent", async () => {
+  const fixture = await sceneFixture();
+  const streamBody = (chunks) => ({
+    getReader() {
+      let index = 0;
+      return {
+        async read() {
+          return index < chunks.length
+            ? { done: false, value: chunks[index++] }
+            : { done: true, value: undefined };
+        },
+        async cancel() {},
+      };
+    },
+  });
+  let manifestFallbackRead = false;
+  const manifestResponse = {
+    ok: true, status: 200, url: "https://example.test/scene/manifest.json",
+    headers: { get() { return null; } },
+    body: streamBody([new Uint8Array([123, 34]), new Uint8Array([120, 34])]),
+    async text() { manifestFallbackRead = true; return "{}"; },
+  };
+  let runtime = await loadRuntime(["starplot-scene-loader.js"], { fetch: async () => manifestResponse });
+  let source = new runtime.StaticSceneSource({
+    baseUrl: "https://example.test/scene/", fetch: async () => manifestResponse,
+    loaderLimits: { max_manifest_bytes: 3 },
+  });
+  await assert.rejects(source.loadManifest(), /configured byte limit/);
+  assert.equal(manifestFallbackRead, false);
+
+  let layerFallbackRead = false;
+  const layerResponse = {
+    ok: true, status: 200, url: "https://example.test/scene/layers/stars.arrow",
+    headers: { get() { return null; } },
+    body: streamBody([fixture.bytes, new Uint8Array([0])]),
+    async arrayBuffer() { layerFallbackRead = true; return fixture.bytes.buffer; },
+  };
+  const fetch = async (url) => String(url).endsWith("manifest.json")
+    ? response(fixture.manifestJson, { url: "https://example.test/scene/manifest.json" })
+    : layerResponse;
+  runtime = await loadRuntime(["starplot-scene-loader.js"], { fetch });
+  source = new runtime.StaticSceneSource({
+    baseUrl: "https://example.test/scene/", fetch,
+    loaderLimits: { max_layer_bytes: fixture.layer.byte_length },
+  });
+  const manifest = await source.loadManifest();
+  await assert.rejects(async () => {
+    for await (const _batch of source.loadLayer(manifest.layers[0])) { /* consume */ }
+  }, /configured byte limit/);
+  assert.equal(layerFallbackRead, false);
+});
+
+test("fetch sources reject final layer response URLs outside the allowed origins", async () => {
+  const fixture = await sceneFixture();
+  const fetch = async (url) => String(url).endsWith("manifest.json")
+    ? response(fixture.manifestJson, { url: "https://example.test/scene/manifest.json" })
+    : response(fixture.bytes, { url: "https://evil.test/stars.arrow" });
+  const runtime = await loadRuntime(["starplot-scene-loader.js"], { fetch });
+  const source = new runtime.StaticSceneSource({ baseUrl: "https://example.test/scene/", fetch });
+  const manifest = await source.loadManifest();
+  await assert.rejects(async () => {
+    for await (const _batch of source.loadLayer(manifest.layers[0])) { /* consume */ }
+  }, /redirected layer URL origin is not allowed/);
 });
 
 test("fetch sources fail closed for layer origins outside the explicit allow-list", async () => {

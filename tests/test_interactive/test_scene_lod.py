@@ -22,6 +22,12 @@ from starplot.interactive.scene_manifest import SceneManifestModel
 from starplot.interactive.scene_provider import SceneProvider
 
 
+@pytest.fixture(autouse=True)
+def _chdir(tmp_path, monkeypatch):
+    """Run each test in ``tmp_path`` so relative export paths resolve there."""
+    monkeypatch.chdir(tmp_path)
+
+
 def _layer(layer_id: str, columns: dict[str, np.ndarray]) -> SceneLayer:
     return SceneLayer(
         id=layer_id,
@@ -70,7 +76,7 @@ def provider(tmp_path):
         palettes={},
         viewport={"reference_width": 100, "reference_height": 100},
     )
-    result = export_scene_html(scene, tmp_path / "chart.html")
+    result = export_scene_html(scene, "chart.html")
     manifest = SceneManifestModel.model_validate_json(result.manifest_bytes)
     return SceneProvider(
         manifest,

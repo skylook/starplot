@@ -6,10 +6,11 @@ import numpy as np
 import pytest
 
 import starplot.interactive.scene as scene_module
-from starplot.interactive.commands import CoordinateSpace
+from starplot.interactive.commands import CommandType, CoordinateSpace
 from starplot.interactive.scene import (
     ClipGeometry,
     ColumnarData,
+    CoordinateEncodingKind,
     InteractionPolicy,
     SceneCapabilities,
     SceneKind,
@@ -88,14 +89,13 @@ def test_readonly_array_is_contiguous_read_only_and_honors_dtype():
         result[0] = 9
 
 
-def test_readonly_array_owns_storage_without_mutating_contiguous_input():
+def test_readonly_array_snapshots_without_mutating_contiguous_input():
     source = np.array([1.0, 2.0], dtype=np.float32)
 
     result = readonly_array(source)
 
     assert source.flags.writeable
     assert result.dtype == source.dtype
-    assert result.flags.owndata
     assert not np.shares_memory(result, source)
     source[0] = 99
     np.testing.assert_array_equal(result, [1.0, 2.0])
@@ -109,10 +109,53 @@ def test_readonly_array_detaches_from_non_contiguous_view_and_base():
 
     assert source.flags.writeable
     assert result.flags.c_contiguous
-    assert result.flags.owndata
     assert not np.shares_memory(result, source)
     base[0] = 42
     np.testing.assert_array_equal(result, [1.0, 2.0])
+
+
+def test_readonly_array_cannot_be_made_writeable_again():
+    result = readonly_array([1.0, 2.0])
+
+    with pytest.raises(ValueError):
+        result.setflags(write=True)
+
+
+@pytest.mark.parametrize(
+    "escape",
+    [
+        lambda array: array,
+        lambda array: array.view(np.ndarray),
+        np.asarray,
+        lambda array: np.frombuffer(memoryview(array), dtype=array.dtype),
+    ],
+    ids=("array", "view", "asarray", "buffer"),
+)
+@pytest.mark.parametrize(
+    "values",
+    ([1.0, 2.0], ["A", "B"]),
+    ids=("numeric", "string"),
+)
+def test_readonly_array_rejects_base_class_writeability_escapes(escape, values):
+    escaped = escape(readonly_array(values))
+
+    with pytest.raises(ValueError):
+        np.ndarray.setflags(escaped, write=True)
+
+
+def test_columnar_data_deeply_snapshots_object_columns():
+    retained = {"aliases": ["M31"]}
+    columns = ColumnarData.from_mapping(
+        {"metadata": np.array([retained], dtype=object)}
+    )
+
+    retained["aliases"].append("NGC 224")
+
+    assert columns["metadata"][0]["aliases"] == ("M31",)
+    with pytest.raises(ValueError):
+        columns["metadata"].setflags(write=True)
+    with pytest.raises(ValueError):
+        np.ndarray.setflags(columns["metadata"], write=True)
 
 
 def test_columnar_data_is_contiguous_read_only_and_aligned():
@@ -149,7 +192,6 @@ def test_columnar_data_direct_constructor_copies_caller_read_only_owned_array():
     columns = ColumnarData({"x": source}, row_count=2)
 
     assert not np.shares_memory(columns["x"], source)
-    assert columns["x"].flags.owndata
     assert not columns["x"].flags.writeable
 
 
@@ -159,23 +201,22 @@ def test_columnar_data_exposes_no_owned_construction_bypass():
 
 
 def test_columnar_data_from_mapping_snapshots_each_column_once(monkeypatch):
-    original_array = scene_module.np.array
-    allocations = []
+    original_snapshot = scene_module._readonly_buffer_array
+    snapshots = []
 
-    def array_spy(*args, **kwargs):
-        result = original_array(*args, **kwargs)
-        allocations.append(result)
+    def snapshot_spy(source):
+        result = original_snapshot(source)
+        snapshots.append(result)
         return result
 
-    monkeypatch.setattr(scene_module.np, "array", array_spy)
+    monkeypatch.setattr(scene_module, "_readonly_buffer_array", snapshot_spy)
     columns = ColumnarData.from_mapping({"x": [1, 2], "y": [3, 4]})
-    monkeypatch.setattr(scene_module.np, "array", original_array)
+    monkeypatch.setattr(scene_module, "_readonly_buffer_array", original_snapshot)
 
-    assert len(allocations) == 2
-    assert columns["x"] is allocations[0]
-    assert columns["y"] is allocations[1]
-    assert all(column.flags.owndata for column in allocations)
-    assert all(not column.flags.writeable for column in allocations)
+    assert len(snapshots) == 2
+    assert columns["x"] is snapshots[0]
+    assert columns["y"] is snapshots[1]
+    assert all(not column.flags.writeable for column in snapshots)
 
 
 def test_columnar_data_rejects_misaligned_columns():
@@ -212,6 +253,37 @@ def test_scene_layer_freezes_ndarrays_retained_in_style():
     assert not np.shares_memory(pattern, source)
     base[0] = 42
     np.testing.assert_array_equal(pattern, [1, 2])
+
+
+def test_scene_layer_snapshots_unknown_mutable_style_values():
+    payload = bytearray(b"star")
+
+    layer = _layer(style={"payload": payload})
+    payload[:] = b"moon"
+
+    assert layer.style["payload"] == b"star"
+
+
+def test_scene_layer_rejects_unsupported_mutable_style_values():
+    class MutablePayload:
+        pass
+
+    with pytest.raises(TypeError, match="MutablePayload"):
+        _layer(style={"payload": MutablePayload()})
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        CoordinateSpace.DATA,
+        CommandType.SCATTER,
+        SceneKind.SCATTER,
+        InteractionPolicy.HOVER,
+        CoordinateEncodingKind.RELATIVE_F32,
+    ],
+)
+def test_public_string_enums_stringify_to_their_wire_value(member):
+    assert str(member) == member.value
 
 
 @pytest.mark.parametrize(

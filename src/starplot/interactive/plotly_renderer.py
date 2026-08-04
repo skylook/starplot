@@ -25,16 +25,21 @@ class PlotlyRenderer:
         self.fig = None
 
     def _reference_dimensions(self) -> tuple[float, float]:
+        figure_pixels = self.projection_info.get("figure_pixels") or ()
         axes_pixels = self.projection_info.get("axes_pixels") or ()
         fallback_width = (
-            axes_pixels[0]
+            figure_pixels[0]
+            if len(figure_pixels) >= 1 and figure_pixels[0]
+            else axes_pixels[0]
             if len(axes_pixels) >= 1 and axes_pixels[0]
             else self.style_info.get("source_axes_width")
             or self.style_info.get("resolution")
             or 1000
         )
         fallback_height = (
-            axes_pixels[1]
+            figure_pixels[1]
+            if len(figure_pixels) >= 2 and figure_pixels[1]
+            else axes_pixels[1]
             if len(axes_pixels) >= 2 and axes_pixels[1]
             else self.style_info.get("source_axes_height")
             or self.style_info.get("resolution")
@@ -55,9 +60,13 @@ class PlotlyRenderer:
             self.transparent,
         )
         figure = PlotlySceneAdapter().render(scene)
-        if self.width is None:
-            figure.update_layout(width=None)
-        if self.height is None:
-            figure.update_layout(height=None)
+        if self.width is not None and self.height is not None:
+            figure.update_layout(
+                width=int(round(self.width)),
+                height=int(round(self.height)),
+                autosize=False,
+            )
+        else:
+            figure.update_layout(width=None, height=None, autosize=True)
         self.fig = figure
         return figure

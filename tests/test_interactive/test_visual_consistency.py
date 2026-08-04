@@ -161,36 +161,92 @@ def test_plotly_figure_axes_configured():
     assert fig.layout.xaxis.showticklabels is False
 
 
-@pytest.mark.skipif(True, reason="Requires kaleido installed; run manually")
-def test_visual_hash_comparison(tmp_path):
-    """Pixel-level visual comparison between matplotlib PNG and Plotly PNG.
+def test_star_scatter_records_zorder_zero():
+    """A style marker zorder of 0 must not be replaced by a falsy fallback."""
+    from ibis import _ as ibis_col
+    p = _make_plot()
+    p.style.star.marker.zorder = 0
+    p.stars(where=[ibis_col.magnitude < 6])
 
-    Requires: pip install kaleido imagehash Pillow
+    scatter_cmds = [c for c in p._recorder.commands
+                    if c.kind == "scatter" and c.gid == "stars"]
+    assert scatter_cmds
+    for cmd in scatter_cmds:
+        assert cmd.zorder == 0
+
+
+@pytest.mark.skipif(importlib.util.find_spec("kaleido") is None, reason="kaleido not installed")
+def test_visual_plotly_matches_matplotlib_local_crops(tmp_path):
+    """Pixel-level visual comparison between matplotlib and Plotly outputs.
+
+    Removes Plotly margins and crops both renders to the recorded axes bbox,
+    then compares semantic local regions.  The ``nonzero_gt20`` metric ignores
+    light antialiasing and focuses on visible pixel differences.
     """
-    import imagehash
+    importlib.import_module("kaleido")
     from PIL import Image
     from ibis import _ as ibis_col
+    import tools.visual_parity.crops as crops
 
     p = _make_plot()
     p.stars(where=[ibis_col.magnitude < 6])
 
-    mpl_path = str(tmp_path / "mpl.png")
-    plotly_path = str(tmp_path / "plotly.png")
+    # Refresh projection metadata so the crop uses the final state.
+    p.to_plotly()
 
-    p.export(mpl_path)
-    fig = p.to_plotly()
-    fig.write_image(plotly_path, width=1024, height=800)
+    mpl_path = tmp_path / "mpl.png"
+    plotly_path = tmp_path / "plotly.png"
+    p.export(str(mpl_path))
 
-    def dhash_rgb(img):
-        r, g, b = img.convert("RGB").split()
-        return str(imagehash.dhash(r)) + str(imagehash.dhash(g)) + str(imagehash.dhash(b))
+    # Compile the Plotly scene at the same pixel dimensions as the matplotlib
+    # export so marker/line scaling matches before the axes-bbox crop.
+    mpl_img = Image.open(mpl_path).convert("RGBA")
+    fig = p.to_plotly(width=mpl_img.width, height=mpl_img.height)
+    # Matplotlib axes fill the figure; Plotly defaults to margins. Remove the
+    # margins so the same axes-bbox crop aligns the two renders.
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=0, b=0, autoexpand=False),
+    )
+    fig.write_image(str(plotly_path), width=mpl_img.width, height=mpl_img.height)
 
-    def hamming_distance(h1, h2):
-        return sum(c1 != c2 for c1, c2 in zip(h1, h2))
+    plotly_img = Image.open(plotly_path).convert("RGBA")
 
-    h1 = dhash_rgb(Image.open(mpl_path))
-    h2 = dhash_rgb(Image.open(plotly_path))
-    dist = hamming_distance(h1, h2)
+    # Crop to the recorded axes bbox.  The bbox is normalized figure coordinates
+    # with the origin at the bottom-left; PIL uses the top-left origin.
+    info = p._recorder.projection_info
+    axes_bbox = info.get("axes_bbox")
+    if axes_bbox:
+        x0, y0, w, h = axes_bbox
 
-    TOLERANCE = 50  # loose tolerance: different renderers, fonts, etc.
-    assert dist < TOLERANCE, f"Visual hash distance {dist} exceeds tolerance {TOLERANCE}"
+        def crop_to_bbox(img):
+            width, height = img.size
+            left = int(round(x0 * width))
+            right = int(round((x0 + w) * width))
+            top = height - int(round((y0 + h) * height))
+            bottom = height - int(round(y0 * height))
+            if top >= bottom or left >= right:
+                return img
+            return img.crop((left, top, right, bottom))
+
+        mpl_img = crop_to_bbox(mpl_img)
+        plotly_img = crop_to_bbox(plotly_img)
+
+    if plotly_img.size != mpl_img.size:
+        plotly_img = plotly_img.resize(mpl_img.size, Image.Resampling.LANCZOS)
+
+    full_stats = crops.diff_stats(mpl_img, plotly_img)
+    assert full_stats["nonzero_gt20"] <= 10, (
+        f"full-image visible diff {full_stats['nonzero_gt20']}% exceeds 10%"
+    )
+
+    mpl_cropped = tmp_path / "mpl_cropped.png"
+    plotly_cropped = tmp_path / "plotly_cropped.png"
+    mpl_img.save(mpl_cropped)
+    plotly_img.save(plotly_cropped)
+
+    review = crops.build_pair_review(
+        mpl_cropped, plotly_cropped, tmp_path / "crops", "mpl vs plotly",
+        semantic=True, reference="left",
+    )
+    max_nonzero = max(crop["stats"]["nonzero_gt20"] for crop in review["crops"])
+    assert max_nonzero <= 15, f"worst crop visible diff {max_nonzero}% exceeds 15%"
