@@ -409,10 +409,11 @@ def _html_shell(*, mode: DataMode, libraries: LibraryMode, manifest: dict | None
 
     payload_tags = ""
     if mode is DataMode.INLINE:
+        manifest_payload = base64.b64encode(manifest_json.encode("utf-8")).decode("ascii")
         payload_tags = _script_inline(
-            manifest_json,
+            manifest_payload,
             nonce=nonce,
-            script_type="application/json",
+            script_type="application/vnd.starplot.manifest+base64",
             element_id="starplot-manifest",
         )
         payload_tags += "".join(
@@ -425,7 +426,8 @@ def _html_shell(*, mode: DataMode, libraries: LibraryMode, manifest: dict | None
             for index, layer in enumerate(manifest["layers"])
             for data in (layers[layer["id"]],)
         )
-        bootstrap = """const manifestJson=document.getElementById('starplot-manifest').textContent;
+        bootstrap = """const manifestBytes=Uint8Array.from(atob(document.getElementById('starplot-manifest').textContent),value=>value.charCodeAt(0));
+const manifestJson=new TextDecoder('utf-8',{fatal:true}).decode(manifestBytes);
 const manifest=JSON.parse(manifestJson); const layers={};
 for(const [index,layer] of manifest.layers.entries()){layers[layer.id]=document.getElementById(`starplot-layer-${index}`).textContent;}
 const source=new StarplotScene.InlineSceneSource({manifest,manifestJson,layers});"""
@@ -552,7 +554,7 @@ def export_scene_html(
                 shutil.rmtree(temporary)
     else:
         html = _html_shell(mode=mode, libraries=libraries, manifest=manifest_value,
-                           manifest_json=_json_script(manifest_value), layers=layer_bytes,
+                           manifest_json=manifest_bytes.decode("utf-8"), layers=layer_bytes,
                            base_url=remote_url, allowed_data_origins=origins, bundle=None)
     _atomic_write(output, html.encode("utf-8"))
     return ExportResult(output, bundle, manifest.content_hash, manifest_bytes, layer_bytes)

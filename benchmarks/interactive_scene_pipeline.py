@@ -39,11 +39,24 @@ REQUIRED_RESULT_KEYS = {
     "point_count",
     "scene_compile",
 }
+BENCHMARK_SCHEMA_VERSION = 1
 REQUIRED_ARTIFACT_KEYS = REQUIRED_RESULT_KEYS | {
+    "artifact_role",
     "legacy_renderer_preparation",
     "legacy_renderer_total",
     "plot_type_coverage",
     "plotly_construction",
+    "schema_version",
+}
+REQUIRED_LEGACY_BASELINE_KEYS = {
+    "artifact_role",
+    "browser",
+    "environment",
+    "ordinary_chart",
+    "peak_rss_mb",
+    "point_count",
+    "scene_compile",
+    "schema_version",
 }
 REQUIRED_ENVIRONMENT_KEYS = {
     "browser",
@@ -93,6 +106,18 @@ _PLOT_TYPE_BROWSER_SEMANTICS = (
     "interactive plot family; timings are diagnostic and have no cross-family gate."
 )
 _SUPPORTED_INTERACTIVE_PLOT_KINDS = frozenset({"map", "horizon", "zenith", "optic"})
+_COMPARABLE_ENVIRONMENT_KEYS = (
+    "host_fingerprint",
+    "cpu",
+    "cpu_count",
+    "machine",
+    "os",
+    "python",
+    "numpy",
+    "plotly",
+    "pyarrow",
+    "shapely",
+)
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _PLOTLY_COMPLETION_INIT_SCRIPT = r"""
 (() => {
@@ -160,13 +185,7 @@ def validate_result(result: dict) -> None:
         raise ValueError(f"Missing benchmark keys: {sorted(missing)}")
 
 
-def validate_benchmark_artifact(result: dict) -> None:
-    """Validate the stricter schema required for a persisted baseline JSON."""
-    validate_result(result)
-    missing = REQUIRED_ARTIFACT_KEYS - result.keys()
-    if missing:
-        raise ValueError(f"Missing benchmark artifact keys: {sorted(missing)}")
-    environment = result.get("environment")
+def _validate_environment(environment: object) -> None:
     if not isinstance(environment, dict):
         raise ValueError("Benchmark environment must be a mapping")
     missing_environment = REQUIRED_ENVIRONMENT_KEYS - environment.keys()
@@ -174,6 +193,167 @@ def validate_benchmark_artifact(result: dict) -> None:
         raise ValueError(
             f"Missing benchmark environment keys: {sorted(missing_environment)}"
         )
+
+
+def _require_positive_integer(mapping: dict, key: str, label: str) -> int:
+    value = mapping.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{label} must be a positive integer")
+    return value
+
+
+def _require_nonempty_string(mapping: dict, key: str, label: str) -> str:
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be a non-empty string")
+    return value
+
+
+def _require_scene_hash(mapping: dict, key: str, label: str) -> str:
+    value = _require_nonempty_string(mapping, key, label)
+    prefix = "sha256:"
+    digest = value[len(prefix) :] if value.startswith(prefix) else ""
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        raise ValueError(f"{label} must be a sha256 hash")
+    return value
+
+
+def _require_nonnegative_number(mapping: dict, key: str, label: str) -> float:
+    value = mapping.get(key)
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise ValueError(f"{label} must be a finite non-negative number")
+    return float(value)
+
+
+def _validate_timing_summary(summary: object, label: str) -> None:
+    if not isinstance(summary, dict):
+        raise ValueError(f"{label} must be a mapping")
+    median = _require_nonnegative_number(
+        summary, "median_seconds", f"{label}.median_seconds"
+    )
+    p95 = _require_nonnegative_number(summary, "p95_seconds", f"{label}.p95_seconds")
+    if p95 < median:
+        raise ValueError(f"{label}.p95_seconds must be at least median_seconds")
+
+
+def _validate_primary_browser(browser: object) -> None:
+    if not isinstance(browser, dict):
+        raise ValueError("browser must be a mapping")
+    status = browser.get("status")
+    if status not in {
+        "measured",
+        "measurement_failed",
+        "playwright_not_installed",
+    }:
+        raise ValueError("browser has invalid or missing status")
+    if browser.get("source_kind") != "external-arrow-http":
+        raise ValueError("browser.source_kind must be external-arrow-http")
+    if status != "measured":
+        if status == "measurement_failed":
+            _require_nonempty_string(browser, "error", "browser.error")
+        return
+
+    _require_nonempty_string(browser, "completion_signal", "browser.completion_signal")
+    _require_nonempty_string(browser, "engine", "browser.engine")
+    _require_nonempty_string(browser, "engine_version", "browser.engine_version")
+    scene_hash = _require_scene_hash(browser, "scene_hash", "browser.scene_hash")
+    _require_positive_integer(
+        browser, "arrow_payload_bytes", "browser.arrow_payload_bytes"
+    )
+    median = _require_nonnegative_number(
+        browser,
+        "complete_render_median_ms",
+        "browser.complete_render_median_ms",
+    )
+    p95 = _require_nonnegative_number(
+        browser, "complete_render_p95_ms", "browser.complete_render_p95_ms"
+    )
+    if p95 < median:
+        raise ValueError(
+            "browser.complete_render_p95_ms must be at least complete_render_median_ms"
+        )
+
+    legacy = browser.get("legacy_same_scene")
+    if not isinstance(legacy, dict):
+        raise ValueError("browser.legacy_same_scene must be a mapping")
+    if legacy.get("source_kind") != "direct-plotly-same-scene-http":
+        raise ValueError(
+            "browser.legacy_same_scene.source_kind must be "
+            "direct-plotly-same-scene-http"
+        )
+    legacy_hash = _require_scene_hash(
+        legacy, "scene_hash", "browser.legacy_same_scene.scene_hash"
+    )
+    if legacy_hash != scene_hash:
+        raise ValueError(
+            "browser.legacy_same_scene.scene_hash must match browser.scene_hash"
+        )
+    legacy_median = _require_nonnegative_number(
+        legacy,
+        "complete_render_median_ms",
+        "browser.legacy_same_scene.complete_render_median_ms",
+    )
+    legacy_p95 = _require_nonnegative_number(
+        legacy,
+        "complete_render_p95_ms",
+        "browser.legacy_same_scene.complete_render_p95_ms",
+    )
+    if legacy_p95 < legacy_median:
+        raise ValueError(
+            "browser.legacy_same_scene.complete_render_p95_ms must be at least "
+            "complete_render_median_ms"
+        )
+
+
+def _validate_legacy_baseline(result: dict) -> None:
+    missing = REQUIRED_LEGACY_BASELINE_KEYS - result.keys()
+    if missing:
+        raise ValueError(f"Missing legacy baseline keys: {sorted(missing)}")
+    _validate_environment(result.get("environment"))
+    _require_positive_integer(result, "point_count", "point_count")
+    _require_nonnegative_number(result, "peak_rss_mb", "peak_rss_mb")
+    ordinary = result.get("ordinary_chart")
+    if not isinstance(ordinary, dict):
+        raise ValueError("ordinary_chart must be a mapping")
+    _validate_timing_summary(result.get("scene_compile"), "scene_compile")
+    _validate_timing_summary(ordinary, "ordinary_chart")
+    _require_positive_integer(ordinary, "point_count", "ordinary_chart.point_count")
+    browser = result.get("browser")
+    if not isinstance(browser, dict):
+        raise ValueError("browser must be a mapping")
+    if browser.get("status") != "not_applicable":
+        raise ValueError("legacy baseline browser.status must be not_applicable")
+    _require_nonempty_string(
+        browser, "source_kind", "legacy baseline browser.source_kind"
+    )
+    _require_nonempty_string(browser, "reason", "legacy baseline browser.reason")
+
+
+def validate_benchmark_artifact(result: dict) -> None:
+    """Validate the stricter schema required for a persisted baseline JSON."""
+    if result.get("schema_version") != BENCHMARK_SCHEMA_VERSION:
+        raise ValueError(f"schema_version must be {BENCHMARK_SCHEMA_VERSION}")
+    artifact_role = result.get("artifact_role")
+    if artifact_role == "legacy_baseline":
+        _validate_legacy_baseline(result)
+        return
+    if artifact_role != "candidate":
+        raise ValueError("artifact_role must be candidate or legacy_baseline")
+
+    validate_result(result)
+    missing = REQUIRED_ARTIFACT_KEYS - result.keys()
+    if missing:
+        raise ValueError(f"Missing benchmark artifact keys: {sorted(missing)}")
+    _validate_environment(result.get("environment"))
+    _require_positive_integer(result, "point_count", "point_count")
+    _validate_primary_browser(result.get("browser"))
     coverage = result.get("plot_type_coverage")
     if not isinstance(coverage, dict) or not isinstance(coverage.get("semantics"), str):
         raise ValueError("plot_type_coverage must include string semantics")
@@ -301,16 +481,72 @@ def _metric(mapping: dict, path: str) -> float | None:
 
 def compare_results(before: dict, after: dict) -> list[str]:
     """Return one auditable failure for each missed final-performance gate."""
-    failures: list[str] = []
-    before_environment = before.get("environment", {})
-    after_environment = after.get("environment", {})
-    if before_environment.get("host_fingerprint") != after_environment.get("host_fingerprint"):
-        failures.append(
-            "environment.host_fingerprint differs; regenerate baseline and final "
-            "measurements together on this machine"
-        )
+    before_role = before.get("artifact_role")
+    after_role = after.get("artifact_role")
+    if (before_role, after_role) != ("legacy_baseline", "candidate"):
+        return [
+            "artifact roles are not comparable; expected legacy_baseline -> "
+            f"candidate but got {before_role} -> {after_role}"
+        ]
+    if (
+        before.get("schema_version") != BENCHMARK_SCHEMA_VERSION
+        or after.get("schema_version") != BENCHMARK_SCHEMA_VERSION
+    ):
+        return [
+            f"schema_version must be {BENCHMARK_SCHEMA_VERSION} for comparable "
+            "artifacts"
+        ]
+    before_point_count = before.get("point_count")
+    after_point_count = after.get("point_count")
+    if before_point_count != after_point_count:
+        return [
+            "point_count differs; benchmark workloads are not comparable "
+            f"({before_point_count} != {after_point_count})"
+        ]
+    if (
+        not isinstance(before_point_count, int)
+        or isinstance(before_point_count, bool)
+        or before_point_count <= 0
+    ):
+        return ["point_count must be a positive integer for comparable workloads"]
+    before_ordinary = before.get("ordinary_chart", {})
+    after_ordinary = after.get("ordinary_chart", {})
+    before_ordinary_points = (
+        before_ordinary.get("point_count")
+        if isinstance(before_ordinary, dict)
+        else None
+    )
+    after_ordinary_points = (
+        after_ordinary.get("point_count") if isinstance(after_ordinary, dict) else None
+    )
+    if before_ordinary_points != after_ordinary_points:
+        return [
+            "ordinary_chart.point_count differs; benchmark workloads are not "
+            f"comparable ({before_ordinary_points} != {after_ordinary_points})"
+        ]
 
-    def ratio_gate(label: str, before_path: str, after_path: str, maximum: float) -> None:
+    for label, artifact in (("baseline", before), ("candidate", after)):
+        try:
+            validate_benchmark_artifact(artifact)
+        except ValueError as error:
+            return [f"{label} artifact schema is invalid: {error}"]
+
+    before_environment = before["environment"]
+    after_environment = after["environment"]
+    for key in _COMPARABLE_ENVIRONMENT_KEYS:
+        before_value = before_environment[key]
+        after_value = after_environment[key]
+        if before_value != after_value:
+            return [
+                f"environment.{key} differs; benchmark workloads are not "
+                f"comparable ({before_value!r} != {after_value!r})"
+            ]
+
+    failures: list[str] = []
+
+    def ratio_gate(
+        label: str, before_path: str, after_path: str, maximum: float
+    ) -> None:
         baseline = _metric(before, before_path)
         current = _metric(after, after_path)
         if baseline is None:
@@ -335,21 +571,45 @@ def compare_results(before: dict, after: dict) -> list[str]:
         elif current > maximum:
             failures.append(f"{label} {current:.6g} exceeds {maximum:.6g}")
 
-    ratio_gate("scene_compile", "scene_compile.median_seconds", "scene_compile.median_seconds",
-               PERFORMANCE_GATES["scene_compile_ratio_max"])
-    ratio_gate("peak_rss", "peak_rss_mb", "peak_rss_mb", PERFORMANCE_GATES["peak_rss_ratio_max"])
-    maximum_gate("arrow_payload_bytes", "arrow_payload_bytes", PERFORMANCE_GATES["arrow_payload_bytes_max"])
-    maximum_gate("external_html_bytes", "external_html_bytes", PERFORMANCE_GATES["external_html_bytes_max"])
-    paired_browser = after.get("browser", {}).get("legacy_same_scene")
-    if isinstance(paired_browser, dict):
+    ratio_gate(
+        "scene_compile",
+        "scene_compile.median_seconds",
+        "scene_compile.median_seconds",
+        PERFORMANCE_GATES["scene_compile_ratio_max"],
+    )
+    ratio_gate(
+        "peak_rss",
+        "peak_rss_mb",
+        "peak_rss_mb",
+        PERFORMANCE_GATES["peak_rss_ratio_max"],
+    )
+    maximum_gate(
+        "arrow_payload_bytes",
+        "arrow_payload_bytes",
+        PERFORMANCE_GATES["arrow_payload_bytes_max"],
+    )
+    maximum_gate(
+        "external_html_bytes",
+        "external_html_bytes",
+        PERFORMANCE_GATES["external_html_bytes_max"],
+    )
+    primary_browser = after.get("browser", {})
+    paired_browser = primary_browser.get("legacy_same_scene")
+    if primary_browser.get("status") != "measured":
+        failures.append("browser primary measurement is not measured")
+    elif isinstance(paired_browser, dict):
         legacy = _metric(paired_browser, "complete_render_median_ms")
         current = _metric(after, "browser.complete_render_median_ms")
-        if paired_browser.get("scene_hash") != after.get("browser", {}).get("scene_hash"):
-            failures.append("browser_complete_render paired legacy fixture scene_hash differs")
+        if paired_browser.get("scene_hash") != primary_browser.get("scene_hash"):
+            failures.append(
+                "browser_complete_render paired legacy fixture scene_hash differs"
+            )
         elif legacy is None:
             failures.append("browser_complete_render paired legacy result is missing")
         elif current is None:
-            failures.append("browser_complete_render result is missing (browser.complete_render_median_ms)")
+            failures.append(
+                "browser_complete_render result is missing (browser.complete_render_median_ms)"
+            )
         elif legacy == 0:
             if current > 0:
                 failures.append(
@@ -365,20 +625,33 @@ def compare_results(before: dict, after: dict) -> list[str]:
                 f"({current:.6g} / {legacy:.6g})"
             )
     else:
-        ratio_gate("browser_complete_render", "browser.complete_render_median_ms",
-                   "browser.complete_render_median_ms",
-                   PERFORMANCE_GATES["browser_complete_render_ratio_max"])
+        ratio_gate(
+            "browser_complete_render",
+            "browser.complete_render_median_ms",
+            "browser.complete_render_median_ms",
+            PERFORMANCE_GATES["browser_complete_render_ratio_max"],
+        )
     maximum_gate(
         "browser_complete_render_p95",
         "browser.complete_render_p95_ms",
         PERFORMANCE_GATES["browser_complete_render_p95_ms_max"],
     )
-    ratio_gate("ordinary_chart", "ordinary_chart.median_seconds", "ordinary_chart.median_seconds",
-               PERFORMANCE_GATES["ordinary_chart_regression_ratio_max"])
-    maximum_gate("viewport_warm_median", "viewport_warm.median_ms",
-                 PERFORMANCE_GATES["viewport_warm_median_ms_max"])
-    maximum_gate("viewport_warm_p95", "viewport_warm.p95_ms",
-                 PERFORMANCE_GATES["viewport_warm_p95_ms_max"])
+    ratio_gate(
+        "ordinary_chart",
+        "ordinary_chart.median_seconds",
+        "ordinary_chart.median_seconds",
+        PERFORMANCE_GATES["ordinary_chart_regression_ratio_max"],
+    )
+    maximum_gate(
+        "viewport_warm_median",
+        "viewport_warm.median_ms",
+        PERFORMANCE_GATES["viewport_warm_median_ms_max"],
+    )
+    maximum_gate(
+        "viewport_warm_p95",
+        "viewport_warm.p95_ms",
+        PERFORMANCE_GATES["viewport_warm_p95_ms_max"],
+    )
     plot_type_browser = after.get("plot_type_coverage", {}).get("browser", {})
     if plot_type_browser.get("status") != "measured":
         failures.append("plot_type_coverage browser diagnostics are not measured")
@@ -998,26 +1271,39 @@ def run_recorded_plot_type_browser_diagnostics(repeats: int) -> dict[str, object
             browser = _launch_browser(playwright)
             try:
                 browser_version = browser.version
-                for iteration in range(repeats + 1):
-                    label = "warm-up" if iteration == 0 else f"repeat {iteration}/{repeats}"
-                    for name, fixture in fixtures.items():
-                        print(f"Browser {name} diagnostic {label}: starting", flush=True)
-                        page = browser.new_page(viewport={"width": 1000, "height": 500})
-                        try:
-                            elapsed_ms = _measure_browser_page(
-                                page,
-                                str(fixture["source_url"]),
-                                _BROWSER_TIMEOUT_MS,
-                            )
-                        finally:
-                            page.close()
-                        print(
-                            f"Browser {name} diagnostic {label}: complete "
-                            f"({elapsed_ms:.3f} ms)",
-                            flush=True,
+                context = browser.new_context(
+                    viewport={"width": 1000, "height": 500}
+                )
+                try:
+                    for iteration in range(repeats + 1):
+                        label = (
+                            "warm-up"
+                            if iteration == 0
+                            else f"repeat {iteration}/{repeats}"
                         )
-                        if iteration:
-                            measurements[name].append(elapsed_ms)
+                        for name, fixture in fixtures.items():
+                            print(
+                                f"Browser {name} diagnostic {label}: starting",
+                                flush=True,
+                            )
+                            page = context.new_page()
+                            try:
+                                elapsed_ms = _measure_browser_page(
+                                    page,
+                                    str(fixture["source_url"]),
+                                    _BROWSER_TIMEOUT_MS,
+                                )
+                            finally:
+                                page.close()
+                            print(
+                                f"Browser {name} diagnostic {label}: complete "
+                                f"({elapsed_ms:.3f} ms)",
+                                flush=True,
+                            )
+                            if iteration:
+                                measurements[name].append(elapsed_ms)
+                finally:
+                    context.close()
             finally:
                 browser.close()
     except Exception as error:
@@ -1071,26 +1357,42 @@ def run_browser_benchmark(
             browser = _launch_browser(playwright)
             try:
                 browser_version = browser.version
-                for iteration in range(repeats + 1):
-                    label = "warm-up" if iteration == 0 else f"repeat {iteration}/{repeats}"
-                    for name, url, values in (
-                        ("external Arrow", fixture["source_url"], measurements),
-                        ("legacy direct", fixture["legacy_source_url"], legacy_measurements),
-                    ):
-                        print(f"Browser {name} {label}: starting", flush=True)
-                        page = browser.new_page(viewport={"width": 1000, "height": 500})
-                        try:
-                            elapsed_ms = _measure_browser_page(
-                                page, url, _BROWSER_TIMEOUT_MS,
+                for name, url, values in (
+                    ("external Arrow", fixture["source_url"], measurements),
+                    ("legacy direct", fixture["legacy_source_url"], legacy_measurements),
+                ):
+                    # ``browser.new_page`` is a convenience API that creates a
+                    # fresh context for every page, so its nominal warm-up does
+                    # not warm HTTP/library caches for the measured repeats.
+                    # Give each source an isolated persistent context and open
+                    # fresh pages inside it: warm within a source, never across
+                    # the external/direct comparison boundary.
+                    context = browser.new_context(
+                        viewport={"width": 1000, "height": 500}
+                    )
+                    try:
+                        for iteration in range(repeats + 1):
+                            label = (
+                                "warm-up"
+                                if iteration == 0
+                                else f"repeat {iteration}/{repeats}"
                             )
-                        finally:
-                            page.close()
-                        print(
-                            f"Browser {name} {label}: complete ({elapsed_ms:.3f} ms)",
-                            flush=True,
-                        )
-                        if iteration:
-                            values.append(elapsed_ms)
+                            print(f"Browser {name} {label}: starting", flush=True)
+                            page = context.new_page()
+                            try:
+                                elapsed_ms = _measure_browser_page(
+                                    page, url, _BROWSER_TIMEOUT_MS,
+                                )
+                            finally:
+                                page.close()
+                            print(
+                                f"Browser {name} {label}: complete ({elapsed_ms:.3f} ms)",
+                                flush=True,
+                            )
+                            if iteration:
+                                values.append(elapsed_ms)
+                    finally:
+                        context.close()
             finally:
                 browser.close()
     except Exception as error:
@@ -1168,6 +1470,16 @@ def run_python_benchmark(
     if repeat_timeout_seconds <= 0:
         raise ValueError("repeat_timeout_seconds must be positive")
 
+    # Browser timings are extremely sensitive to CPU thermal pressure.  Measure
+    # both browser workloads before the repeated dense Python/RSS workload so a
+    # single artifact does not heat the host before timing Chromium.
+    browser = run_browser_benchmark(
+        point_count,
+        repeats,
+        fixture_timeout_seconds=repeat_timeout_seconds,
+    )
+    plot_type_browser = run_recorded_plot_type_browser_diagnostics(repeats)
+
     measured = _run_python_samples(
         point_count, repeats, repeat_timeout_seconds, label="Python"
     )
@@ -1191,15 +1503,24 @@ def run_python_benchmark(
     )
     scene_compile = {**preparation, "semantics": _SCENE_COMPILE_SEMANTICS}
 
-    browser = run_browser_benchmark(
-        point_count,
-        repeats,
-        fixture_timeout_seconds=repeat_timeout_seconds,
-    )
+    ordinary_chart = None
+    if ordinary_points is not None:
+        if ordinary_points <= 0:
+            raise ValueError("ordinary_points must be positive")
+        ordinary = _run_python_samples(
+            ordinary_points, repeats, repeat_timeout_seconds, label="Ordinary chart"
+        )
+        ordinary_chart = {
+            **_summarize_worker_results(ordinary, "legacy_renderer_total_seconds"),
+            "point_count": ordinary_points,
+            "raw_repetitions": ordinary,
+        }
+
     plot_type_coverage = run_recorded_plot_type_coverage()
-    plot_type_coverage["browser"] = run_recorded_plot_type_browser_diagnostics(repeats)
+    plot_type_coverage["browser"] = plot_type_browser
     result = {
         "arrow_payload_bytes": int(measured[0]["arrow_payload_bytes"]),
+        "artifact_role": "candidate",
         "browser": browser,
         "environment": _environment(browser),
         "external_html_bytes": int(measured[0]["external_html_bytes"]),
@@ -1211,6 +1532,7 @@ def run_python_benchmark(
         "plot_type_coverage": plot_type_coverage,
         "point_count": point_count,
         "scene_compile": scene_compile,
+        "schema_version": BENCHMARK_SCHEMA_VERSION,
         "raw_repetitions": measured,
         "viewport_warm": {
             "median_ms": percentile(
@@ -1221,17 +1543,8 @@ def run_python_benchmark(
             ),
         },
     }
-    if ordinary_points is not None:
-        if ordinary_points <= 0:
-            raise ValueError("ordinary_points must be positive")
-        ordinary = _run_python_samples(
-            ordinary_points, repeats, repeat_timeout_seconds, label="Ordinary chart"
-        )
-        result["ordinary_chart"] = {
-            **_summarize_worker_results(ordinary, "legacy_renderer_total_seconds"),
-            "point_count": ordinary_points,
-            "raw_repetitions": ordinary,
-        }
+    if ordinary_chart is not None:
+        result["ordinary_chart"] = ordinary_chart
     validate_benchmark_artifact(result)
     return result
 

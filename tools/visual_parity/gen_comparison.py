@@ -61,11 +61,14 @@ class _InlinePayloadParser(HTMLParser):
         super().__init__()
         self._current_id: str | None = None
         self.scripts: dict[str, str] = {}
+        self.script_types: dict[str, str] = {}
 
     def handle_starttag(self, tag, attrs):
         if tag == "script":
             attributes = dict(attrs)
             self._current_id = attributes.get("id")
+            if self._current_id is not None:
+                self.script_types[self._current_id] = attributes.get("type", "")
 
     def handle_data(self, data):
         if self._current_id is not None:
@@ -79,8 +82,14 @@ class _InlinePayloadParser(HTMLParser):
 def _read_inline_export(path: Path) -> tuple[bytes, Mapping[str, bytes]]:
     parser = _InlinePayloadParser()
     parser.feed(path.read_text(encoding="utf-8"))
-    manifest_text = parser.scripts["starplot-manifest"].replace("<\\/", "</")
-    manifest_bytes = manifest_text.encode("utf-8")
+    manifest_payload = parser.scripts["starplot-manifest"]
+    if (
+        parser.script_types.get("starplot-manifest")
+        == "application/vnd.starplot.manifest+base64"
+    ):
+        manifest_bytes = base64.b64decode(manifest_payload.encode("ascii"), validate=True)
+    else:
+        manifest_bytes = manifest_payload.replace("<\\/", "</").encode("utf-8")
     manifest = parse_scene_manifest(manifest_bytes)
     layers = {
         layer.id: base64.b64decode(parser.scripts[f"starplot-layer-{index}"].encode("ascii"))

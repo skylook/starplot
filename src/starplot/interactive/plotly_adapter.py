@@ -47,6 +47,7 @@ _MAX_INTERACTIVE_HOVER_POINTS = 100_000
 _PLOTLY_MIN_MARKER_DIAMETER = np.float32(1.5)
 _SCATTERGL_MIN_MARKER_DIAMETER = np.float32(1.0)
 _SCATTERGL_SUBPIXEL_COVERAGE_SCALE = np.float32(2.0)
+_MAX_SVG_ZORDER_POINTS = 100_000
 _MATPLOTLIB_NONE_COLORS = frozenset({"none", "None", "NONE", ""})
 _KNOWN_LEGEND_GROUPS = frozenset(
     {
@@ -153,7 +154,38 @@ class _PlotlyRenderContext:
         self._paper_y_bounds = (0.0, 1.0)
         self._horizon_footer_offset = 0.0
         self._side_margin = 10.0
-        self._force_svg_trace_plane = self._requires_svg_trace_plane(scene)
+        self._mixed_svg_zorder_plane = self._needs_svg_zorder_plane(scene)
+        self._force_svg_trace_plane = (
+            self._mixed_svg_zorder_plane
+            or self._requires_svg_trace_plane(scene)
+        )
+        self._svg_zorders = (
+            {layer.id: index for index, layer in enumerate(scene.layers)}
+            if self._mixed_svg_zorder_plane
+            else None
+        )
+
+    @staticmethod
+    def _is_scattergl_candidate(layer: SceneLayer) -> bool:
+        if layer.kind is SceneKind.SCATTER:
+            return layer.group_id == "stars" or layer.data.row_count > 1000
+        return layer.kind is SceneKind.LINE_COLLECTION
+
+    @classmethod
+    def _needs_svg_zorder_plane(cls, scene: ScenePackage) -> bool:
+        """Match the browser's one-plane rule for small mixed SVG/GL scenes."""
+        gl_layers = [
+            layer for layer in scene.layers if cls._is_scattergl_candidate(layer)
+        ]
+        if not gl_layers:
+            return False
+        has_svg_geometry = any(
+            layer.kind in {SceneKind.SCATTER, SceneKind.LINE, SceneKind.POLYGON}
+            and not cls._is_scattergl_candidate(layer)
+            for layer in scene.layers
+        )
+        largest_gl_layer = max(layer.data.row_count for layer in gl_layers)
+        return has_svg_geometry and largest_gl_layer <= _MAX_SVG_ZORDER_POINTS
 
     @staticmethod
     def _requires_svg_trace_plane(scene: ScenePackage) -> bool:
@@ -520,28 +552,43 @@ class _PlotlyRenderContext:
         use_webgl = not self._force_svg_trace_plane and (
             layer.group_id == "stars" or layer.data.row_count > 1000
         )
-        trace_type = go.Scattergl if use_webgl else go.Scatter
         hover_text = self._hover_text(layer)
         customdata = self._customdata(layer)
-        plotly_size = np.asarray(
-            layer.data["size"] * np.float32(_KALEIDO_MARKER_SCALE),
-            dtype=np.float32,
-        )
-        marker_size = np.maximum(
-            plotly_size,
-            _SCATTERGL_MIN_MARKER_DIAMETER if use_webgl else _PLOTLY_MIN_MARKER_DIAMETER,
-        ).astype(np.float32, copy=False)
-        if use_webgl:
-            coverage = np.minimum(
-                np.float32(1.0),
-                plotly_size * plotly_size * _SCATTERGL_SUBPIXEL_COVERAGE_SCALE,
+        plotly_size = np.asarray(layer.data["size"], dtype=np.float32)
+        if _KALEIDO_MARKER_SCALE != 1.0:
+            plotly_size = np.multiply(
+                plotly_size,
+                np.float32(_KALEIDO_MARKER_SCALE),
+                dtype=np.float32,
             )
+        if use_webgl:
+            coverage = np.multiply(
+                plotly_size,
+                plotly_size,
+                dtype=np.float32,
+            )
+            coverage *= _SCATTERGL_SUBPIXEL_COVERAGE_SCALE
+            np.minimum(np.float32(1.0), coverage, out=coverage)
             marker_opacity = np.asarray(
                 layer.data["opacity"] * coverage,
                 dtype=np.float32,
             )
+            # Opacity has consumed the subpixel coverage values, so the same
+            # dense work buffer can hold Plotly's minimum marker diameters.
+            # Avoid retaining another row-sized array while Figure validates
+            # and copies the trace.
+            np.maximum(
+                plotly_size,
+                _SCATTERGL_MIN_MARKER_DIAMETER,
+                out=coverage,
+            )
+            marker_size = coverage
         else:
             marker_opacity = layer.data["opacity"]
+            marker_size = np.maximum(
+                plotly_size,
+                _PLOTLY_MIN_MARKER_DIAMETER,
+            ).astype(np.float32, copy=False)
         if use_webgl:
             edge_width = 0.0
         else:
@@ -561,21 +608,24 @@ class _PlotlyRenderContext:
         trace_kwargs = {}
         if not use_webgl:
             trace_kwargs.update(self._svg_zorder(layer))
-        self.fig.add_trace(
-            trace_type(
-                x=self._coordinate(layer, "x"),
-                y=self._coordinate(layer, "y"),
-                mode="markers",
-                marker=marker,
-                text=hover_text,
-                customdata=customdata,
-                hoverinfo="text" if hover_text is not None else "skip",
-                name=name,
-                legendgroup=layer.group_id,
-                showlegend=showlegend,
-                **trace_kwargs,
-            )
+        trace = dict(
+            x=self._coordinate(layer, "x"),
+            y=self._coordinate(layer, "y"),
+            mode="markers",
+            marker=marker,
+            text=hover_text,
+            customdata=customdata,
+            hoverinfo="text" if hover_text is not None else "skip",
+            name=name,
+            legendgroup=layer.group_id,
+            showlegend=showlegend,
+            **trace_kwargs,
         )
+        if use_webgl:
+            trace["type"] = "scattergl"
+            self.fig.add_trace(trace)
+        else:
+            self.fig.add_trace(go.Scatter(**trace))
         self._record_group(layer)
 
     def _hover_text(self, layer: SceneLayer):
@@ -660,8 +710,9 @@ class _PlotlyRenderContext:
             dash=dash,
         )
 
-    @staticmethod
-    def _svg_zorder(layer: SceneLayer) -> dict[str, int]:
+    def _svg_zorder(self, layer: SceneLayer) -> dict[str, int]:
+        if self._svg_zorders is not None:
+            return {"zorder": self._svg_zorders[layer.id]}
         value = int(layer.zorder)
         return {"zorder": value} if value else {}
 
@@ -767,6 +818,7 @@ class _PlotlyRenderContext:
         fill_color: str,
         edge_color: str,
         edge_width: float,
+        edge_dash: str,
     ) -> None:
         fill_x: list[float] = []
         fill_y: list[float] = []
@@ -817,6 +869,9 @@ class _PlotlyRenderContext:
             showlegend=False,
             **self._svg_zorder(layer),
         )
+        outline_line = dict(color=edge_color, width=max(0, edge_width))
+        if edge_dash != "solid":
+            outline_line["dash"] = edge_dash
         if fill_x:
             self.fig.add_trace(
                 go.Scatter(
@@ -833,7 +888,7 @@ class _PlotlyRenderContext:
                 go.Scatter(
                     x=np.asarray(outline_x, dtype=np.float64),
                     y=np.asarray(outline_y, dtype=np.float64),
-                    line=dict(color=edge_color, width=max(0, edge_width)),
+                    line=outline_line,
                     **common,
                 )
             )
@@ -850,6 +905,10 @@ class _PlotlyRenderContext:
         edge_width = (
             layer.style.get("edge_width", 0) or 0
         ) * self._stroke_pixel_scale()
+        edge_dash = self._line_style(layer)["dash"]
+        edge_line = dict(color=edge_color, width=edge_width)
+        if edge_dash != "solid":
+            edge_line["dash"] = edge_dash
         xref, yref = self._coordinate_refs(layer)
         use_shapes = (xref, yref) != ("x", "y")
 
@@ -873,6 +932,7 @@ class _PlotlyRenderContext:
                 fill_color=fill_color,
                 edge_color=edge_color,
                 edge_width=edge_width,
+                edge_dash=edge_dash,
             )
             return
 
@@ -903,7 +963,7 @@ class _PlotlyRenderContext:
                     yref=shape_yref,
                     fillcolor=fill_color if has_fill else "rgba(0,0,0,0)",
                     fillrule="evenodd",
-                    line=dict(color=edge_color, width=edge_width),
+                    line=edge_line,
                     opacity=layer.style.get("alpha", 1.0),
                 )
             else:
@@ -917,7 +977,7 @@ class _PlotlyRenderContext:
                         mode="lines",
                         fill="toself" if has_fill else None,
                         fillcolor=fill_color,
-                        line=dict(color=edge_color, width=max(0, edge_width)),
+                        line={**edge_line, "width": max(0, edge_width)},
                         opacity=layer.style.get("alpha", 1.0),
                         hoverinfo="none",
                         legendgroup=layer.group_id,

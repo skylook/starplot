@@ -83,7 +83,13 @@ class _InteractiveMixin:
                 )
         if include_plotlyjs is not None:
             if isinstance(include_plotlyjs, bool):
-                legacy_library_mode = "inline" if include_plotlyjs else "cdn"
+                if not include_plotlyjs:
+                    raise ValueError(
+                        "include_plotlyjs=False cannot be represented by the Scene "
+                        "exporter because it has no no-library mode; choose "
+                        "library_mode='cdn', 'directory', or 'inline'"
+                    )
+                legacy_library_mode = "inline"
             elif include_plotlyjs in {"cdn", "directory", "inline"}:
                 legacy_library_mode = include_plotlyjs
             else:

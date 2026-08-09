@@ -3,9 +3,21 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 pytest.importorskip("starplot")
+from starplot.interactive.scene import (
+    ColumnarData,
+    CoordinateEncoding,
+    CoordinateEncodingKind,
+    CoordinateSpace,
+    InteractionPolicy,
+    SceneKind,
+    SceneLayer,
+    ScenePackage,
+)
+from starplot.interactive.web_export import export_scene_html
 import tools.visual_parity.gen_comparison as gen
 import tools.visual_parity._example_runner as runner
 
@@ -50,6 +62,53 @@ def test_find_new_png_rejects_no_output(tmp_path):
     before = frozenset()
     with pytest.raises(RuntimeError, match="no PNG was produced"):
         gen._find_new_png(tmp_path, before)
+
+
+def test_read_inline_export_decodes_base64_canonical_manifest(tmp_path):
+    layer = SceneLayer(
+        id="x</script><script>globalThis.pwn=1</script><script>",
+        kind=SceneKind.SCATTER,
+        zorder=1,
+        load_priority=1,
+        space=CoordinateSpace.DATA,
+        clip_id=None,
+        style={"marker": {"symbol": "circle"}, "palette_id": "stars"},
+        palette=("#ffffff",),
+        interaction=InteractionPolicy.HOVER,
+        hover_fields=(),
+        coordinate_encoding={
+            "x": CoordinateEncoding(CoordinateEncodingKind.ABSOLUTE_F64),
+            "y": CoordinateEncoding(CoordinateEncodingKind.ABSOLUTE_F64),
+        },
+        data=ColumnarData.from_mapping(
+            {
+                "x": np.array([1.0]),
+                "y": np.array([2.0]),
+                "size": np.array([3.0], dtype=np.float32),
+                "color_index": np.array([0], dtype=np.uint8),
+                "opacity": np.array([1.0], dtype=np.float32),
+            }
+        ),
+    )
+    scene = ScenePackage(
+        layers=(layer,),
+        projection_info={},
+        style_info={},
+        viewport={"reference_width": 100, "reference_height": 100},
+        clips={},
+        palettes={"stars": ("#ffffff",)},
+    )
+    exported = export_scene_html(
+        scene,
+        tmp_path / "chart.html",
+        data_mode="inline",
+        library_mode="cdn",
+    )
+
+    manifest_bytes, layer_bytes = gen._read_inline_export(exported.html_path)
+
+    assert manifest_bytes == exported.manifest_bytes
+    assert layer_bytes == exported.layer_bytes
 
 
 def test_comparison_runner_passes_relative_output_paths_to_safe_export(monkeypatch, tmp_path):

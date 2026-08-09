@@ -404,10 +404,7 @@
     if (!global.crypto || !global.crypto.subtle) {
       throw new Error("Web Crypto SHA-256 is required to validate Scene data");
     }
-    const digest = await global.crypto.subtle.digest(
-      "SHA-256",
-      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
-    );
+    const digest = await global.crypto.subtle.digest("SHA-256", bytes);
     return "sha256:" + Array.from(new Uint8Array(digest), (value) =>
       value.toString(16).padStart(2, "0")).join("");
   }

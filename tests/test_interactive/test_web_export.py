@@ -6,6 +6,7 @@ import base64
 from dataclasses import replace
 import json
 import re
+import subprocess
 
 import numpy as np
 import pytest
@@ -24,6 +25,60 @@ from starplot.interactive import (
 from starplot.interactive.commands import CoordinateSpace
 from starplot.interactive.scene import CoordinateEncoding, CoordinateEncodingKind
 import starplot.interactive.web_export as web_export
+
+
+def _load_generated_inline_html_with_javascript(html: str) -> None:
+    scripts = list(
+        re.finditer(r"<script\b(?P<attrs>[^>]*)>(?P<content>.*?)</script>", html, re.S | re.I)
+    )
+    elements = {}
+    for match in scripts:
+        element_id = re.search(r'\bid="([^"]+)"', match["attrs"])
+        if element_id:
+            elements[element_id.group(1)] = match["content"]
+    bootstrap = next(
+        match["content"]
+        for match in scripts
+        if "window.__starplotRenderPromise" in match["content"]
+    )
+    loader = web_export._ASSETS / "starplot-scene-loader.js"
+    script = """
+const fs = require("node:fs");
+const vm = require("node:vm");
+const { webcrypto } = require("node:crypto");
+const input = JSON.parse(fs.readFileSync(0, "utf8"));
+const elements = Object.fromEntries(Object.entries(input.elements).map(
+  ([id, textContent]) => [id, { textContent }],
+));
+const document = {
+  body: { dataset: {} },
+  getElementById(id) { return elements[id] || {}; },
+};
+const atob = (value) => Buffer.from(value, "base64").toString("binary");
+const window = { crypto: webcrypto, document, atob };
+window.window = window;
+window.globalThis = window;
+const context = vm.createContext({
+  window, globalThis: window, document, crypto: webcrypto, TextEncoder, TextDecoder,
+  URL, URLSearchParams, Uint8Array, setTimeout, clearTimeout, console,
+  atob,
+});
+vm.runInContext(fs.readFileSync(input.loader, "utf8"), context);
+context.StarplotScene = window.StarplotScene;
+window.StarplotScene.renderScene = async (_element, source) => source.loadManifest();
+(async () => {
+  vm.runInContext(input.bootstrap, context);
+  await window.__starplotRenderPromise;
+  if (document.body.dataset.starplotRendered !== "true") process.exitCode = 1;
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    subprocess.run(
+        ["node", "-e", script],
+        input=json.dumps({"loader": str(loader), "elements": elements, "bootstrap": bootstrap}),
+        text=True,
+        check=True,
+        capture_output=True,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -109,17 +164,14 @@ def test_inline_embeds_exact_arrow_payload(tmp_path):
     assert 'application/vnd.apache.arrow.stream' in html
 
 
-def test_inline_bootstrap_reads_canonical_manifest_text_directly(tmp_path):
+def test_inline_bootstrap_loads_exact_canonical_manifest_text(tmp_path):
+    layer_id = "x</script><script>globalThis.pwn=1</script><script>"
     result = export_scene_html(
-        _scene(), "chart.html", data_mode="inline", library_mode="cdn"
+        _scene(layer_id), "chart.html", data_mode="inline", library_mode="cdn"
     )
     html = result.html_path.read_text(encoding="utf-8")
 
-    assert (
-        "const manifestJson=document.getElementById('starplot-manifest').textContent;"
-        in html
-    )
-    assert '.textContent.split("<"+String.fromCharCode(92)+"/")' not in html
+    _load_generated_inline_html_with_javascript(html)
 
 
 def test_inline_payload_indexes_follow_manifest_order_not_opaque_layer_id_order(tmp_path):
@@ -429,7 +481,7 @@ def test_directory_library_mode_requires_external_data_mode(tmp_path, monkeypatc
         )
 
 
-def test_inline_payload_escapes_less_than_sign_to_prevent_script_breakout(tmp_path, monkeypatch):
+def test_inline_payload_encodes_less_than_sign_to_prevent_script_breakout(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     malicious_id = 'x</script><script>alert(1)</script>'
     result = export_scene_html(
@@ -439,7 +491,6 @@ def test_inline_payload_escapes_less_than_sign_to_prevent_script_breakout(tmp_pa
     # The malicious payload must not appear as an executable script tag.
     assert "<script>alert(1)</script>" not in html
     assert "</script><script>alert(1)</script>" not in html
-    # The payload text is safely escaped inside the JSON and still present
-    # so the assertion above proves it cannot break out of the script block.
-    assert "alert(1)" in html
-    assert r"\u003c" in html
+    match = re.search(r'id="starplot-manifest"[^>]*>([^<]+)</script>', html)
+    assert match is not None
+    assert base64.b64decode(match.group(1)) == result.manifest_bytes

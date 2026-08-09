@@ -529,14 +529,16 @@ class SceneCompiler:
         clip = _command_clip(command, context)
         if clip is not None:
             mask = scatter_clip_mask(x, y, clip)
-            x, y, sizes, colors, alphas = (
-                values[mask] for values in (x, y, sizes, colors, alphas)
-            )
+            # Encode the high-cardinality string column before copying the
+            # numeric columns.  Keeping every masked copy alive during
+            # ``np.unique`` needlessly raises peak memory for dense scenes.
+            palette = encode_palette(colors[mask], alphas[mask])
+            x, y, sizes = (values[mask] for values in (x, y, sizes))
             if metadata:
                 metadata = tuple(item for item, keep in zip(metadata, mask) if keep)
             row_count = int(np.count_nonzero(mask))
-
-        palette = encode_palette(colors, alphas)
+        else:
+            palette = encode_palette(colors, alphas)
         source_width = context.style_info.get(
             "source_axes_width",
             context.projection_info.get("axes_pixels", (None,))[0]

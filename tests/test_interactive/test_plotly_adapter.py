@@ -439,6 +439,66 @@ def test_scatter_trace_keeps_plotly6_typed_arrays():
     assert encoded["marker"]["opacity"]["dtype"] == "f4"
 
 
+def test_dense_scatter_avoids_a_standalone_scattergl_array_copy(monkeypatch):
+    import starplot.interactive.plotly_adapter as adapter_module
+
+    count = 1001
+    command = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": np.linspace(0, 1, count),
+            "y": np.linspace(1, 0, count),
+            "sizes": np.ones(count),
+            "colors": np.full(count, "#ffffff"),
+            "alphas": np.ones(count),
+        },
+        clip_id=None,
+    )
+
+    def reject_standalone_trace(*args, **kwargs):
+        raise AssertionError("dense arrays must be copied directly into the Figure")
+
+    monkeypatch.setattr(adapter_module.go, "Scattergl", reject_standalone_trace)
+
+    figure = adapter_module.PlotlySceneAdapter().render(_compile(command))
+
+    assert figure.data[0].type == "scattergl"
+
+
+def test_dense_scatter_reuses_work_buffer_for_minimum_marker_size(monkeypatch):
+    import starplot.interactive.plotly_adapter as adapter_module
+
+    count = 1001
+    command = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": np.linspace(0, 1, count),
+            "y": np.linspace(1, 0, count),
+            "sizes": np.linspace(0.1, 2.0, count),
+            "colors": np.full(count, "#ffffff"),
+            "alphas": np.ones(count),
+        },
+        clip_id=None,
+    )
+    scene = _compile(command)
+    original_maximum = np.maximum
+    output_buffers = []
+
+    def track_maximum(*args, **kwargs):
+        output_buffers.append(kwargs.get("out"))
+        return original_maximum(*args, **kwargs)
+
+    monkeypatch.setattr(adapter_module.np, "maximum", track_maximum)
+
+    figure = adapter_module.PlotlySceneAdapter().render(scene)
+
+    assert figure.data[0].type == "scattergl"
+    assert any(
+        buffer is not None and np.asarray(buffer).shape == (count,)
+        for buffer in output_buffers
+    )
+
+
 def test_adapter_never_builds_per_point_css_colors():
     from starplot.interactive.plotly_adapter import PlotlySceneAdapter
 
@@ -855,9 +915,7 @@ def test_polygon_holes_and_scattergl_candidates_share_one_ordered_trace_plane(
     star_trace = next(trace for trace in figure.data if trace.legendgroup == "stars")
     line_trace = next(trace for trace in figure.data if trace.legendgroup == "gl-lines")
     hole_traces = [trace for trace in figure.data if trace.legendgroup == "hole"]
-    assert star_trace.zorder == 2
-    assert line_trace.zorder == 8
-    assert {trace.zorder for trace in hole_traces} == {hole_zorder}
+    assert len({trace.zorder for trace in hole_traces}) == 1
     if hole_zorder < 2:
         assert hole_traces[0].zorder < star_trace.zorder < line_trace.zorder
     elif hole_zorder < 8:
@@ -866,7 +924,7 @@ def test_polygon_holes_and_scattergl_candidates_share_one_ordered_trace_plane(
         assert star_trace.zorder < line_trace.zorder < hole_traces[0].zorder
 
 
-def test_independent_single_ring_polygons_do_not_disable_scattergl():
+def test_independent_single_ring_polygons_trigger_small_mixed_svg_plane():
     from starplot.interactive.plotly_adapter import PlotlySceneAdapter
 
     polygons = DrawingCommand(
@@ -892,6 +950,95 @@ def test_independent_single_ring_polygons_do_not_disable_scattergl():
     )
     scene = SceneCompiler().compile(
         [polygons, stars], PROJECTION, STYLE, 500, 500, False
+    )
+
+    figure = PlotlySceneAdapter().render(scene)
+
+    star_trace = next(trace for trace in figure.data if trace.legendgroup == "stars")
+    assert star_trace.type == "scatter"
+
+
+def test_horizon_optic_fov_and_small_stars_share_one_svg_zorder_plane():
+    """Keep the double-cluster FOV and target visible around a small star field."""
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    optic_fov = DrawingCommand(
+        kind="polygon",
+        data={
+            "points": [(-1.5, -1.5), (1.5, -1.5), (1.5, 1.5), (-1.5, 1.5)]
+        },
+        style={
+            "fill_color": "none",
+            "edge_color": "#ff0000",
+            "edge_width": 3,
+            "line_style": "dashed",
+        },
+        zorder=-1000,
+        gid="optic-fov",
+        clip_id=None,
+    )
+    stars = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": [-0.5, 0.5],
+            "y": [-0.5, 0.5],
+            "sizes": [4.0, 4.0],
+            "colors": ["#ffffff", "#ffffff"],
+            "alphas": [1.0, 1.0],
+        },
+        zorder=-500,
+        gid="stars",
+        clip_id=None,
+    )
+    target = DrawingCommand(
+        kind="line",
+        data={"x": [-0.25, 0.25], "y": [0.0, 0.0]},
+        style={"color": "#ff0019", "width": 2},
+        zorder=0,
+        gid="target",
+        clip_id="plot",
+    )
+    scene = SceneCompiler().compile(
+        [target, stars, optic_fov], PROJECTION, STYLE, 500, 500, False
+    )
+
+    figure = PlotlySceneAdapter().render(scene)
+
+    traces = {trace.legendgroup: trace for trace in figure.data}
+    assert {trace.type for trace in traces.values()} == {"scatter"}
+    assert traces["optic-fov"].zorder < traces["stars"].zorder
+    assert traces["stars"].zorder < traces["target"].zorder
+    assert traces["optic-fov"].line.dash == "dash"
+    assert min(trace.zorder for trace in traces.values()) == 0
+
+
+def test_dense_stars_keep_webgl_when_svg_geometry_is_present():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    point_count = 100_001
+    stars = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": np.linspace(-1.0, 1.0, point_count),
+            "y": np.linspace(1.0, -1.0, point_count),
+            "sizes": np.full(point_count, 1.0),
+            "colors": np.full(point_count, "#ffffff"),
+            "alphas": np.ones(point_count),
+        },
+        zorder=2,
+        gid="stars",
+        clip_id=None,
+    )
+    fov = DrawingCommand(
+        kind="polygon",
+        data={"points": [(-1, -1), (1, -1), (1, 1), (-1, 1)]},
+        style={"fill_color": "none", "edge_color": "#ff0000"},
+        zorder=1,
+        gid="optic-fov",
+        clip_id=None,
+    )
+    scene = SceneCompiler().compile(
+        [stars, fov], PROJECTION, STYLE, 500, 500, False
     )
 
     figure = PlotlySceneAdapter().render(scene)

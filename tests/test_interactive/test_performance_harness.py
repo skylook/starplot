@@ -63,11 +63,32 @@ def complete_plot_type_coverage():
 
 def complete_result():
     summary = {"median_seconds": 1.0, "p95_seconds": 1.2}
+    scene_hash = f"sha256:{'a' * 64}"
     return {
-        "browser": {"complete_render_median_ms": 100.0},
+        "arrow_payload_bytes": 100,
+        "artifact_role": "candidate",
+        "browser": {
+            "arrow_payload_bytes": 100,
+            "complete_render_median_ms": 100.0,
+            "complete_render_p95_ms": 120.0,
+            "completion_signal": "render promise plus final paint",
+            "engine": "chromium",
+            "engine_version": "150.0",
+            "legacy_same_scene": {
+                "complete_render_median_ms": 90.0,
+                "complete_render_p95_ms": 110.0,
+                "scene_hash": scene_hash,
+                "source_kind": "direct-plotly-same-scene-http",
+            },
+            "scene_hash": scene_hash,
+            "source_kind": "external-arrow-http",
+            "status": "measured",
+        },
         "environment": ENVIRONMENT,
+        "external_html_bytes": 100,
         "legacy_renderer_preparation": summary,
         "legacy_renderer_total": summary,
+        "ordinary_chart": {**summary, "point_count": 10},
         "payload_bytes": 1000,
         "peak_rss_mb": 10.0,
         "plot_type_coverage": complete_plot_type_coverage(),
@@ -77,6 +98,26 @@ def complete_result():
             **summary,
             "semantics": "compatibility alias for legacy_renderer_total",
         },
+        "schema_version": benchmark.BENCHMARK_SCHEMA_VERSION,
+        "viewport_warm": {"median_ms": 10.0, "p95_ms": 12.0},
+    }
+
+
+def complete_legacy_baseline():
+    summary = {"median_seconds": 1.0, "p95_seconds": 1.2}
+    return {
+        "artifact_role": "legacy_baseline",
+        "browser": {
+            "reason": "candidate uses a paired same-scene browser fixture",
+            "source_kind": "legacy-renderer-revision",
+            "status": "not_applicable",
+        },
+        "environment": ENVIRONMENT,
+        "ordinary_chart": {**summary, "point_count": 10},
+        "peak_rss_mb": 10.0,
+        "point_count": 100,
+        "scene_compile": summary,
+        "schema_version": benchmark.BENCHMARK_SCHEMA_VERSION,
     }
 
 
@@ -108,6 +149,19 @@ def test_public_benchmark_result_schema_is_the_brief_six_key_contract():
 
 def test_strict_artifact_schema_accepts_complete_result():
     benchmark.validate_benchmark_artifact(complete_result())
+
+
+@pytest.mark.parametrize("key", ["artifact_role", "schema_version"])
+def test_strict_artifact_schema_requires_explicit_role_and_version(key):
+    result = complete_result()
+    del result[key]
+
+    with pytest.raises(ValueError, match=key):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_strict_artifact_schema_accepts_minimal_legacy_baseline_without_coverage():
+    benchmark.validate_benchmark_artifact(complete_legacy_baseline())
 
 
 def test_benchmark_result_schema_rejects_missing_environment_versions():
@@ -142,6 +196,95 @@ def test_strict_artifact_schema_rejects_missing_plot_type_browser_evidence():
         benchmark.validate_benchmark_artifact(result)
 
 
+@pytest.mark.parametrize(
+    ("path", "match"),
+    [
+        (("status",), "status"),
+        (("source_kind",), "source_kind"),
+        (("completion_signal",), "completion_signal"),
+        (("engine",), "engine"),
+        (("engine_version",), "engine_version"),
+        (("scene_hash",), "scene_hash"),
+        (("arrow_payload_bytes",), "arrow_payload_bytes"),
+        (("complete_render_median_ms",), "complete_render_median_ms"),
+        (("complete_render_p95_ms",), "complete_render_p95_ms"),
+        (("legacy_same_scene",), "legacy_same_scene"),
+        (
+            ("legacy_same_scene", "source_kind"),
+            "legacy_same_scene.source_kind",
+        ),
+        (("legacy_same_scene", "scene_hash"), "legacy_same_scene.scene_hash"),
+        (
+            ("legacy_same_scene", "complete_render_median_ms"),
+            "legacy_same_scene.complete_render_median_ms",
+        ),
+        (
+            ("legacy_same_scene", "complete_render_p95_ms"),
+            "legacy_same_scene.complete_render_p95_ms",
+        ),
+    ],
+)
+def test_strict_artifact_schema_rejects_incomplete_measured_primary_browser(
+    path, match
+):
+    result = complete_result()
+    target = result["browser"]
+    for key in path[:-1]:
+        target = target[key]
+    del target[path[-1]]
+
+    with pytest.raises(ValueError, match=match):
+        benchmark.validate_benchmark_artifact(result)
+
+
+@pytest.mark.parametrize("status", ["playwright_not_installed", "measurement_failed"])
+def test_strict_artifact_schema_accepts_structured_unmeasured_primary_browser(status):
+    result = complete_result()
+    result["browser"] = {
+        "complete_render_median_ms": None,
+        "complete_render_p95_ms": None,
+        "source_kind": "external-arrow-http",
+        "status": status,
+    }
+    if status == "measurement_failed":
+        result["browser"]["error"] = "RuntimeError: browser unavailable"
+
+    benchmark.validate_benchmark_artifact(result)
+
+
+def test_strict_artifact_schema_rejects_nonpositive_primary_arrow_payload():
+    result = complete_result()
+    result["browser"]["arrow_payload_bytes"] = 0
+
+    with pytest.raises(ValueError, match="arrow_payload_bytes"):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_strict_artifact_schema_rejects_nonfinite_primary_browser_timing():
+    result = complete_result()
+    result["browser"]["complete_render_p95_ms"] = float("nan")
+
+    with pytest.raises(ValueError, match="complete_render_p95_ms"):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_strict_artifact_schema_rejects_malformed_primary_scene_hash():
+    result = complete_result()
+    result["browser"]["scene_hash"] = "sha256:short"
+    result["browser"]["legacy_same_scene"]["scene_hash"] = "sha256:short"
+
+    with pytest.raises(ValueError, match="scene_hash"):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_strict_artifact_schema_rejects_different_paired_scene_hash():
+    result = complete_result()
+    result["browser"]["legacy_same_scene"]["scene_hash"] = f"sha256:{'b' * 64}"
+
+    with pytest.raises(ValueError, match="legacy_same_scene.scene_hash"):
+        benchmark.validate_benchmark_artifact(result)
+
+
 def test_benchmark_summary_reports_median_and_p95():
     assert benchmark.summarize([1.0, 2.0, 3.0, 4.0]) == {
         "median_seconds": 2.5,
@@ -150,22 +293,16 @@ def test_benchmark_summary_reports_median_and_p95():
 
 
 def test_compare_results_reports_every_missed_performance_gate():
-    before = complete_result()
-    after = {
-        **complete_result(),
-        "environment": ENVIRONMENT,
-        "scene_compile": {"median_seconds": 0.75, "p95_seconds": 0.8},
-        "peak_rss_mb": 7.0,
-        "arrow_payload_bytes": 31 * 1024 * 1024,
-        "external_html_bytes": 2 * 1024 * 1024,
-        "browser": {
-            "complete_render_median_ms": 120.0,
-            "complete_render_p95_ms": 5001.0,
-        },
-        "ordinary_chart": {"median_seconds": 1.2},
-        "viewport_warm": {"median_ms": 501.0, "p95_ms": 1001.0},
-    }
-    before["ordinary_chart"] = {"median_seconds": 1.0}
+    before = complete_legacy_baseline()
+    after = complete_result()
+    after["scene_compile"] = {"median_seconds": 0.75, "p95_seconds": 0.8}
+    after["peak_rss_mb"] = 7.0
+    after["arrow_payload_bytes"] = 31 * 1024 * 1024
+    after["external_html_bytes"] = 2 * 1024 * 1024
+    after["browser"]["complete_render_median_ms"] = 120.0
+    after["browser"]["complete_render_p95_ms"] = 5001.0
+    after["ordinary_chart"]["median_seconds"] = 1.2
+    after["viewport_warm"] = {"median_ms": 501.0, "p95_ms": 1001.0}
 
     failures = benchmark.compare_results(before, after)
 
@@ -181,15 +318,74 @@ def test_compare_results_reports_every_missed_performance_gate():
     assert any("viewport_warm_p95" in failure for failure in failures)
 
 
+def test_compare_results_rejects_point_count_mismatch_before_gate_evaluation():
+    before = complete_legacy_baseline()
+    after = complete_result()
+    after["point_count"] = before["point_count"] + 1
+    after["scene_compile"]["median_seconds"] = 100.0
+
+    failures = benchmark.compare_results(before, after)
+
+    assert failures == [
+        "point_count differs; benchmark workloads are not comparable (100 != 101)"
+    ]
+
+
+def test_compare_results_rejects_ordinary_workload_mismatch_before_gates():
+    before = complete_legacy_baseline()
+    after = complete_result()
+    after["ordinary_chart"]["point_count"] = 11
+
+    assert benchmark.compare_results(before, after) == [
+        "ordinary_chart.point_count differs; benchmark workloads are not "
+        "comparable (10 != 11)"
+    ]
+
+
+def test_compare_results_rejects_wrong_artifact_roles_before_gate_evaluation():
+    before = complete_result()
+    after = complete_result()
+
+    assert benchmark.compare_results(before, after) == [
+        "artifact roles are not comparable; expected legacy_baseline -> candidate "
+        "but got candidate -> candidate"
+    ]
+
+
+def test_compare_results_rejects_environment_mismatch_before_gate_evaluation():
+    before = complete_legacy_baseline()
+    after = complete_result()
+    after["environment"] = {**ENVIRONMENT, "python": "3.14.0"}
+
+    assert benchmark.compare_results(before, after) == [
+        "environment.python differs; benchmark workloads are not comparable "
+        "('3.13.2' != '3.14.0')"
+    ]
+
+
 def test_browser_gates_separate_transport_overhead_from_absolute_product_budget():
     assert benchmark.PERFORMANCE_GATES["browser_complete_render_ratio_max"] == 1.10
     assert benchmark.PERFORMANCE_GATES["browser_complete_render_p95_ms_max"] == 5000
 
 
-def test_compare_results_rejects_unmeasured_metrics_and_host_mismatch():
-    before = complete_result()
+def test_compare_results_rejects_host_mismatch_before_gate_evaluation():
+    before = complete_legacy_baseline()
     after = complete_result()
     after["environment"] = {**ENVIRONMENT, "host_fingerprint": "other-host"}
+
+    assert benchmark.compare_results(before, after) == [
+        "environment.host_fingerprint differs; benchmark workloads are not "
+        "comparable ('0123456789abcdef' != 'other-host')"
+    ]
+
+
+def test_compare_results_rejects_unmeasured_metrics():
+    before = complete_legacy_baseline()
+    after = complete_result()
+    del after["arrow_payload_bytes"]
+    del after["external_html_bytes"]
+    after["ordinary_chart"]["median_seconds"] = None
+    del after["viewport_warm"]
     after["plot_type_coverage"]["browser"] = {
         "semantics": "external Arrow browser diagnostics",
         "source_kind": "external-arrow-http",
@@ -198,12 +394,44 @@ def test_compare_results_rejects_unmeasured_metrics_and_host_mismatch():
 
     failures = benchmark.compare_results(before, after)
 
-    assert any("host_fingerprint" in failure for failure in failures)
     assert any("arrow_payload_bytes is missing" in failure for failure in failures)
     assert any("external_html_bytes is missing" in failure for failure in failures)
-    assert any("ordinary_chart baseline is missing" in failure for failure in failures)
+    assert any("ordinary_chart result is missing" in failure for failure in failures)
     assert any("viewport_warm_median is missing" in failure for failure in failures)
-    assert any("browser diagnostics are not measured" in failure for failure in failures)
+    assert any(
+        "browser diagnostics are not measured" in failure for failure in failures
+    )
+
+
+def test_compare_results_fails_closed_for_unmeasured_primary_browser():
+    before = complete_legacy_baseline()
+    after = complete_result()
+    after["scene_compile"]["median_seconds"] = 0.4
+    after["peak_rss_mb"] = 5.0
+    after["browser"] = {
+        "complete_render_median_ms": None,
+        "complete_render_p95_ms": None,
+        "error": "RuntimeError: browser unavailable",
+        "source_kind": "external-arrow-http",
+        "status": "measurement_failed",
+    }
+
+    failures = benchmark.compare_results(before, after)
+
+    assert "browser primary measurement is not measured" in failures
+
+
+def test_cross_family_browser_timings_remain_diagnostic_only():
+    before = complete_legacy_baseline()
+    after = complete_result()
+    after["scene_compile"]["median_seconds"] = 0.4
+    after["peak_rss_mb"] = 5.0
+    after["browser"]["complete_render_median_ms"] = 90.0
+    for evidence in after["plot_type_coverage"]["browser"]["plot_types"].values():
+        evidence["complete_render_median_ms"] = 1_000_000.0
+        evidence["complete_render_p95_ms"] = 2_000_000.0
+
+    assert benchmark.compare_results(before, after) == []
 
 
 @pytest.mark.parametrize(
@@ -285,12 +513,9 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch):
 
     def run_browser(point_count, repeats, fixture_timeout_seconds):
         browser_calls.append((point_count, repeats, fixture_timeout_seconds))
-        return {
-            "complete_render_median_ms": None,
-            "engine": "chromium",
-            "engine_version": "test",
-            "status": "test",
-        }
+        browser_result = complete_result()["browser"]
+        browser_result["arrow_payload_bytes"] = 900
+        return browser_result
 
     monkeypatch.setattr(benchmark, "run_browser_benchmark", run_browser)
     plot_type_coverage = complete_plot_type_coverage()
@@ -325,6 +550,8 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch):
     assert browser_calls == [(10, 1, 2.0)]
     assert browser_diagnostic_calls == [1]
     assert result["scene_compile"]["median_seconds"] == 0.25
+    assert result["artifact_role"] == "candidate"
+    assert result["schema_version"] == benchmark.BENCHMARK_SCHEMA_VERSION
     assert result["legacy_renderer_total"]["median_seconds"] == 1.5
     assert result["legacy_renderer_preparation"]["median_seconds"] == 0.25
     assert result["plotly_construction"]["median_seconds"] == 1.25
@@ -336,6 +563,62 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch):
     output = stdout.getvalue()
     assert "Python warm-up: starting" in output
     assert "Python repeat 1/1: complete" in output
+
+
+def test_python_benchmark_measures_browser_before_cpu_intensive_samples(monkeypatch):
+    events = []
+    worker_result = {
+        "arrow_payload_bytes": 900,
+        "external_html_bytes": 100,
+        "legacy_renderer_preparation_seconds": 0.25,
+        "legacy_renderer_total_seconds": 1.5,
+        "payload_bytes": 1000,
+        "peak_rss_mb": 20.0,
+        "plotly_construction_seconds": 1.25,
+        "viewport_warm_ms": [1.0, 1.0],
+    }
+
+    def run_samples(point_count, repeats, timeout_seconds, *, label):
+        events.append(label)
+        return [worker_result]
+
+    def run_browser(*args, **kwargs):
+        events.append("browser")
+        result = complete_result()["browser"]
+        result["arrow_payload_bytes"] = 900
+        return result
+
+    def run_coverage():
+        events.append("coverage")
+        return complete_plot_type_coverage()
+
+    def run_browser_diagnostics(repeats):
+        events.append("browser diagnostics")
+        return complete_plot_type_coverage()["browser"]
+
+    monkeypatch.setattr(benchmark, "_run_python_samples", run_samples)
+    monkeypatch.setattr(benchmark, "run_browser_benchmark", run_browser)
+    monkeypatch.setattr(benchmark, "run_recorded_plot_type_coverage", run_coverage)
+    monkeypatch.setattr(
+        benchmark,
+        "run_recorded_plot_type_browser_diagnostics",
+        run_browser_diagnostics,
+    )
+
+    benchmark.run_python_benchmark(
+        point_count=10,
+        repeats=1,
+        repeat_timeout_seconds=2.0,
+        ordinary_points=5,
+    )
+
+    assert events == [
+        "browser",
+        "browser diagnostics",
+        "Python",
+        "Ordinary chart",
+        "coverage",
+    ]
 
 
 def test_recorded_plot_type_browser_diagnostics_measures_each_family(monkeypatch):
@@ -361,18 +644,30 @@ def test_recorded_plot_type_browser_diagnostics_measures_each_family(monkeypatch
         def close(self):
             self.closed = True
 
-    class Browser:
-        version = "test-browser"
-
+    class BrowserContext:
         def __init__(self):
             self.pages = []
             self.closed = False
 
-        def new_page(self, viewport):
-            assert viewport == {"width": 1000, "height": 500}
+        def new_page(self):
             page = Page()
             self.pages.append(page)
             return page
+
+        def close(self):
+            self.closed = True
+
+    class Browser:
+        version = "test-browser"
+
+        def __init__(self):
+            self.context = None
+            self.closed = False
+
+        def new_context(self, viewport):
+            assert viewport == {"width": 1000, "height": 500}
+            self.context = BrowserContext()
+            return self.context
 
         def close(self):
             self.closed = True
@@ -407,12 +702,95 @@ def test_recorded_plot_type_browser_diagnostics_measures_each_family(monkeypatch
     assert result["engine_version"] == "test-browser"
     assert set(result["plot_types"]) == {"map", "horizon", "zenith", "optic"}
     assert calls == {"map": 3, "horizon": 3, "zenith": 3, "optic": 3}
-    assert all(page.closed for page in browser.pages)
+    assert all(page.closed for page in browser.context.pages)
+    assert browser.context.closed
     assert browser.closed
     for name, evidence in result["plot_types"].items():
         assert evidence["complete_render_median_ms"] == 25.0
         assert evidence["complete_render_p95_ms"] == pytest.approx(29.5)
         assert evidence["scene_hash"] == f"sha256:{name}"
+
+
+def test_primary_browser_measures_each_source_as_an_isolated_series(monkeypatch):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def fixture(point_count, timeout_seconds):
+        assert point_count == 10
+        assert timeout_seconds == 12.0
+        yield {
+            "arrow_payload_bytes": 123,
+            "legacy_source_kind": "direct-plotly-same-scene-http",
+            "legacy_source_url": "http://127.0.0.1/legacy.html",
+            "scene_hash": f"sha256:{'a' * 64}",
+            "source_kind": "external-arrow-http",
+            "source_url": "http://127.0.0.1/scene.html",
+        }
+
+    class Page:
+        def close(self):
+            pass
+
+    contexts = []
+
+    class BrowserContext:
+        def __init__(self):
+            self.page_count = 0
+
+        def new_page(self):
+            self.page_count += 1
+            return Page()
+
+        def close(self):
+            pass
+
+    class Browser:
+        version = "test-browser"
+
+        def new_context(self, viewport):
+            assert viewport == {"width": 1000, "height": 500}
+            context = BrowserContext()
+            contexts.append(context)
+            return context
+
+        def close(self):
+            pass
+
+    class PlaywrightContext:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *args):
+            return False
+
+    fake_sync_api = SimpleNamespace(sync_playwright=lambda: PlaywrightContext())
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
+    monkeypatch.setattr(benchmark, "_external_browser_fixture", fixture)
+    monkeypatch.setattr(benchmark, "_launch_browser", lambda playwright: Browser())
+    measured_urls = []
+
+    def measure(page, url, timeout_ms):
+        measured_urls.append(url)
+        return float(len(measured_urls))
+
+    monkeypatch.setattr(benchmark, "_measure_browser_page", measure)
+
+    result = benchmark.run_browser_benchmark(
+        point_count=10,
+        repeats=2,
+        fixture_timeout_seconds=12.0,
+    )
+
+    assert measured_urls == [
+        "http://127.0.0.1/scene.html",
+        "http://127.0.0.1/scene.html",
+        "http://127.0.0.1/scene.html",
+        "http://127.0.0.1/legacy.html",
+        "http://127.0.0.1/legacy.html",
+        "http://127.0.0.1/legacy.html",
+    ]
+    assert [context.page_count for context in contexts] == [3, 3]
+    assert result["status"] == "measured"
 
 
 def test_python_repeat_timeout_is_fatal(monkeypatch):

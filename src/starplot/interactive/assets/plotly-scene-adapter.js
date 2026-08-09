@@ -381,74 +381,123 @@
   }
 
   function densePaletteScatterTraces(layer, table, scene, style, forceSvgTracePlane, strokeScale = 1, markerScale = 1) {
-    const trace = scatterTrace(layer, table, scene, style, forceSvgTracePlane, strokeScale, markerScale);
     const rowCount = Number(layer.row_count ?? table.numRows);
     const palette = paletteFor(style, scene);
     const transparent = String(style.fill || "").toLowerCase() === "none";
+    const useWebgl = traceTypeForLayer(
+      { ...layer, row_count: layer.row_count ?? table.numRows },
+      forceSvgTracePlane,
+    ) === "scattergl";
+    const hoverAllowed = layer.interactive
+      && rowCount <= MAX_INTERACTIVE_HOVER_POINTS;
+    const hasCustomdata = hoverAllowed
+      && layer.hover_fields && layer.hover_fields.length;
     // SVG layers need their literal trace ordering, and sparse/hoverable data
     // benefits more from one trace than from a palette split.
-    if (trace.type !== "scattergl" || transparent || trace.customdata
+    if (!useWebgl || transparent || hasCustomdata
         || rowCount < MIN_DENSE_PALETTE_BATCH_ROWS
         || table.numRows < MIN_DENSE_PALETTE_BATCH_ROWS || !palette.length
-        || palette.length > MAX_DENSE_PALETTE_BATCHES) return [trace];
+        || palette.length > MAX_DENSE_PALETTE_BATCHES) {
+      return [scatterTrace(
+        layer, table, scene, style, forceSvgTracePlane, strokeScale, markerScale,
+      )];
+    }
 
     const colorIndex = column(table, "color_index");
+    const size = column(table, "size");
     const counts = new Uint32Array(palette.length);
+    const maximumScaledSize = new Float64Array(palette.length);
     for (let index = 0; index < colorIndex.length; index += 1) {
-      const color = Number(colorIndex[index]);
-      if (!Number.isInteger(color) || color < 0 || color >= palette.length) return [trace];
+      const color = colorIndex[index];
+      if (color >= palette.length) {
+        return [scatterTrace(
+          layer, table, scene, style, forceSvgTracePlane, strokeScale, markerScale,
+        )];
+      }
       counts[color] += 1;
+      maximumScaledSize[color] = Math.max(
+        maximumScaledSize[color], size[index] * markerScale,
+      );
     }
     const active = [];
     for (let color = 0; color < counts.length; color += 1) if (counts[color]) active.push(color);
-    if (active.length < 2 || active.length > MAX_DENSE_PALETTE_BATCHES) return [trace];
+    if (active.length < 2 || active.length > MAX_DENSE_PALETTE_BATCHES) {
+      return [scatterTrace(
+        layer, table, scene, style, forceSvgTracePlane, strokeScale, markerScale,
+      )];
+    }
 
-    const x = trace.x;
-    const y = trace.y;
-    const markerSize = trace.marker.size;
-    const markerOpacity = trace.marker.opacity;
-    const markerSource = markerSourceByTrace.get(trace);
+    const x = column(table, "x");
+    const y = column(table, "y");
+    const opacity = column(table, "opacity");
+    const xEncoding = layer.coordinate_encoding && layer.coordinate_encoding.x;
+    const yEncoding = layer.coordinate_encoding && layer.coordinate_encoding.y;
+    const decodeX = xEncoding && xEncoding.kind !== "absolute-f64"
+      && (xEncoding.origin !== 0 || xEncoding.scale !== 1);
+    const decodeY = yEncoding && yEncoding.kind !== "absolute-f64"
+      && (yEncoding.origin !== 0 || yEncoding.scale !== 1);
+    const XArray = decodeX ? Float64Array : x.constructor;
+    const YArray = decodeY ? Float64Array : y.constructor;
     const offsets = new Uint32Array(counts.length);
-    const buckets = new Map(active.map((color) => {
+    const buckets = new Array(palette.length);
+    for (const color of active) {
       const length = counts[color];
-      return [color, {
-        x: new x.constructor(length), y: new y.constructor(length),
-        size: new markerSize.constructor(length), opacity: new markerOpacity.constructor(length),
-        sourceSize: markerSource ? new markerSource.size.constructor(length) : null,
-        sourceOpacity: markerSource ? new markerSource.opacity.constructor(length) : null,
-      }];
-    }));
+      buckets[color] = {
+        x: new XArray(length), y: new YArray(length),
+        // Plotly accepts a scalar marker diameter.  Preserve subpixel
+        // brightness in opacity, but avoid coercing and uploading a row-sized
+        // array when every clamped diameter in this color bucket is exactly 1.
+        size: maximumScaledSize[color] > 1 ? new Float32Array(length) : null,
+        opacity: new Float32Array(length),
+        sourceSize: new size.constructor(length),
+        sourceOpacity: new opacity.constructor(length),
+      };
+    }
     for (let index = 0; index < colorIndex.length; index += 1) {
       const color = colorIndex[index];
-      const bucket = buckets.get(color);
+      const bucket = buckets[color];
       const target = offsets[color];
-      bucket.x[target] = x[index]; bucket.y[target] = y[index];
-      bucket.size[target] = markerSize[index]; bucket.opacity[target] = markerOpacity[index];
-      if (markerSource) {
-        bucket.sourceSize[target] = markerSource.size[index];
-        bucket.sourceOpacity[target] = markerSource.opacity[index];
-      }
+      bucket.x[target] = decodeX
+        ? x[index] * xEncoding.scale + xEncoding.origin : x[index];
+      bucket.y[target] = decodeY
+        ? y[index] * yEncoding.scale + yEncoding.origin : y[index];
+      const scaled = size[index] * markerScale;
+      if (bucket.size) bucket.size[target] = Math.max(scaled, 1);
+      bucket.opacity[target] = opacity[index] * Math.min(1, 2.0 * scaled * scaled);
+      bucket.sourceSize[target] = size[index];
+      bucket.sourceOpacity[target] = opacity[index];
       offsets[color] += 1;
     }
+    const edgeWidth = Math.max(0, Number(style.edge_width || 0) * strokeScale);
+    const name = traceName(layer, style);
     return active.map((color, index) => {
-      const bucket = buckets.get(color);
+      const bucket = buckets[color];
       const marker = {
-        ...trace.marker,
-        color: palette[color], size: bucket.size, opacity: bucket.opacity,
+        color: palette[color],
+        size: bucket.size || 1,
+        opacity: bucket.opacity,
+        symbol: MARKER_SYMBOL[style.symbol || "circle"] || style.symbol || "circle",
+        line: {
+          color: plotlyColor(style.edge_color, "rgba(0,0,0,0)"),
+          width: 0,
+        },
       };
-      delete marker.colorscale; delete marker.cmin; delete marker.cmax; delete marker.showscale;
       const result = {
-        ...trace,
-        x: bucket.x, y: bucket.y, marker,
+        type: "scattergl",
+        x: bucket.x,
+        y: bucket.y,
+        mode: "markers",
+        marker,
+        hoverinfo: hoverAllowed ? "text" : "skip",
+        name,
+        legendgroup: layer.group_id,
         // A layer represents one legend item even when it is rendered by
         // several GPU batches.
-        showlegend: index === 0 && trace.showlegend,
+        showlegend: index === 0 && Boolean(name),
       };
-      if (markerSource) {
-        markerSourceByTrace.set(result, {
-          size: bucket.sourceSize, opacity: bucket.sourceOpacity, webgl: markerSource.webgl,
-        });
-      }
+      markerSourceByTrace.set(result, {
+        size: bucket.sourceSize, opacity: bucket.sourceOpacity, webgl: true,
+      });
       return result;
     });
   }
@@ -1142,12 +1191,23 @@
     const dpi = Number(scene.viewport.dpi || 100);
     const correctedFontPixelScale = (dpi / 72) * correctedWidthScale;
     state.correctedFontPixelScale = correctedFontPixelScale;
-    const traceList = slots.flatMap((layer) => traces.get(layer.id) || []);
+    const traceList = state.plotlyTraces
+      || slots.flatMap((layer) => traces.get(layer.id) || []);
     if (!state.scaleBaseline) {
       state.scaleBaseline = {
         annotations: (layout.annotations || []).map((annotation) => ({
           ...annotation, font: { ...(annotation.font || {}) },
         })),
+        lineWidths: traceList.map((trace) =>
+          trace.line && typeof trace.line.width === "number"
+            ? Number(trace.line.width)
+            : null),
+        polygonShapeWidths: (state.polygonShapeIndices || []).map((index) => {
+          const shape = layout.shapes[index];
+          return shape && shape.line && typeof shape.line.width === "number"
+            ? Number(shape.line.width)
+            : null;
+        }),
       };
     }
     if (state.appliedWidthScale === undefined) state.appliedWidthScale = metrics.widthScale;
@@ -1190,22 +1250,21 @@
       await Plotly.restyle(target, update, scatterIndices);
     }
     // Restyle line widths (line, polygon-as-trace)
-    const lineWidthIndices = traceList
-      .map((t, i) => (t.line && typeof t.line.width === "number" ? i : -1))
+    const lineWidthIndices = state.scaleBaseline.lineWidths
+      .map((width, index) => (width == null ? -1 : index))
       .filter((i) => i >= 0);
     if (lineWidthIndices.length) {
       const widthUpdate = lineWidthIndices.map((i) => {
-        const w = Number(traceList[i].line.width);
+        const w = state.scaleBaseline.lineWidths[i];
         return Math.max(0.25, w / metrics.strokePixelScale * correctedFontPixelScale);
       });
       await Plotly.restyle(target, { "line.width": widthUpdate }, lineWidthIndices);
     }
     // Relayout polygon shape line widths (polygon-as-shape path)
     if (state.polygonShapeIndices && state.polygonShapeIndices.length) {
-      const shapeWidthUpdate = state.polygonShapeIndices.map((idx) => {
-        const shape = layout.shapes[idx];
-        if (!shape || !shape.line) return undefined;
-        const w = Number(shape.line.width);
+      const shapeWidthUpdate = state.polygonShapeIndices.map((_idx, index) => {
+        const w = state.scaleBaseline.polygonShapeWidths[index];
+        if (w == null) return undefined;
         return Math.max(0.25, w / metrics.strokePixelScale * correctedFontPixelScale);
       });
       const relayoutUpdate = {};
@@ -1317,8 +1376,33 @@
     layout.shapes = [...layout.shapes, ...orderedEffects.flatMap((item) => item.shapes || [])];
     const marginBottom = Math.max(0, ...orderedEffects.map((item) => Number(item.marginBottom || 0)));
     if (marginBottom) layout.margin = { ...metrics.margin, b: Math.max(Number(metrics.margin.b || 10), marginBottom) };
-    await Plotly.react(target, slots.flatMap((layer) =>
-      traces.get(layer.id) || [placeholder(layer, forceSvgTracePlane)]), layout,
+    const plotlyTraces = slots.flatMap((layer) =>
+      traces.get(layer.id) || [placeholder(layer, forceSvgTracePlane)]);
+    const polygonShapeIndices = _polygonShapeIndices(layout, orderedEffects);
+    const correctionState = {
+      scene, slots, traces, plotlyTraces, layout, metrics,
+      markerSources: new Map(slots.flatMap((layer) =>
+        (traces.get(layer.id) || []).map((trace) => [trace, markerSourceByTrace.get(trace)]))
+        .filter((entry) => entry[1])),
+      textStrokes: _collectTextStrokes(layout, orderedEffects),
+      polygonShapeIndices,
+      scaleBaseline: {
+        annotations: (layout.annotations || []).map((annotation) => ({
+          ...annotation, font: { ...(annotation.font || {}) },
+        })),
+        lineWidths: plotlyTraces.map((trace) =>
+          trace.line && typeof trace.line.width === "number"
+            ? Number(trace.line.width)
+            : null),
+        polygonShapeWidths: polygonShapeIndices.map((index) => {
+          const shape = layout.shapes[index];
+          return shape && shape.line && typeof shape.line.width === "number"
+            ? Number(shape.line.width)
+            : null;
+        }),
+      },
+    };
+    await Plotly.react(target, plotlyTraces, layout,
       { responsive: true, ...settings.config });
     // Plotly calibrates the axes domain to keep scaleanchor axes square inside
     // the (possibly non-square) container.  The initial renderingMetrics used
@@ -1326,14 +1410,6 @@
     // the real axes width for circular projections.  Recompute the scale from
     // the actual axes domain and restyle when the correction is significant.
     // This also runs on window resize (see _applyScaleCorrection).
-    const correctionState = {
-      scene, slots, traces, layout, metrics,
-      markerSources: new Map(slots.flatMap((layer) =>
-        (traces.get(layer.id) || []).map((trace) => [trace, markerSourceByTrace.get(trace)]))
-        .filter((entry) => entry[1])),
-      textStrokes: _collectTextStrokes(layout, orderedEffects),
-      polygonShapeIndices: _polygonShapeIndices(layout, orderedEffects),
-    };
     await _applyScaleCorrection(target, correctionState, Plotly);
     // Debounced resize re-correction.  Plotly's responsive:true only resizes
     // the canvas; it does not recompute font/marker/stroke scales.

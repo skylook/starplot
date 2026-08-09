@@ -594,6 +594,9 @@ def test_data_scatter_is_clipped_with_every_aligned_metadata_column():
     ).tolist() == pytest.approx([1.0])
     assert layer.data["name"].tolist() == ["inside"]
     assert layer.interaction is InteractionPolicy.HOVER
+    assert layer.palette == ("#008000",)
+    assert layer.data["color_index"].tolist() == [0]
+    assert layer.data["opacity"].tolist() == pytest.approx([0.5])
 
 
 def test_non_data_and_unknown_clips_do_not_trigger_scene_geometry_clipping():

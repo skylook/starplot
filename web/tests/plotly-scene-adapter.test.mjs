@@ -87,6 +87,47 @@ test("dense finite-palette ScatterGL data uses bounded scalar-colour batches", a
   assert.ok(traces.every((trace) => trace.meta.starplot_layer_id === "dense-stars"));
 });
 
+test("dense palette fast path decodes coordinates and marker values into final buckets", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const rowCount = 100_000;
+  const x = new Float32Array(rowCount);
+  const y = new Float32Array(rowCount);
+  const size = new Float32Array(rowCount);
+  const opacity = new Float32Array(rowCount);
+  const colorIndex = new Uint8Array(rowCount);
+  for (let index = 0; index < rowCount; index += 1) {
+    x[index] = index / rowCount;
+    y[index] = 1 - index / rowCount;
+    colorIndex[index] = index % 2;
+    size[index] = index % 2 ? 2 : 0.5;
+    opacity[index] = index % 2 ? 0.75 : 0.5;
+  }
+  const table = Arrow.tableFromArrays({ x, y, size, color_index: colorIndex, opacity });
+  const current = layer("dense-relative", "scatter", 1, { palette_id: "palette", symbol: "circle" });
+  current.group_id = "stars";
+  current.row_count = rowCount;
+  current.coordinate_encoding = {
+    x: { kind: "relative-f32", origin: 10, scale: 2, max_error_pixels: 0.01 },
+    y: { kind: "relative-f32", origin: -5, scale: 3, max_error_pixels: 0.01 },
+  };
+
+  const traces = runtime.layerToPlotlyTraces(current, table, {
+    styles: [], palettes: [{ id: "palette", colors: ["#fff", "#f80"] }], clips: [],
+  });
+
+  assert.equal(traces.length, 2);
+  assert.equal(traces.reduce((total, trace) => total + trace.x.length, 0), rowCount);
+  assert.equal(traces[0].x[0], 10);
+  assert.equal(traces[0].y[0], -2);
+  assert.ok(Math.abs(traces[1].x[0] - (10 + 2 / rowCount)) < 1e-7);
+  assert.ok(Math.abs(traces[1].y[0] - (-2 - 3 / rowCount)) < 1e-7);
+  assert.equal(traces[0].marker.size, 1);
+  assert.ok(traces[1].marker.size instanceof Float32Array);
+  assert.equal(traces[1].marker.size[0], 2);
+  assert.equal(traces[0].marker.opacity[0], 0.25);
+  assert.equal(traces[1].marker.opacity[0], 0.75);
+});
+
 test("interactive dense palette layers keep hover rows aligned at the batching threshold", async () => {
   const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
   const rowCount = 100_000;
@@ -137,8 +178,10 @@ test("dense palette batches preserve source opacity for resize correction", asyn
     async *loadLayer() { for (const batch of table.batches) yield batch; },
   };
   const calls = [];
+  let initialTraces;
   const Plotly = {
-    async react(target) {
+    async react(target, traces) {
+      initialTraces = traces;
       target._fullLayout = {
         width: 400, height: 400, margin: { l: 0, r: 0, t: 0, b: 0 },
         xaxis: { domain: [0, 1] }, yaxis: { domain: [0, 1] }, annotations: [],
@@ -149,6 +192,7 @@ test("dense palette batches preserve source opacity for resize correction", asyn
   };
   const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
   await runtime.renderScene({ querySelectorAll() { return []; } }, source, { Plotly });
+  assert.ok(initialTraces.every((trace) => trace.marker.size === 1));
   const markerUpdate = calls.find((update) => update["marker.size"]);
   assert.ok(markerUpdate["marker.opacity"], "every dense batch must recompute opacity from source values");
   assert.equal(markerUpdate["marker.opacity"].length, 2);
@@ -896,6 +940,85 @@ test("scale correction is idempotent and updates subpixel marker opacity with si
   assert.ok(markerCalls[0].update["marker.opacity"][0][0] < markerOpacity[0]);
   const annotationCalls = calls.relayout.filter((update) => update.annotations);
   assert.equal(annotationCalls.length, 1, "annotation correction must be idempotent");
+});
+
+test("successive scale corrections derive line and polygon widths from the compile baseline", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const trace = { type: "scatter", line: { width: 4 } };
+  const layout = { annotations: [], shapes: [{ type: "path", line: { width: 6 } }] };
+  const state = {
+    scene: { viewport: { source_axes_width: 1000, target_axes_width: 1000, dpi: 72 } },
+    slots: [{ id: "line" }], traces: new Map([["line", [trace]]]), layout,
+    metrics: { widthScale: 1, markerScale: 1, strokePixelScale: 1, fontPixelScale: 1 },
+    markerSources: new Map(), polygonShapeIndices: [0], textStrokes: [],
+  };
+  const target = { _fullLayout: null };
+  const snapshots = [];
+  const Plotly = {
+    async restyle(_target, update) {
+      trace.line.width = update["line.width"][0];
+    },
+    async relayout(_target, update) {
+      layout.shapes[0].line.width = update["shapes[0].line.width"];
+    },
+  };
+
+  for (const axesWidth of [500, 250, 750]) {
+    target._fullLayout = {
+      width: axesWidth, height: axesWidth, margin: { l: 0, r: 0, t: 0, b: 0 },
+      xaxis: { domain: [0, 1] }, yaxis: { domain: [0, 1] },
+    };
+    await runtime._applyScaleCorrection(target, state, Plotly);
+    snapshots.push([trace.line.width, layout.shapes[0].line.width]);
+  }
+
+  assert.deepEqual(snapshots, [[2, 3], [1, 1.5], [3, 4.5]]);
+});
+
+test("scale correction indexes traces after optional-layer placeholders", async () => {
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"]);
+  const optional = layer("optional", "line", 0, { width: 2, color: "#888" });
+  optional.required = false;
+  const good = layer("good", "line", 1, { width: 2, color: "#fff" });
+  const scene = {
+    viewport: {
+      data_bounds: { x_min: 0, x_max: 10, y_min: 0, y_max: 10 },
+      source_axes_width: 1000, target_axes_width: 1000, dpi: 72,
+      margin: { l: 10, r: 10, t: 10, b: 10, autoexpand: false },
+    },
+    styles: [], palettes: [], clips: [], layers: [optional, good],
+  };
+  const source = {
+    async loadManifest() { return scene; },
+    async *loadLayer(current) {
+      if (current.id === "optional") throw new Error("optional failed");
+      for (const batch of tables.line().batches) yield batch;
+    },
+  };
+  const calls = { react: [], restyle: [] };
+  const Plotly = {
+    async react(target, traces, layout) {
+      calls.react.push({ traces, layout });
+      target._fullLayout = {
+        width: 420, height: 420, margin: { l: 10, r: 10, t: 10, b: 10 },
+        xaxis: { domain: [0, 1] }, yaxis: { domain: [0, 1] },
+      };
+    },
+    async restyle(_target, update, indices) { calls.restyle.push({ update, indices }); },
+    async relayout() {},
+  };
+  const target = {
+    _fullLayout: null,
+    getBoundingClientRect() { return { width: 1000, height: 500 }; },
+    querySelectorAll() { return []; },
+  };
+
+  await runtime.renderScene(target, source, { Plotly });
+
+  assert.equal(calls.react[0].traces[0].meta.starplot_layer_id, "optional");
+  assert.equal(calls.react[0].traces[1].meta.starplot_layer_id, "good");
+  const lineCorrection = calls.restyle.find((call) => call.update["line.width"]);
+  assert.deepEqual(Array.from(lineCorrection.indices), [1]);
 });
 
 test("_collectTextStrokes preserves stroke info parallel to annotations array", async () => {

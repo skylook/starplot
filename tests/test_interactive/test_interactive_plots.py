@@ -123,8 +123,7 @@ def test_export_html_maps_legacy_inline_library_request(tmp_path):
     assert 'id="starplot-manifest"' in html_path.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("legacy_value", [False, "cdn"])
-def test_export_html_maps_legacy_cdn_library_request(legacy_value, monkeypatch):
+def test_export_html_maps_legacy_cdn_library_request(monkeypatch):
     p = _make_map_plot()
     captured = {}
     monkeypatch.setattr(p, "_compile_scene", lambda **kwargs: object())
@@ -134,9 +133,22 @@ def test_export_html_maps_legacy_cdn_library_request(legacy_value, monkeypatch):
         lambda scene, filename, **kwargs: captured.update(kwargs),
     )
     with pytest.warns(DeprecationWarning, match="include_plotlyjs"):
-        p.export_html("legacy.html", include_plotlyjs=legacy_value)
+        p.export_html("legacy.html", include_plotlyjs="cdn")
     assert captured["library_mode"] == "cdn"
     assert captured["data_mode"] == "external"
+
+
+def test_export_html_rejects_legacy_false_without_no_library_mode(monkeypatch):
+    p = _make_map_plot()
+    monkeypatch.setattr(p, "_compile_scene", lambda **kwargs: object())
+    monkeypatch.setattr(
+        interactive_plots,
+        "export_scene_html",
+        lambda scene, filename, **kwargs: None,
+    )
+
+    with pytest.raises(ValueError, match="no-library mode"):
+        p.export_html("legacy.html", include_plotlyjs=False)
 
 
 def test_export_html_maps_legacy_directory_library_request(monkeypatch):

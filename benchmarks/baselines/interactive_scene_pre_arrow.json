@@ -1,12 +1,9 @@
 {
+  "artifact_role": "legacy_baseline",
   "browser": {
-    "complete_render_median_ms": 5775.945772009436,
-    "complete_render_p95_ms": 6206.042184168473,
-    "completion_signal": "Plotly newPlot/react promise plus two animation frames",
-    "engine": "chromium",
-    "engine_version": "150.0.7871.116",
-    "source_html": "comparison_outputs/map_milky_way_stars/plotly.html",
-    "status": "measured"
+    "reason": "The candidate browser gate uses a paired direct-Plotly fixture generated from the same Scene; this artifact retains the established pre-Arrow Python release baseline.",
+    "source_kind": "legacy-renderer-revision-23e3358",
+    "status": "not_applicable"
   },
   "environment": {
     "browser": "chromium 150.0.7871.116",
@@ -32,6 +29,22 @@
     "median_seconds": 74.81611629691906,
     "p95_seconds": 75.36228827115846
   },
+  "ordinary_chart": {
+    "captured_at_utc": "2026-08-09T12:58:52.581770+00:00",
+    "legacy_renderer_preparation": {
+      "median_seconds": 0.20808014800422825,
+      "p95_seconds": 0.23392008040100337
+    },
+    "median_seconds": 0.2774548989982577,
+    "p95_seconds": 0.300511295600154,
+    "peak_rss_mb": 227.9921875,
+    "plotly_construction": {
+      "median_seconds": 0.067923703994893,
+      "p95_seconds": 0.0691694993933197
+    },
+    "point_count": 5000,
+    "semantics": "Compatibility alias for legacy_renderer_total: legacy pre-Scene command preparation plus Plotly Figure construction; not a native Scene compiler."
+  },
   "payload_bytes": 55580751,
   "peak_rss_mb": 855.2578125,
   "plotly_construction": {
@@ -39,9 +52,22 @@
     "p95_seconds": 35.60824974534334
   },
   "point_count": 974153,
+  "provenance": {
+    "dense_workload": {
+      "captured_at_utc": "2026-07-16T17:02:21.772099+00:00",
+      "measurement_kind": "historical-pre-arrow-release-baseline",
+      "revision": "23e3358"
+    },
+    "ordinary_chart": {
+      "captured_at_utc": "2026-08-09T12:58:52.581770+00:00",
+      "measurement_kind": "isolated-control-backfill",
+      "revision": "23e3358"
+    }
+  },
   "scene_compile": {
     "median_seconds": 74.81611629691906,
     "p95_seconds": 75.36228827115846,
     "semantics": "Compatibility alias for legacy_renderer_total: legacy pre-Scene command preparation plus Plotly Figure construction; not a native Scene compiler."
-  }
+  },
+  "schema_version": 1
 }
