@@ -26,7 +26,7 @@ import sys
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
 import numpy as np
 
@@ -42,6 +42,7 @@ REQUIRED_RESULT_KEYS = {
 REQUIRED_ARTIFACT_KEYS = REQUIRED_RESULT_KEYS | {
     "legacy_renderer_preparation",
     "legacy_renderer_total",
+    "plot_type_coverage",
     "plotly_construction",
 }
 REQUIRED_ENVIRONMENT_KEYS = {
@@ -82,6 +83,12 @@ _SEED = 20260716
 _DEFAULT_REPEAT_TIMEOUT_SECONDS = 300.0
 _BROWSER_TIMEOUT_MS = 300_000
 _SCENE_COMPILE_SEMANTICS = "Native SceneCompiler.compile timing."
+_PLOT_TYPE_COVERAGE_SEMANTICS = (
+    "One small, real recording/SceneCompiler/PlotlySceneAdapter sample for each "
+    "supported interactive plot family; this is coverage evidence, not a "
+    "cross-family performance gate."
+)
+_SUPPORTED_INTERACTIVE_PLOT_KINDS = frozenset({"map", "horizon", "zenith", "optic"})
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _PLOTLY_COMPLETION_INIT_SCRIPT = r"""
 (() => {
@@ -163,6 +170,48 @@ def validate_benchmark_artifact(result: dict) -> None:
         raise ValueError(
             f"Missing benchmark environment keys: {sorted(missing_environment)}"
         )
+    coverage = result.get("plot_type_coverage")
+    if not isinstance(coverage, dict) or not isinstance(coverage.get("semantics"), str):
+        raise ValueError("plot_type_coverage must include string semantics")
+    plot_types = coverage.get("plot_types")
+    if not isinstance(plot_types, dict):
+        raise ValueError("plot_type_coverage.plot_types must be a mapping")
+    if set(plot_types) != _SUPPORTED_INTERACTIVE_PLOT_KINDS:
+        raise ValueError(
+            "plot_type_coverage.plot_types must cover exactly "
+            f"{sorted(_SUPPORTED_INTERACTIVE_PLOT_KINDS)}"
+        )
+    for name, evidence in plot_types.items():
+        if not isinstance(evidence, dict) or evidence.get("plot_kind") != name:
+            raise ValueError(f"plot_type_coverage {name!r} has invalid plot_kind")
+        for metric in (
+            "recorded_command_count",
+            "scene_layer_count",
+            "rendered_primitive_count",
+        ):
+            value = evidence.get(metric)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(
+                    f"plot_type_coverage {name!r} requires positive integer {metric}"
+                )
+        kinds = evidence.get("recorded_command_kinds")
+        if not isinstance(kinds, list) or not kinds or not all(
+            isinstance(kind, str) and kind for kind in kinds
+        ):
+            raise ValueError(
+                f"plot_type_coverage {name!r} requires recorded_command_kinds"
+            )
+        for metric in ("scene_compile_seconds", "plotly_render_seconds"):
+            value = evidence.get(metric)
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise ValueError(
+                    f"plot_type_coverage {name!r} requires non-negative {metric}"
+                )
 
 
 def percentile(values: list[float], q: float) -> float:
@@ -361,6 +410,133 @@ def _renderer_inputs(point_count: int) -> tuple[object, dict, dict]:
         "source_axes_width": 4096.0,
     }
     return command, projection_info, style_info
+
+
+@contextmanager
+def _representative_recorded_plot_cases():
+    """Return small real recordings for every public interactive plot family.
+
+    The high-volume benchmark below deliberately keeps its synthetic map
+    command: it is the stable workload for payload and browser regression
+    gates.  These cases prevent that one workload from silently becoming the
+    only exercised plot path.  Each case uses the public Starplot plot API to
+    record an actual Matplotlib primitive before Scene compilation.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from ibis import _ as ibis_col
+    from starplot import Miller, Observer
+    from starplot.interactive import (
+        InteractiveHorizonPlot,
+        InteractiveMapPlot,
+        InteractiveOpticPlot,
+        InteractiveZenithPlot,
+    )
+    from starplot.models import Refractor
+
+    observer = Observer(
+        dt=datetime(2023, 7, 13, 22, 0, tzinfo=ZoneInfo("America/Los_Angeles")),
+        lat=33.363484,
+        lon=-116.836394,
+    )
+
+    with ExitStack() as stack:
+        def own(plot):
+            stack.callback(plot.close_fig)
+            return plot
+
+        map_plot = own(
+            InteractiveMapPlot(
+                projection=Miller(),
+                ra_min=60,
+                ra_max=120,
+                dec_min=-10,
+                dec_max=30,
+                resolution=512,
+            )
+        )
+        map_plot.stars(where=[ibis_col.magnitude < 2])
+
+        horizon_plot = own(
+            InteractiveHorizonPlot(
+                altitude=(0, 60),
+                azimuth=(325, 440),
+                observer=observer,
+                resolution=512,
+            )
+        )
+        horizon_plot.stars(where=[ibis_col.magnitude < 2])
+
+        zenith_plot = own(InteractiveZenithPlot(observer=observer, resolution=512))
+        zenith_plot.horizon(labels=[])
+
+        optic_plot = own(
+            InteractiveOpticPlot(
+                ra=90.0,
+                dec=10.0,
+                observer=observer,
+                optic=Refractor(
+                    focal_length=430,
+                    eyepiece_focal_length=11,
+                    eyepiece_fov=82,
+                ),
+                resolution=512,
+                raise_on_below_horizon=False,
+            )
+        )
+        optic_plot.info()
+
+        yield (
+            ("map", map_plot),
+            ("horizon", horizon_plot),
+            ("zenith", zenith_plot),
+            ("optic", optic_plot),
+        )
+
+
+def _rendered_primitive_count(figure) -> int:
+    """Count Plotly traces plus layout primitives used by non-scatter plots."""
+    layout = figure.layout
+    return len(figure.data) + len(layout.shapes or ()) + len(layout.annotations or ())
+
+
+def run_recorded_plot_type_coverage() -> dict[str, object]:
+    """Exercise real recording, compilation, and rendering for all plot types."""
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    cases: dict[str, dict[str, object]] = {}
+    with _representative_recorded_plot_cases() as recorded_cases:
+        for name, plot in recorded_cases:
+            commands = plot._recorder.coalesced_scatter_commands()
+            if not commands:
+                raise RuntimeError(f"{name} coverage case recorded no drawing commands")
+
+            compilation_started = time.perf_counter()
+            scene = plot._compile_scene()
+            compilation_seconds = time.perf_counter() - compilation_started
+            if not scene.layers:
+                raise RuntimeError(f"{name} coverage case compiled no Scene layers")
+
+            rendering_started = time.perf_counter()
+            figure = PlotlySceneAdapter().render(scene)
+            rendering_seconds = time.perf_counter() - rendering_started
+            rendered_primitives = _rendered_primitive_count(figure)
+            if not rendered_primitives:
+                raise RuntimeError(f"{name} coverage case rendered no Plotly primitives")
+
+            cases[name] = {
+                "plot_kind": scene.projection_info["plot_kind"],
+                "recorded_command_count": len(commands),
+                "recorded_command_kinds": sorted(
+                    {command.kind.value for command in commands}
+                ),
+                "scene_layer_count": len(scene.layers),
+                "rendered_primitive_count": rendered_primitives,
+                "scene_compile_seconds": compilation_seconds,
+                "plotly_render_seconds": rendering_seconds,
+            }
+    return {"semantics": _PLOT_TYPE_COVERAGE_SEMANTICS, "plot_types": cases}
 
 
 def _peak_rss_mb() -> float:
@@ -844,6 +1020,7 @@ def run_python_benchmark(
         "payload_bytes": payload_sizes.pop(),
         "peak_rss_mb": max(float(item["peak_rss_mb"]) for item in measured),
         "plotly_construction": plotly_construction,
+        "plot_type_coverage": run_recorded_plot_type_coverage(),
         "point_count": point_count,
         "scene_compile": scene_compile,
         "raw_repetitions": measured,

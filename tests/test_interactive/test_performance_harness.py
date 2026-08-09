@@ -29,6 +29,24 @@ ENVIRONMENT = {
 }
 
 
+def complete_plot_type_coverage():
+    return {
+        "semantics": "real recording coverage",
+        "plot_types": {
+            name: {
+                "plot_kind": name,
+                "recorded_command_count": 1,
+                "recorded_command_kinds": ["scatter"],
+                "scene_layer_count": 1,
+                "rendered_primitive_count": 1,
+                "scene_compile_seconds": 0.01,
+                "plotly_render_seconds": 0.02,
+            }
+            for name in ("map", "horizon", "zenith", "optic")
+        },
+    }
+
+
 def complete_result():
     summary = {"median_seconds": 1.0, "p95_seconds": 1.2}
     return {
@@ -38,6 +56,7 @@ def complete_result():
         "legacy_renderer_total": summary,
         "payload_bytes": 1000,
         "peak_rss_mb": 10.0,
+        "plot_type_coverage": complete_plot_type_coverage(),
         "plotly_construction": summary,
         "point_count": 100,
         "scene_compile": {
@@ -90,6 +109,14 @@ def test_strict_artifact_schema_rejects_missing_stage_metrics():
     del result["plotly_construction"]
 
     with pytest.raises(ValueError, match="plotly_construction"):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_strict_artifact_schema_rejects_missing_plot_type_evidence():
+    result = complete_result()
+    del result["plot_type_coverage"]["plot_types"]["optic"]
+
+    with pytest.raises(ValueError, match="cover exactly"):
         benchmark.validate_benchmark_artifact(result)
 
 
@@ -205,7 +232,10 @@ def test_renderer_fixture_matches_recorded_projection_geometry_contract():
     }
 
 
-def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch, capsys):
+def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch):
+    from contextlib import redirect_stdout
+    from io import StringIO
+
     worker_result = {
         "arrow_payload_bytes": 900,
         "external_html_bytes": 100,
@@ -235,12 +265,20 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch, capsys)
         }
 
     monkeypatch.setattr(benchmark, "run_browser_benchmark", run_browser)
-
-    result = benchmark.run_python_benchmark(
-        point_count=10,
-        repeats=1,
-        repeat_timeout_seconds=2.0,
+    plot_type_coverage = complete_plot_type_coverage()
+    monkeypatch.setattr(
+        benchmark,
+        "run_recorded_plot_type_coverage",
+        lambda: plot_type_coverage,
     )
+
+    stdout = StringIO()
+    with redirect_stdout(stdout):
+        result = benchmark.run_python_benchmark(
+            point_count=10,
+            repeats=1,
+            repeat_timeout_seconds=2.0,
+        )
 
     benchmark.validate_benchmark_artifact(result)
     assert calls == [(10, 2.0), (10, 2.0)]
@@ -253,7 +291,8 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch, capsys)
     assert result["arrow_payload_bytes"] == 900
     assert result["external_html_bytes"] == 100
     assert result["viewport_warm"] == {"median_ms": 1.0, "p95_ms": 1.0}
-    output = capsys.readouterr().out
+    assert result["plot_type_coverage"] is plot_type_coverage
+    output = stdout.getvalue()
     assert "Python warm-up: starting" in output
     assert "Python repeat 1/1: complete" in output
 
@@ -438,6 +477,27 @@ def test_benchmark_worker_uses_scene_compiler_and_adapter_source():
     assert "SceneCompiler" in source
     assert "PlotlySceneAdapter" in source
     assert "_clip_command" not in source
+
+
+def test_recorded_plot_type_coverage_exercises_every_public_plot_family():
+    import matplotlib.pyplot as plt
+
+    open_figures_before = set(plt.get_fignums())
+    coverage = benchmark.run_recorded_plot_type_coverage()
+
+    assert "real recording/SceneCompiler/PlotlySceneAdapter" in coverage["semantics"]
+    assert set(coverage["plot_types"]) == {"map", "horizon", "zenith", "optic"}
+    assert {
+        name: result["plot_kind"]
+        for name, result in coverage["plot_types"].items()
+    } == {"map": "map", "horizon": "horizon", "zenith": "zenith", "optic": "optic"}
+    for result in coverage["plot_types"].values():
+        assert result["recorded_command_count"] > 0
+        assert result["scene_layer_count"] > 0
+        assert result["rendered_primitive_count"] > 0
+        assert result["scene_compile_seconds"] >= 0
+        assert result["plotly_render_seconds"] >= 0
+    assert set(plt.get_fignums()) == open_figures_before
 
 
 def test_host_fingerprint_distinguishes_nodes_without_exposing_node(monkeypatch):
