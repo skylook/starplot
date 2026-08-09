@@ -85,8 +85,12 @@ _BROWSER_TIMEOUT_MS = 300_000
 _SCENE_COMPILE_SEMANTICS = "Native SceneCompiler.compile timing."
 _PLOT_TYPE_COVERAGE_SEMANTICS = (
     "One small, real recording/SceneCompiler/PlotlySceneAdapter sample for each "
-    "supported interactive plot family; this is coverage evidence, not a "
-    "cross-family performance gate."
+    "supported interactive plot family, paired with external-Arrow browser "
+    "diagnostics; this is coverage evidence, not a cross-family performance gate."
+)
+_PLOT_TYPE_BROWSER_SEMANTICS = (
+    "One warm-up plus repeated external-Arrow HTTP renders for every supported "
+    "interactive plot family; timings are diagnostic and have no cross-family gate."
 )
 _SUPPORTED_INTERACTIVE_PLOT_KINDS = frozenset({"map", "horizon", "zenith", "optic"})
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -212,6 +216,61 @@ def validate_benchmark_artifact(result: dict) -> None:
                 raise ValueError(
                     f"plot_type_coverage {name!r} requires non-negative {metric}"
                 )
+    browser_coverage = coverage.get("browser")
+    if not isinstance(browser_coverage, dict):
+        raise ValueError("plot_type_coverage.browser must be a mapping")
+    if not isinstance(browser_coverage.get("semantics"), str):
+        raise ValueError("plot_type_coverage.browser must include string semantics")
+    browser_status = browser_coverage.get("status")
+    if browser_status not in {
+        "measured",
+        "measurement_failed",
+        "playwright_not_installed",
+    }:
+        raise ValueError("plot_type_coverage.browser has invalid status")
+    if browser_status == "measured":
+        browser_plot_types = browser_coverage.get("plot_types")
+        if not isinstance(browser_plot_types, dict):
+            raise ValueError("plot_type_coverage.browser.plot_types must be a mapping")
+        if set(browser_plot_types) != _SUPPORTED_INTERACTIVE_PLOT_KINDS:
+            raise ValueError(
+                "plot_type_coverage browser plot_types must cover exactly "
+                f"{sorted(_SUPPORTED_INTERACTIVE_PLOT_KINDS)}"
+            )
+        for name, evidence in browser_plot_types.items():
+            if not isinstance(evidence, dict):
+                raise ValueError(
+                    f"plot_type_coverage browser {name!r} evidence must be a mapping"
+                )
+            payload_bytes = evidence.get("arrow_payload_bytes")
+            if (
+                not isinstance(payload_bytes, int)
+                or isinstance(payload_bytes, bool)
+                or payload_bytes <= 0
+            ):
+                raise ValueError(
+                    f"plot_type_coverage browser {name!r} requires Arrow payload bytes"
+                )
+            scene_hash = evidence.get("scene_hash")
+            if not isinstance(scene_hash, str) or not scene_hash.startswith("sha256:"):
+                raise ValueError(
+                    f"plot_type_coverage browser {name!r} requires a scene hash"
+                )
+            for metric in (
+                "complete_render_median_ms",
+                "complete_render_p95_ms",
+            ):
+                value = evidence.get(metric)
+                if (
+                    not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                    or not math.isfinite(value)
+                    or value < 0
+                ):
+                    raise ValueError(
+                        f"plot_type_coverage browser {name!r} requires non-negative "
+                        f"{metric}"
+                    )
 
 
 def percentile(values: list[float], q: float) -> float:
@@ -320,6 +379,9 @@ def compare_results(before: dict, after: dict) -> list[str]:
                  PERFORMANCE_GATES["viewport_warm_median_ms_max"])
     maximum_gate("viewport_warm_p95", "viewport_warm.p95_ms",
                  PERFORMANCE_GATES["viewport_warm_p95_ms_max"])
+    plot_type_browser = after.get("plot_type_coverage", {}).get("browser", {})
+    if plot_type_browser.get("status") != "measured":
+        failures.append("plot_type_coverage browser diagnostics are not measured")
     return failures
 
 
@@ -860,6 +922,130 @@ def _external_browser_fixture(
             worker.join(timeout=5)
 
 
+def _export_recorded_plot_type_browser_fixtures(
+    output_directory: Path,
+) -> dict[str, dict[str, object]]:
+    """Export one real external-Arrow fixture for every public plot family."""
+    from starplot.interactive.web_export import (
+        DataMode,
+        LibraryMode,
+        export_scene_html,
+    )
+
+    fixtures: dict[str, dict[str, object]] = {}
+    with _representative_recorded_plot_cases() as recorded_cases:
+        for name, plot in recorded_cases:
+            scene = plot._compile_scene()
+            exported = export_scene_html(
+                scene,
+                output_directory / f"{name}.html",
+                data_mode=DataMode.EXTERNAL,
+                library_mode=LibraryMode.DIRECTORY,
+            )
+            fixtures[name] = {
+                "arrow_payload_bytes": sum(
+                    len(payload) for payload in exported.layer_bytes.values()
+                ),
+                "scene_hash": exported.scene_hash,
+            }
+    return fixtures
+
+
+@contextmanager
+def _recorded_plot_type_browser_fixture():
+    """Serve real external-Arrow pages for the four public plot families."""
+    from starplot.cli import create_server
+
+    with tempfile.TemporaryDirectory(prefix="starplot-plot-types-browser-") as directory:
+        root = Path(directory)
+        fixtures = _export_recorded_plot_type_browser_fixtures(root)
+        server = create_server(root, host="127.0.0.1", port=0)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        host, port = server.server_address[:2]
+        try:
+            yield {
+                name: {
+                    **metadata,
+                    "source_url": f"http://{host}:{port}/{name}.html",
+                }
+                for name, metadata in fixtures.items()
+            }
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5)
+
+
+def run_recorded_plot_type_browser_diagnostics(repeats: int) -> dict[str, object]:
+    """Measure real browser rendering for every public interactive plot family."""
+    if repeats <= 0:
+        raise ValueError("repeats must be positive")
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return {
+            "semantics": _PLOT_TYPE_BROWSER_SEMANTICS,
+            "source_kind": "external-arrow-http",
+            "status": "playwright_not_installed",
+        }
+
+    measurements = {
+        name: [] for name in sorted(_SUPPORTED_INTERACTIVE_PLOT_KINDS)
+    }
+    try:
+        with _recorded_plot_type_browser_fixture() as fixtures, sync_playwright() as playwright:
+            browser = _launch_browser(playwright)
+            try:
+                browser_version = browser.version
+                for iteration in range(repeats + 1):
+                    label = "warm-up" if iteration == 0 else f"repeat {iteration}/{repeats}"
+                    for name, fixture in fixtures.items():
+                        print(f"Browser {name} diagnostic {label}: starting", flush=True)
+                        page = browser.new_page(viewport={"width": 1000, "height": 500})
+                        try:
+                            elapsed_ms = _measure_browser_page(
+                                page,
+                                str(fixture["source_url"]),
+                                _BROWSER_TIMEOUT_MS,
+                            )
+                        finally:
+                            page.close()
+                        print(
+                            f"Browser {name} diagnostic {label}: complete "
+                            f"({elapsed_ms:.3f} ms)",
+                            flush=True,
+                        )
+                        if iteration:
+                            measurements[name].append(elapsed_ms)
+            finally:
+                browser.close()
+    except Exception as error:
+        return {
+            "error": f"{type(error).__name__}: {error}",
+            "semantics": _PLOT_TYPE_BROWSER_SEMANTICS,
+            "source_kind": "external-arrow-http",
+            "status": "measurement_failed",
+        }
+
+    return {
+        "engine": "chromium",
+        "engine_version": browser_version,
+        "plot_types": {
+            name: {
+                "arrow_payload_bytes": int(fixtures[name]["arrow_payload_bytes"]),
+                "complete_render_median_ms": percentile(values, 50),
+                "complete_render_p95_ms": percentile(values, 95),
+                "scene_hash": fixtures[name]["scene_hash"],
+            }
+            for name, values in measurements.items()
+        },
+        "semantics": _PLOT_TYPE_BROWSER_SEMANTICS,
+        "source_kind": "external-arrow-http",
+        "status": "measured",
+    }
+
+
 def run_browser_benchmark(
     point_count: int,
     repeats: int,
@@ -1010,6 +1196,8 @@ def run_python_benchmark(
         repeats,
         fixture_timeout_seconds=repeat_timeout_seconds,
     )
+    plot_type_coverage = run_recorded_plot_type_coverage()
+    plot_type_coverage["browser"] = run_recorded_plot_type_browser_diagnostics(repeats)
     result = {
         "arrow_payload_bytes": int(measured[0]["arrow_payload_bytes"]),
         "browser": browser,
@@ -1020,7 +1208,7 @@ def run_python_benchmark(
         "payload_bytes": payload_sizes.pop(),
         "peak_rss_mb": max(float(item["peak_rss_mb"]) for item in measured),
         "plotly_construction": plotly_construction,
-        "plot_type_coverage": run_recorded_plot_type_coverage(),
+        "plot_type_coverage": plot_type_coverage,
         "point_count": point_count,
         "scene_compile": scene_compile,
         "raw_repetitions": measured,

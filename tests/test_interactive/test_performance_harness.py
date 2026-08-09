@@ -32,6 +32,20 @@ ENVIRONMENT = {
 def complete_plot_type_coverage():
     return {
         "semantics": "real recording coverage",
+        "browser": {
+            "semantics": "external Arrow browser diagnostics",
+            "source_kind": "external-arrow-http",
+            "status": "measured",
+            "plot_types": {
+                name: {
+                    "arrow_payload_bytes": 100,
+                    "complete_render_median_ms": 10.0,
+                    "complete_render_p95_ms": 12.0,
+                    "scene_hash": f"sha256:{name}",
+                }
+                for name in ("map", "horizon", "zenith", "optic")
+            },
+        },
         "plot_types": {
             name: {
                 "plot_kind": name,
@@ -120,6 +134,14 @@ def test_strict_artifact_schema_rejects_missing_plot_type_evidence():
         benchmark.validate_benchmark_artifact(result)
 
 
+def test_strict_artifact_schema_rejects_missing_plot_type_browser_evidence():
+    result = complete_result()
+    del result["plot_type_coverage"]["browser"]["plot_types"]["zenith"]
+
+    with pytest.raises(ValueError, match="browser.*cover exactly"):
+        benchmark.validate_benchmark_artifact(result)
+
+
 def test_benchmark_summary_reports_median_and_p95():
     assert benchmark.summarize([1.0, 2.0, 3.0, 4.0]) == {
         "median_seconds": 2.5,
@@ -168,6 +190,11 @@ def test_compare_results_rejects_unmeasured_metrics_and_host_mismatch():
     before = complete_result()
     after = complete_result()
     after["environment"] = {**ENVIRONMENT, "host_fingerprint": "other-host"}
+    after["plot_type_coverage"]["browser"] = {
+        "semantics": "external Arrow browser diagnostics",
+        "source_kind": "external-arrow-http",
+        "status": "measurement_failed",
+    }
 
     failures = benchmark.compare_results(before, after)
 
@@ -176,6 +203,7 @@ def test_compare_results_rejects_unmeasured_metrics_and_host_mismatch():
     assert any("external_html_bytes is missing" in failure for failure in failures)
     assert any("ordinary_chart baseline is missing" in failure for failure in failures)
     assert any("viewport_warm_median is missing" in failure for failure in failures)
+    assert any("browser diagnostics are not measured" in failure for failure in failures)
 
 
 @pytest.mark.parametrize(
@@ -271,6 +299,18 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch):
         "run_recorded_plot_type_coverage",
         lambda: plot_type_coverage,
     )
+    browser_diagnostics = plot_type_coverage["browser"]
+    browser_diagnostic_calls = []
+
+    def run_plot_type_browser_diagnostics(repeats):
+        browser_diagnostic_calls.append(repeats)
+        return browser_diagnostics
+
+    monkeypatch.setattr(
+        benchmark,
+        "run_recorded_plot_type_browser_diagnostics",
+        run_plot_type_browser_diagnostics,
+    )
 
     stdout = StringIO()
     with redirect_stdout(stdout):
@@ -283,6 +323,7 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch):
     benchmark.validate_benchmark_artifact(result)
     assert calls == [(10, 2.0), (10, 2.0)]
     assert browser_calls == [(10, 1, 2.0)]
+    assert browser_diagnostic_calls == [1]
     assert result["scene_compile"]["median_seconds"] == 0.25
     assert result["legacy_renderer_total"]["median_seconds"] == 1.5
     assert result["legacy_renderer_preparation"]["median_seconds"] == 0.25
@@ -295,6 +336,83 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch):
     output = stdout.getvalue()
     assert "Python warm-up: starting" in output
     assert "Python repeat 1/1: complete" in output
+
+
+def test_recorded_plot_type_browser_diagnostics_measures_each_family(monkeypatch):
+    from contextlib import contextmanager
+
+    fixtures = {
+        name: {
+            "arrow_payload_bytes": 100 + index,
+            "scene_hash": f"sha256:{name}",
+            "source_url": f"http://127.0.0.1:4321/{name}.html",
+        }
+        for index, name in enumerate(("map", "horizon", "zenith", "optic"))
+    }
+
+    @contextmanager
+    def fixture():
+        yield fixtures
+
+    class Page:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class Browser:
+        version = "test-browser"
+
+        def __init__(self):
+            self.pages = []
+            self.closed = False
+
+        def new_page(self, viewport):
+            assert viewport == {"width": 1000, "height": 500}
+            page = Page()
+            self.pages.append(page)
+            return page
+
+        def close(self):
+            self.closed = True
+
+    browser = Browser()
+    playwright = object()
+
+    class PlaywrightContext:
+        def __enter__(self):
+            return playwright
+
+        def __exit__(self, *args):
+            return False
+
+    fake_sync_api = SimpleNamespace(sync_playwright=lambda: PlaywrightContext())
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
+    monkeypatch.setattr(benchmark, "_recorded_plot_type_browser_fixture", fixture)
+    monkeypatch.setattr(benchmark, "_launch_browser", lambda value: browser)
+    calls = {name: 0 for name in fixtures}
+
+    def measure(page, uri, timeout_ms):
+        assert timeout_ms == benchmark._BROWSER_TIMEOUT_MS
+        name = Path(uri).stem
+        calls[name] += 1
+        return float(10 * calls[name])
+
+    monkeypatch.setattr(benchmark, "_measure_browser_page", measure)
+
+    result = benchmark.run_recorded_plot_type_browser_diagnostics(repeats=2)
+
+    assert result["status"] == "measured"
+    assert result["engine_version"] == "test-browser"
+    assert set(result["plot_types"]) == {"map", "horizon", "zenith", "optic"}
+    assert calls == {"map": 3, "horizon": 3, "zenith": 3, "optic": 3}
+    assert all(page.closed for page in browser.pages)
+    assert browser.closed
+    for name, evidence in result["plot_types"].items():
+        assert evidence["complete_render_median_ms"] == 25.0
+        assert evidence["complete_render_p95_ms"] == pytest.approx(29.5)
+        assert evidence["scene_hash"] == f"sha256:{name}"
 
 
 def test_python_repeat_timeout_is_fatal(monkeypatch):
