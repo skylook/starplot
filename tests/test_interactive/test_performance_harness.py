@@ -1084,21 +1084,26 @@ def test_browser_page_waits_for_instrumented_plotly_promise_and_final_paint():
         def wait_for_function(self, predicate, timeout):
             events.append(("wait", predicate, timeout))
 
+        def evaluate(self, expression):
+            events.append(("evaluate", expression))
+            return 987.6
+
     page = FakePage()
     elapsed = benchmark._measure_browser_page(page, "file:///plot.html", 1234)
 
-    assert elapsed >= 0
-    assert [event[0] for event in events] == ["init", "goto", "wait"]
+    assert elapsed == 987.6
+    assert [event[0] for event in events] == ["init", "goto", "wait", "evaluate"]
     init_script = events[0][1]
     assert "newPlot" in init_script
     assert "react" in init_script
     assert "Promise.resolve" in init_script
     assert init_script.count("requestAnimationFrame") >= 2
     completion_predicate = events[2][1]
-    assert "__starplotRenderPromise" in completion_predicate
-    assert "await window.__starplotRenderPromise" in completion_predicate
+    assert "starplotCompletedAt !== null" in completion_predicate
     assert "__starplotBenchmark.complete === true" in completion_predicate
-    assert completion_predicate.count("requestAnimationFrame") >= 2
+    assert "requestAnimationFrame" not in completion_predicate
+    assert "starplotCompletedAt" in events[3][1]
+    assert "completedAt" in events[3][1]
 
 
 def test_browser_launcher_falls_back_to_system_chrome(monkeypatch):

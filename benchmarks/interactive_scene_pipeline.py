@@ -139,7 +139,9 @@ _PLOTLY_COMPLETION_INIT_SCRIPT = r"""
     complete: false,
     completedAt: null,
     method: null,
-    startedAt: null
+    startedAt: null,
+    starplotCalls: 0,
+    starplotCompletedAt: null
   };
 
   const afterFinalPaint = (callback) => {
@@ -161,15 +163,16 @@ _PLOTLY_COMPLETION_INIT_SCRIPT = r"""
         state.method = method;
         state.startedAt = performance.now();
         const result = original.apply(this, args);
-        return Promise.resolve(result).then((value) => new Promise((resolve) => {
+        Promise.resolve(result).then(() => {
           afterFinalPaint(() => {
             if (generation === state.calls) {
               state.completedAt = performance.now();
               state.complete = true;
             }
-            resolve(value);
           });
-        }));
+        }, () => {});
+        // Instrumentation must not add paint frames to the product promise.
+        return result;
       };
     }
   };
@@ -185,6 +188,33 @@ _PLOTLY_COMPLETION_INIT_SCRIPT = r"""
       set: (value) => {
         plotlyValue = value;
         wrapPlotly(value);
+      }
+    });
+  }
+
+  let renderPromiseValue = window.__starplotRenderPromise;
+  const observeRenderPromise = (value) => {
+    const generation = ++state.starplotCalls;
+    state.starplotCompletedAt = null;
+    Promise.resolve(value).then(() => {
+      if (generation === state.starplotCalls) {
+        // renderScene resolves only after its own final-paint contract.
+        state.starplotCompletedAt = performance.now();
+      }
+    }, () => {});
+  };
+  if (renderPromiseValue) observeRenderPromise(renderPromiseValue);
+  const renderDescriptor = Object.getOwnPropertyDescriptor(
+    window, "__starplotRenderPromise"
+  );
+  if (!renderDescriptor || renderDescriptor.configurable) {
+    Object.defineProperty(window, "__starplotRenderPromise", {
+      configurable: true,
+      enumerable: true,
+      get: () => renderPromiseValue,
+      set: (value) => {
+        renderPromiseValue = value;
+        observeRenderPromise(value);
       }
     });
   }
@@ -1386,24 +1416,26 @@ def _launch_browser(playwright):
 
 
 def _measure_browser_page(page, uri: str, timeout_ms: int) -> float:
-    """Measure navigation through Starplot's complete render and final paint."""
+    """Measure in-page navigation through the product's final-paint contract."""
     page.add_init_script(_PLOTLY_COMPLETION_INIT_SCRIPT)
-    started = time.perf_counter()
     page.goto(uri, wait_until="load", timeout=timeout_ms)
     page.wait_for_function(
-        """async () => {
-          if (window.__starplotRenderPromise) {
-            await window.__starplotRenderPromise;
-            await new Promise((resolve) => requestAnimationFrame(
-              () => requestAnimationFrame(resolve)
-            ));
-            return true;
-          }
-          return window.__starplotBenchmark.complete === true;
-        }""",
+        """() => window.__starplotBenchmark.starplotCompletedAt !== null
+          || window.__starplotBenchmark.complete === true""",
         timeout=timeout_ms,
     )
-    return (time.perf_counter() - started) * 1000.0
+    elapsed_ms = page.evaluate(
+        """() => window.__starplotBenchmark.starplotCompletedAt
+          ?? window.__starplotBenchmark.completedAt"""
+    )
+    if (
+        isinstance(elapsed_ms, bool)
+        or not isinstance(elapsed_ms, int | float)
+        or not math.isfinite(elapsed_ms)
+        or elapsed_ms < 0
+    ):
+        raise RuntimeError("browser did not report a finite completion timestamp")
+    return float(elapsed_ms)
 
 
 @contextmanager
