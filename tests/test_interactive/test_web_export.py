@@ -275,6 +275,7 @@ def test_directory_libraries_are_written_inside_the_owned_bundle(tmp_path):
 def test_cdn_integrity_is_version_pinned_and_does_not_depend_on_downloaded_bytes(
     monkeypatch,
 ):
+    monkeypatch.setattr("plotly.offline.get_plotlyjs_version", lambda: "3.0.1")
     monkeypatch.setattr(
         "plotly.offline.get_plotlyjs", lambda: "globalThis.tampered = true;"
     )
@@ -298,6 +299,24 @@ def test_cdn_integrity_is_version_pinned_and_does_not_depend_on_downloaded_bytes
     )
     assert (
         'integrity="sha384-ZLJeD2tDjUehiBbpE2rlA9XezXOj3fe6wSDijZ2/fB3S+vLWujzDGYI4GfPY5Bqz"'
+        in html
+    )
+
+
+def test_cdn_integrity_pins_plotly_3_3_1(monkeypatch):
+    monkeypatch.setattr("plotly.offline.get_plotlyjs_version", lambda: "3.3.1")
+
+    result = export_scene_html(
+        _scene(), "chart.html", data_mode="inline", library_mode="cdn"
+    )
+    html = result.html_path.read_text(encoding="utf-8")
+
+    assert (
+        'src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@3.3.1/plotly.min.js"'
+        in html
+    )
+    assert (
+        'integrity="sha384-SsOMajmLeeY81sOzGCn88NjTdDwa+nz3Lb1ZNouSdXAz5TBsvD+Pwgf1Iqtxns6c"'
         in html
     )
 

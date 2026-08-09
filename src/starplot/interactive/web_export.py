@@ -73,6 +73,7 @@ _ARROW_CDN = "https://cdn.jsdelivr.net/npm/apache-arrow@21.1.0/Arrow.es2015.min.
 # compromise self-validating.
 _PLOTLY_CDN_SRI = {
     "3.0.1": "sha384-8cEu0XVLh4s92OG4Ua4ZS75MN//b+0KqyCrhQqaXgHMVHnKC3DNVhwUyH5spa1J2",
+    "3.3.1": "sha384-SsOMajmLeeY81sOzGCn88NjTdDwa+nz3Lb1ZNouSdXAz5TBsvD+Pwgf1Iqtxns6c",
 }
 _ARROW_CDN_SRI = "sha384-ZLJeD2tDjUehiBbpE2rlA9XezXOj3fe6wSDijZ2/fB3S+vLWujzDGYI4GfPY5Bqz"
 

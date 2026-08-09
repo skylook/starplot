@@ -47,11 +47,40 @@ OUTPUT = ROOT / "comparison_outputs"
 DATA_CACHE = OUTPUT / ".data-cache"
 ALL_TRANSPORTS = ("inline", "external", "provider")
 _EXAMPLE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_VISUAL_RUNTIME_ASSETS = (
+    Path("src/starplot/interactive/assets/starplot-scene-loader.js"),
+    Path("src/starplot/interactive/assets/plotly-scene-adapter.js"),
+)
 
 
 def _validate_name(name: str) -> None:
     if not name or not _EXAMPLE_NAME_RE.fullmatch(name):
         raise ValueError(f"invalid example name: {name!r}")
+
+
+def _git_stdout(root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ).stdout
+
+
+def _visual_evidence_provenance(root: Path = ROOT) -> dict[str, object]:
+    """Bind comparison artifacts to the revision and browser runtime assets."""
+    return {
+        "git_revision": _git_stdout(root, "rev-parse", "HEAD").strip(),
+        "tracked_dirty": bool(
+            _git_stdout(root, "status", "--porcelain", "--untracked-files=no").strip()
+        ),
+        "assets": {
+            path.as_posix(): hashlib.sha256((root / path).read_bytes()).hexdigest()
+            for path in _VISUAL_RUNTIME_ASSETS
+        },
+    }
 
 
 class _InlinePayloadParser(HTMLParser):
@@ -568,6 +597,7 @@ def run_example(name: str, transports: tuple[str, ...]) -> Path:
         interactive_png.replace(folder / "interactive.png")
         exports = json.loads((folder / "comparison-exports.json").read_text(encoding="utf-8"))
         exports["interactive_png"] = "interactive.png"
+        exports["provenance"] = _visual_evidence_provenance()
         (folder / "comparison-exports.json").write_text(json.dumps(exports, indent=2) + "\n", encoding="utf-8")
         print("[3/4] Verifying canonical transport bytes and decoded columns")
         report = _verify_transports(folder, server, exports, transports)

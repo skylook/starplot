@@ -1,5 +1,6 @@
 """Unit tests for the visual parity comparison harness helpers."""
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +21,39 @@ from starplot.interactive.scene import (
 from starplot.interactive.web_export import export_scene_html
 import tools.visual_parity.gen_comparison as gen
 import tools.visual_parity._example_runner as runner
+
+
+def test_visual_evidence_provenance_binds_revision_dirty_state_and_assets(
+    monkeypatch, tmp_path
+):
+    loader = tmp_path / "src/starplot/interactive/assets/starplot-scene-loader.js"
+    adapter = tmp_path / "src/starplot/interactive/assets/plotly-scene-adapter.js"
+    loader.parent.mkdir(parents=True)
+    loader.write_bytes(b"loader")
+    adapter.write_bytes(b"adapter")
+
+    def fake_git_stdout(root, *args):
+        assert root == tmp_path
+        if args == ("rev-parse", "HEAD"):
+            return "a" * 40 + "\n"
+        if args == ("status", "--porcelain", "--untracked-files=no"):
+            return " M src/starplot/example.py\n"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(gen, "_git_stdout", fake_git_stdout)
+
+    assert gen._visual_evidence_provenance(tmp_path) == {
+        "git_revision": "a" * 40,
+        "tracked_dirty": True,
+        "assets": {
+            "src/starplot/interactive/assets/starplot-scene-loader.js": hashlib.sha256(
+                b"loader"
+            ).hexdigest(),
+            "src/starplot/interactive/assets/plotly-scene-adapter.js": hashlib.sha256(
+                b"adapter"
+            ).hexdigest(),
+        },
+    }
 
 
 def test_snapshot_pngs_lists_only_png_files(tmp_path):

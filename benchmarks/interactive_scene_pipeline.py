@@ -39,13 +39,14 @@ REQUIRED_RESULT_KEYS = {
     "point_count",
     "scene_compile",
 }
-BENCHMARK_SCHEMA_VERSION = 1
+BENCHMARK_SCHEMA_VERSION = 2
 REQUIRED_ARTIFACT_KEYS = REQUIRED_RESULT_KEYS | {
     "artifact_role",
     "legacy_renderer_preparation",
     "legacy_renderer_total",
     "plot_type_coverage",
     "plotly_construction",
+    "provenance",
     "schema_version",
 }
 REQUIRED_LEGACY_BASELINE_KEYS = {
@@ -55,6 +56,7 @@ REQUIRED_LEGACY_BASELINE_KEYS = {
     "ordinary_chart",
     "peak_rss_mb",
     "point_count",
+    "provenance",
     "scene_compile",
     "schema_version",
 }
@@ -87,6 +89,7 @@ PERFORMANCE_GATES = {
     "browser_complete_render_ratio_max": 1.10,
     # Product-facing absolute budget, kept separate from transport overhead.
     "browser_complete_render_p95_ms_max": 5000,
+    "browser_cold_start_ms_max": 5000,
     "ordinary_chart_regression_ratio_max": 1.10,
     "viewport_warm_median_ms_max": 500,
     "viewport_warm_p95_ms_max": 1000,
@@ -106,6 +109,15 @@ _PLOT_TYPE_BROWSER_SEMANTICS = (
     "interactive plot family; timings are diagnostic and have no cross-family gate."
 )
 _SUPPORTED_INTERACTIVE_PLOT_KINDS = frozenset({"map", "horizon", "zenith", "optic"})
+_SOURCE_FINGERPRINT_SCOPE = [
+    "benchmarks/interactive_scene_pipeline.py",
+    "pyproject.toml",
+    "src/starplot/** (tracked files)",
+]
+_LEGACY_MEASUREMENT_KINDS = {
+    "dense_workload": "historical-pre-arrow-release-baseline",
+    "ordinary_chart": "isolated-control-backfill",
+}
 _COMPARABLE_ENVIRONMENT_KEYS = (
     "host_fingerprint",
     "cpu",
@@ -117,6 +129,7 @@ _COMPARABLE_ENVIRONMENT_KEYS = (
     "plotly",
     "pyarrow",
     "shapely",
+    "starplot",
 )
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _PLOTLY_COMPLETION_INIT_SCRIPT = r"""
@@ -243,7 +256,194 @@ def _validate_timing_summary(summary: object, label: str) -> None:
         raise ValueError(f"{label}.p95_seconds must be at least median_seconds")
 
 
-def _validate_primary_browser(browser: object) -> None:
+def _git_output(*args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=_REPOSITORY_ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    return completed.stdout
+
+
+def _source_fingerprint_paths() -> list[Path]:
+    tracked = _git_output(
+        "ls-files",
+        "--",
+        "benchmarks/interactive_scene_pipeline.py",
+        "pyproject.toml",
+        "src/starplot",
+    )
+    return [
+        _REPOSITORY_ROOT / relative_path
+        for relative_path in sorted(filter(None, tracked.splitlines()))
+    ]
+
+
+def _source_fingerprint() -> str:
+    digest = hashlib.sha256()
+    for path in _source_fingerprint_paths():
+        relative_path = path.relative_to(_REPOSITORY_ROOT).as_posix().encode()
+        content = path.read_bytes()
+        digest.update(len(relative_path).to_bytes(8, "big"))
+        digest.update(relative_path)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _tracked_worktree_dirty() -> bool:
+    status = _git_output("status", "--porcelain=v1", "--untracked-files=all")
+    for line in status.splitlines():
+        if not line:
+            continue
+        path = line[3:].split(" -> ")[-1]
+        if line.startswith("?? "):
+            if path.startswith("src/starplot/"):
+                return True
+            continue
+        if path.startswith("benchmarks/baselines/") and path.endswith(".json"):
+            continue
+        return True
+    return False
+
+
+def _current_source_provenance() -> dict[str, object]:
+    return {
+        "fingerprint": _source_fingerprint(),
+        "fingerprint_scope": list(_SOURCE_FINGERPRINT_SCOPE),
+        "git_revision": _git_output("rev-parse", "HEAD").strip(),
+        "tracked_dirty": _tracked_worktree_dirty(),
+    }
+
+
+def _workload_provenance(
+    point_count: int,
+    ordinary_point_count: int | None,
+    repeats: int,
+) -> dict[str, object]:
+    workload: dict[str, object] = {
+        "ordinary_point_count": ordinary_point_count,
+        "point_count": point_count,
+        "repeats": repeats,
+        "seed": _SEED,
+    }
+    encoded = json.dumps(workload, sort_keys=True, separators=(",", ":")).encode()
+    return {
+        **workload,
+        "fingerprint": f"sha256:{hashlib.sha256(encoded).hexdigest()}",
+    }
+
+
+def _is_full_git_revision(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _validate_candidate_provenance(result: dict) -> int:
+    provenance = result.get("provenance")
+    if not isinstance(provenance, dict):
+        raise ValueError("provenance must be a mapping")
+    source = provenance.get("source")
+    if not isinstance(source, dict):
+        raise ValueError("provenance.source must be a mapping")
+    _require_scene_hash(source, "fingerprint", "provenance.source.fingerprint")
+    if source.get("fingerprint_scope") != _SOURCE_FINGERPRINT_SCOPE:
+        raise ValueError("provenance.source.fingerprint_scope is invalid")
+    if not _is_full_git_revision(source.get("git_revision")):
+        raise ValueError("provenance.source.git_revision must be a full git revision")
+    if not isinstance(source.get("tracked_dirty"), bool):
+        raise ValueError("provenance.source.tracked_dirty must be boolean")
+
+    current_source = _current_source_provenance()
+    # An artifact-only follow-up commit legitimately changes HEAD without
+    # changing any fingerprinted runtime source.  Keep the measured full SHA
+    # as provenance, but bind validity to content and relevant dirty state.
+    for key in ("fingerprint", "fingerprint_scope", "tracked_dirty"):
+        if source.get(key) != current_source.get(key):
+            raise ValueError(
+                f"provenance.source.{key} does not match the current workspace"
+            )
+
+    workload = provenance.get("workload")
+    if not isinstance(workload, dict):
+        raise ValueError("provenance.workload must be a mapping")
+    repeats = _require_positive_integer(workload, "repeats", "provenance.workload.repeats")
+    ordinary = result.get("ordinary_chart")
+    ordinary_point_count = (
+        ordinary.get("point_count") if isinstance(ordinary, dict) else None
+    )
+    expected_workload = _workload_provenance(
+        result.get("point_count"), ordinary_point_count, repeats
+    )
+    if workload != expected_workload:
+        raise ValueError("provenance.workload does not match the benchmark workload")
+    for key, label in (
+        ("raw_repetitions", "raw_repetitions"),
+        ("ordinary_chart", "ordinary_chart.raw_repetitions"),
+    ):
+        if key == "ordinary_chart":
+            values = ordinary.get("raw_repetitions") if isinstance(ordinary, dict) else None
+        else:
+            values = result.get(key)
+        if values is not None and (
+            not isinstance(values, list) or len(values) != repeats
+        ):
+            raise ValueError(f"{label} must contain exactly {repeats} repeats")
+    return repeats
+
+
+def _validate_legacy_provenance(result: dict) -> None:
+    provenance = result.get("provenance")
+    if not isinstance(provenance, dict) or set(provenance) != set(
+        _LEGACY_MEASUREMENT_KINDS
+    ):
+        raise ValueError(
+            "provenance must contain dense_workload and ordinary_chart"
+        )
+    for segment, measurement_kind in _LEGACY_MEASUREMENT_KINDS.items():
+        evidence = provenance.get(segment)
+        if not isinstance(evidence, dict):
+            raise ValueError(f"provenance.{segment} must be a mapping")
+        if evidence.get("measurement_kind") != measurement_kind:
+            raise ValueError(
+                f"provenance.{segment}.measurement_kind is not recognized"
+            )
+        if not _is_full_git_revision(evidence.get("revision")):
+            raise ValueError(
+                f"provenance.{segment}.revision must be a full git revision"
+            )
+        captured_at = evidence.get("captured_at_utc")
+        try:
+            parsed = datetime.fromisoformat(captured_at)
+        except (TypeError, ValueError):
+            parsed = None
+        if parsed is None or parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError(
+                f"provenance.{segment}.captured_at_utc must be timezone-aware ISO time"
+            )
+
+
+def _require_raw_repeats(
+    mapping: dict,
+    key: str,
+    label: str,
+    repeats: int,
+) -> list[float]:
+    values = mapping.get(key)
+    if not isinstance(values, list) or len(values) != repeats:
+        raise ValueError(f"{label} must contain exactly {repeats} repeats")
+    return [
+        _require_nonnegative_number({"value": value}, "value", label)
+        for value in values
+    ]
+
+
+def _validate_primary_browser(browser: object, repeats: int) -> None:
     if not isinstance(browser, dict):
         raise ValueError("browser must be a mapping")
     status = browser.get("status")
@@ -275,10 +475,21 @@ def _validate_primary_browser(browser: object) -> None:
     p95 = _require_nonnegative_number(
         browser, "complete_render_p95_ms", "browser.complete_render_p95_ms"
     )
+    _require_nonnegative_number(browser, "cold_start_ms", "browser.cold_start_ms")
+    raw_warm = _require_raw_repeats(
+        browser,
+        "raw_warm_repeats_ms",
+        "browser.raw_warm_repeats_ms",
+        repeats,
+    )
     if p95 < median:
         raise ValueError(
             "browser.complete_render_p95_ms must be at least complete_render_median_ms"
         )
+    if not math.isclose(median, percentile(raw_warm, 50)) or not math.isclose(
+        p95, percentile(raw_warm, 95)
+    ):
+        raise ValueError("browser summary timings do not match raw_warm_repeats_ms")
 
     legacy = browser.get("legacy_same_scene")
     if not isinstance(legacy, dict):
@@ -305,10 +516,28 @@ def _validate_primary_browser(browser: object) -> None:
         "complete_render_p95_ms",
         "browser.legacy_same_scene.complete_render_p95_ms",
     )
+    _require_nonnegative_number(
+        legacy,
+        "cold_start_ms",
+        "browser.legacy_same_scene.cold_start_ms",
+    )
+    legacy_raw_warm = _require_raw_repeats(
+        legacy,
+        "raw_warm_repeats_ms",
+        "browser.legacy_same_scene.raw_warm_repeats_ms",
+        repeats,
+    )
     if legacy_p95 < legacy_median:
         raise ValueError(
             "browser.legacy_same_scene.complete_render_p95_ms must be at least "
             "complete_render_median_ms"
+        )
+    if not math.isclose(
+        legacy_median, percentile(legacy_raw_warm, 50)
+    ) or not math.isclose(legacy_p95, percentile(legacy_raw_warm, 95)):
+        raise ValueError(
+            "browser.legacy_same_scene summary timings do not match "
+            "raw_warm_repeats_ms"
         )
 
 
@@ -334,6 +563,7 @@ def _validate_legacy_baseline(result: dict) -> None:
         browser, "source_kind", "legacy baseline browser.source_kind"
     )
     _require_nonempty_string(browser, "reason", "legacy baseline browser.reason")
+    _validate_legacy_provenance(result)
 
 
 def validate_benchmark_artifact(result: dict) -> None:
@@ -353,7 +583,8 @@ def validate_benchmark_artifact(result: dict) -> None:
         raise ValueError(f"Missing benchmark artifact keys: {sorted(missing)}")
     _validate_environment(result.get("environment"))
     _require_positive_integer(result, "point_count", "point_count")
-    _validate_primary_browser(result.get("browser"))
+    repeats = _validate_candidate_provenance(result)
+    _validate_primary_browser(result.get("browser"), repeats)
     coverage = result.get("plot_type_coverage")
     if not isinstance(coverage, dict) or not isinstance(coverage.get("semantics"), str):
         raise ValueError("plot_type_coverage must include string semantics")
@@ -531,6 +762,11 @@ def compare_results(before: dict, after: dict) -> list[str]:
         except ValueError as error:
             return [f"{label} artifact schema is invalid: {error}"]
 
+    if after["provenance"]["source"]["tracked_dirty"]:
+        return [
+            "candidate source provenance is tracked-dirty; regenerate from a clean commit"
+        ]
+
     before_environment = before["environment"]
     after_environment = after["environment"]
     for key in _COMPARABLE_ENVIRONMENT_KEYS:
@@ -635,6 +871,11 @@ def compare_results(before: dict, after: dict) -> list[str]:
         "browser_complete_render_p95",
         "browser.complete_render_p95_ms",
         PERFORMANCE_GATES["browser_complete_render_p95_ms_max"],
+    )
+    maximum_gate(
+        "browser_cold_start",
+        "browser.cold_start_ms",
+        PERFORMANCE_GATES["browser_cold_start_ms_max"],
     )
     ratio_gate(
         "ordinary_chart",
@@ -1350,6 +1591,7 @@ def run_browser_benchmark(
 
     measurements: list[float] = []
     legacy_measurements: list[float] = []
+    cold_starts: dict[str, float] = {}
     try:
         with _external_browser_fixture(
             point_count, fixture_timeout_seconds
@@ -1357,31 +1599,44 @@ def run_browser_benchmark(
             browser = _launch_browser(playwright)
             try:
                 browser_version = browser.version
-                for name, url, values in (
-                    ("external Arrow", fixture["source_url"], measurements),
-                    ("legacy direct", fixture["legacy_source_url"], legacy_measurements),
-                ):
-                    # ``browser.new_page`` is a convenience API that creates a
-                    # fresh context for every page, so its nominal warm-up does
-                    # not warm HTTP/library caches for the measured repeats.
-                    # Give each source an isolated persistent context and open
-                    # fresh pages inside it: warm within a source, never across
-                    # the external/direct comparison boundary.
-                    context = browser.new_context(
-                        viewport={"width": 1000, "height": 500}
-                    )
-                    try:
-                        for iteration in range(repeats + 1):
-                            label = (
-                                "warm-up"
-                                if iteration == 0
-                                else f"repeat {iteration}/{repeats}"
-                            )
+                series = [
+                    {
+                        "key": "external",
+                        "name": "external Arrow",
+                        "url": fixture["source_url"],
+                        "values": measurements,
+                    },
+                    {
+                        "key": "legacy",
+                        "name": "legacy direct",
+                        "url": fixture["legacy_source_url"],
+                        "values": legacy_measurements,
+                    },
+                ]
+                contexts = []
+                try:
+                    for item in series:
+                        context = browser.new_context(
+                            viewport={"width": 1000, "height": 500}
+                        )
+                        contexts.append(context)
+                        item["context"] = context
+                    for iteration in range(repeats + 1):
+                        label = (
+                            "cold start"
+                            if iteration == 0
+                            else f"warm repeat {iteration}/{repeats}"
+                        )
+                        ordered_series = (
+                            series if iteration % 2 == 0 else list(reversed(series))
+                        )
+                        for item in ordered_series:
+                            name = item["name"]
                             print(f"Browser {name} {label}: starting", flush=True)
-                            page = context.new_page()
+                            page = item["context"].new_page()
                             try:
                                 elapsed_ms = _measure_browser_page(
-                                    page, url, _BROWSER_TIMEOUT_MS,
+                                    page, item["url"], _BROWSER_TIMEOUT_MS,
                                 )
                             finally:
                                 page.close()
@@ -1389,9 +1644,12 @@ def run_browser_benchmark(
                                 f"Browser {name} {label}: complete ({elapsed_ms:.3f} ms)",
                                 flush=True,
                             )
-                            if iteration:
-                                values.append(elapsed_ms)
-                    finally:
+                            if iteration == 0:
+                                cold_starts[item["key"]] = elapsed_ms
+                            else:
+                                item["values"].append(elapsed_ms)
+                finally:
+                    for context in reversed(contexts):
                         context.close()
             finally:
                 browser.close()
@@ -1411,14 +1669,18 @@ def run_browser_benchmark(
             "Starplot render promise including scale correction plus two animation "
             "frames; Plotly promise fallback for legacy fixture"
         ),
+        "cold_start_ms": cold_starts["external"],
         "engine": "chromium",
         "engine_version": browser_version,
         "legacy_same_scene": {
             "complete_render_median_ms": percentile(legacy_measurements, 50),
             "complete_render_p95_ms": percentile(legacy_measurements, 95),
+            "cold_start_ms": cold_starts["legacy"],
+            "raw_warm_repeats_ms": list(legacy_measurements),
             "scene_hash": fixture["scene_hash"],
             "source_kind": fixture["legacy_source_kind"],
         },
+        "raw_warm_repeats_ms": list(measurements),
         **fixture,
         "status": "measured",
     }
@@ -1531,6 +1793,10 @@ def run_python_benchmark(
         "plotly_construction": plotly_construction,
         "plot_type_coverage": plot_type_coverage,
         "point_count": point_count,
+        "provenance": {
+            "source": _current_source_provenance(),
+            "workload": _workload_provenance(point_count, ordinary_points, repeats),
+        },
         "scene_compile": scene_compile,
         "schema_version": BENCHMARK_SCHEMA_VERSION,
         "raw_repetitions": measured,

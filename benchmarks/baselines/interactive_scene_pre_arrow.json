@@ -2,7 +2,7 @@
   "artifact_role": "legacy_baseline",
   "browser": {
     "reason": "The candidate browser gate uses a paired direct-Plotly fixture generated from the same Scene; this artifact retains the established pre-Arrow Python release baseline.",
-    "source_kind": "legacy-renderer-revision-23e3358",
+    "source_kind": "legacy-renderer-revision-23e3358214e15c444e0da0651a5f5cb3ab0268fd",
     "status": "not_applicable"
   },
   "environment": {
@@ -56,12 +56,12 @@
     "dense_workload": {
       "captured_at_utc": "2026-07-16T17:02:21.772099+00:00",
       "measurement_kind": "historical-pre-arrow-release-baseline",
-      "revision": "23e3358"
+      "revision": "23e3358214e15c444e0da0651a5f5cb3ab0268fd"
     },
     "ordinary_chart": {
       "captured_at_utc": "2026-08-09T12:58:52.581770+00:00",
       "measurement_kind": "isolated-control-backfill",
-      "revision": "23e3358"
+      "revision": "23e3358214e15c444e0da0651a5f5cb3ab0268fd"
     }
   },
   "scene_compile": {
@@ -69,5 +69,5 @@
     "p95_seconds": 75.36228827115846,
     "semantics": "Compatibility alias for legacy_renderer_total: legacy pre-Scene command preparation plus Plotly Figure construction; not a native Scene compiler."
   },
-  "schema_version": 1
+  "schema_version": 2
 }
