@@ -17,6 +17,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import re
 try:
     import resource
 except ImportError:
@@ -1285,8 +1286,22 @@ def _run_browser_fixture_worker(point_count: int, output_directory: Path) -> dic
     # This legacy page uses the exact same Scene and local Plotly library as
     # the Arrow page. It is only a like-for-like browser baseline, never a
     # public delivery mode.
-    PlotlySceneAdapter().render(scene).write_html(
-        output_directory / "legacy.html", include_plotlyjs="directory"
+    scene_html = exported.html_path.read_text(encoding="utf-8")
+    match = re.search(
+        r'<script src="[^"]*plotly[^"]*"[^>]* integrity="[^"]+"[^>]*></script>',
+        scene_html,
+    )
+    if match is None:
+        raise RuntimeError("external fixture is missing its pinned Plotly library")
+    figure_html = PlotlySceneAdapter().render(scene).to_html(
+        include_plotlyjs=False,
+        full_html=True,
+    )
+    if "</head>" not in figure_html:
+        raise RuntimeError("legacy Plotly fixture has no HTML head")
+    (output_directory / "legacy.html").write_text(
+        figure_html.replace("</head>", f"{match.group(0)}</head>", 1),
+        encoding="utf-8",
     )
     return {
         "arrow_payload_bytes": sum(

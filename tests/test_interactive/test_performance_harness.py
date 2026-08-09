@@ -1193,6 +1193,22 @@ def test_browser_fixture_worker_exports_arrow_and_same_scene_legacy():
     assert "SceneCompiler" in source
     assert "DataMode.EXTERNAL" in source
     assert "PlotlySceneAdapter().render(scene)" in source
+    assert "include_plotlyjs=False" in source
+    assert "match.group(0)" in source
+
+
+def test_browser_fixture_worker_shares_the_custom_plotly_asset(tmp_path):
+    result = benchmark._run_browser_fixture_worker(10, tmp_path)
+
+    assert result["arrow_payload_bytes"] > 0
+    scene_html = (tmp_path / "scene.html").read_text(encoding="utf-8")
+    legacy_html = (tmp_path / "legacy.html").read_text(encoding="utf-8")
+    expected = "scene.scene/assets/plotly-starplot-3.3.1.min.js"
+    assert scene_html.count(expected) == 1
+    assert legacy_html.count(expected) == 1
+    assert (
+        tmp_path / "scene.scene" / "assets" / "plotly-starplot-3.3.1.min.js"
+    ).is_file()
 
 
 def test_browser_fixture_starts_server_only_after_isolated_export(

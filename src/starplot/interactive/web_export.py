@@ -66,6 +66,8 @@ class _LibraryAssets:
 
 _ASSETS = Path(__file__).with_name("assets")
 _ARROW_CDN = "https://cdn.jsdelivr.net/npm/apache-arrow@21.1.0/Arrow.es2015.min.js"
+_CUSTOM_PLOTLY_FILENAME = "plotly-starplot-3.3.1.min.js"
+_CUSTOM_PLOTLY_PATH = _ASSETS / "vendor" / _CUSTOM_PLOTLY_FILENAME
 
 # These hashes are reviewed release metadata for the exact immutable CDN URLs
 # below.  Keep each version/hash update in the same change as the dependency
@@ -247,12 +249,12 @@ def _scene_id(layer_bytes: Mapping[str, bytes]) -> str:
 
 
 def _libraries(mode: LibraryMode, bundle: Path | None) -> _LibraryAssets:
-    try:
-        from plotly.offline import get_plotlyjs, get_plotlyjs_version
-    except ImportError as error:  # pragma: no cover - optional extra boundary
-        raise RuntimeError("plotly is required for interactive HTML export") from error
-    plotly_version = get_plotlyjs_version()
     if mode is LibraryMode.CDN:
+        try:
+            from plotly.offline import get_plotlyjs_version
+        except ImportError as error:  # pragma: no cover - optional extra boundary
+            raise RuntimeError("plotly is required for CDN HTML export") from error
+        plotly_version = get_plotlyjs_version()
         try:
             plotly_integrity = _PLOTLY_CDN_SRI[plotly_version]
         except KeyError as error:
@@ -269,7 +271,7 @@ def _libraries(mode: LibraryMode, bundle: Path | None) -> _LibraryAssets:
             cross_origin=True,
             directory=False,
         )
-    plotly_content = get_plotlyjs().encode()
+    plotly_content = _CUSTOM_PLOTLY_PATH.read_bytes()
     arrow_content = (_ASSETS / "vendor" / "apache-arrow.min.js").read_bytes()
     if mode is LibraryMode.INLINE:
         return _LibraryAssets(
@@ -283,13 +285,12 @@ def _libraries(mode: LibraryMode, bundle: Path | None) -> _LibraryAssets:
     assert bundle is not None
     assets = bundle / "assets"
     assets.mkdir(parents=True, exist_ok=True)
-    plotly_filename = f"plotly-{plotly_version}.min.js"
-    _atomic_write(assets / plotly_filename, plotly_content)
+    _atomic_write(assets / _CUSTOM_PLOTLY_FILENAME, plotly_content)
     _atomic_write(assets / "apache-arrow-21.1.0.min.js", arrow_content)
     shutil.copyfile(_ASSETS / "starplot-scene-loader.js", assets / "starplot-scene-loader.js")
     shutil.copyfile(_ASSETS / "plotly-scene-adapter.js", assets / "plotly-scene-adapter.js")
     return _LibraryAssets(
-        plotly=f"assets/{plotly_filename}",
+        plotly=f"assets/{_CUSTOM_PLOTLY_FILENAME}",
         arrow="assets/apache-arrow-21.1.0.min.js",
         plotly_integrity=_sri_hash(plotly_content),
         arrow_integrity=_sri_hash(arrow_content),

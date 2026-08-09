@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import base64
 from dataclasses import replace
+import hashlib
 import json
 import re
 import subprocess
 
 import numpy as np
 import pytest
-from plotly.offline import get_plotlyjs_version
 
 from starplot.interactive import (
     ColumnarData,
@@ -267,9 +267,47 @@ def test_directory_libraries_are_written_inside_the_owned_bundle(tmp_path):
         _scene(), "chart.html", library_mode=LibraryMode.DIRECTORY
     )
     html = result.html_path.read_text(encoding="utf-8")
-    assert f'src="chart.scene/assets/plotly-{get_plotlyjs_version()}.min.js"' in html
+    assert (
+        'src="chart.scene/assets/plotly-starplot-3.3.1.min.js"' in html
+    )
     assert (result.bundle_path / "assets" / "starplot-scene-loader.js").is_file()
     assert (result.bundle_path / "assets" / "apache-arrow-21.1.0.min.js").is_file()
+
+
+def test_offline_modes_use_the_reviewed_custom_plotly_bundle(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "plotly.offline.get_plotlyjs",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("offline exports must not use the full Plotly bundle")
+        ),
+    )
+
+    external = export_scene_html(
+        _scene(), "external.html", library_mode=LibraryMode.DIRECTORY
+    )
+    custom = (
+        external.bundle_path
+        / "assets"
+        / "plotly-starplot-3.3.1.min.js"
+    )
+    payload = custom.read_bytes()
+    html = external.html_path.read_text(encoding="utf-8")
+    assert len(payload) == 1_533_024
+    assert hashlib.sha256(payload).hexdigest() == (
+        "a71bd729eb405abeb75a40df6aa826039043a6e84c2afac33d47aa8009e1c130"
+    )
+    assert b"plotly.js (starplot - minified) v3.3.1" in payload[:256]
+    assert (
+        'integrity="sha384-7YvfTH8Nho5YUQqt4yYfagdwWlaXTy6hUHE+'
+        '2sPiu7Zi2CPr3NLyLvttJFVbNedw"'
+    ) in html
+
+    inline = export_scene_html(
+        _scene(), "inline.html", data_mode="inline", library_mode="inline"
+    )
+    inline_html = inline.html_path.read_text(encoding="utf-8")
+    assert "plotly.js (starplot - minified) v3.3.1" in inline_html
+    assert "plotly.js v3.3.1. Copyright 2012-2025" not in inline_html
 
 
 def test_cdn_integrity_is_version_pinned_and_does_not_depend_on_downloaded_bytes(

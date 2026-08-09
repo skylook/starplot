@@ -1,0 +1,17 @@
+Starplot Plotly.js custom bundle provenance
+===========================================
+
+Source package: plotly.js@3.3.1 from the npm registry
+Source npm shasum: 213176ea82dc08f5ec69de3c3d184cfdbd29044a
+Source tarball SHA-256: a13c95bc90dc2e86b70662055835769dad5b6276a559f7a8ab2e0876d2a75204
+Build command: npm run custom-bundle -- --out starplot --traces scatter,scattergl,heatmap,table
+Build kind: official non-strict custom bundle
+Included traces: heatmap, scatter, scattergl, table
+Output filename: plotly-starplot-3.3.1.min.js
+Output bytes: 1533024
+Output SHA-256: a71bd729eb405abeb75a40df6aa826039043a6e84c2afac33d47aa8009e1c130
+Output SHA-384 SRI: sha384-7YvfTH8Nho5YUQqt4yYfagdwWlaXTy6hUHE+2sPiu7Zi2CPr3NLyLvttJFVbNedw
+
+The bundle is generated, not hand-edited. Rebuild it only from the exact
+source version above, review the trace list, and update all hashes together.
+Plotly.js is distributed under the MIT license in PLOTLY_LICENSE.txt.
