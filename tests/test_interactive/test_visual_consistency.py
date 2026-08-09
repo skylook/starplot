@@ -184,6 +184,10 @@ def test_visual_plotly_matches_matplotlib_local_crops(tmp_path):
     light antialiasing and focuses on visible pixel differences.
     """
     importlib.import_module("kaleido")
+    pytest.importorskip(
+        "scipy.ndimage",
+        reason="semantic crop selection requires the optional SciPy dependency",
+    )
     from PIL import Image
     from ibis import _ as ibis_col
     import tools.visual_parity.crops as crops
