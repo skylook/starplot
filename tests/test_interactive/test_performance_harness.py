@@ -136,6 +136,7 @@ def raw_worker_result(
     arrow=100,
     external=100,
     peak=10.0,
+    point_count=100,
 ):
     if viewport is None:
         viewport = [1.0] * 5
@@ -147,7 +148,90 @@ def raw_worker_result(
         "payload_bytes": payload,
         "peak_rss_mb": peak,
         "plotly_construction_seconds": plotly,
+        "point_count": point_count,
         "viewport_warm_ms": list(viewport),
+    }
+
+
+def _navigation_sample():
+    return {
+        "startTime": 0.0,
+        "duration": 100.0,
+        "domComplete": 50.0,
+        "loadEventEnd": 60.0,
+        "responseEnd": 40.0,
+    }
+
+
+def complete_browser_result(*, repeats=2):
+    scene_hash = f"sha256:{'a' * 64}"
+    raw_warm = [
+        80.0 + 40.0 * i / max(repeats - 1, 1)
+        for i in range(repeats)
+    ]
+    raw_cold = [4000.0 + 100.0 * i for i in range(benchmark._BROWSER_COLD_SAMPLES)]
+    legacy_raw_warm = [
+        80.0 + 20.0 * i / max(repeats - 1, 1)
+        for i in range(repeats)
+    ]
+    legacy_raw_cold = [4500.0 + 100.0 * i for i in range(benchmark._BROWSER_COLD_SAMPLES)]
+
+    all_navigation = [
+        {
+            "kind": "cold" if i < benchmark._BROWSER_COLD_SAMPLES else "warm",
+            "series": "external",
+            "completion_signal": "starplot-product-promise",
+            "navigation_timings": [_navigation_sample()],
+        }
+        for i in range(benchmark._BROWSER_COLD_SAMPLES + repeats)
+    ]
+    legacy_navigation = [
+        {
+            "kind": "cold" if i < benchmark._BROWSER_COLD_SAMPLES else "warm",
+            "series": "legacy",
+            "completion_signal": "plotly-fallback",
+            "navigation_timings": [_navigation_sample()],
+        }
+        for i in range(benchmark._BROWSER_COLD_SAMPLES + repeats)
+    ]
+
+    return {
+        "all_completion_signals": ["starplot-product-promise"] * (
+            benchmark._BROWSER_COLD_SAMPLES + repeats
+        ),
+        "all_navigation_timings": all_navigation,
+        "arrow_payload_bytes": 100,
+        "complete_render_median_ms": benchmark.percentile(raw_warm, 50),
+        "complete_render_p95_ms": benchmark.percentile(raw_warm, 95),
+        "completion_signal": "starplot-product-promise",
+        "cold_start_ms": raw_cold[0],
+        "cold_start_median_ms": benchmark.percentile(raw_cold, 50),
+        "cold_start_p95_ms": benchmark.percentile(raw_cold, 95),
+        "engine": "chromium",
+        "engine_version": "150.0",
+        "legacy_same_scene": {
+            "all_completion_signals": ["plotly-fallback"] * (
+                benchmark._BROWSER_COLD_SAMPLES + repeats
+            ),
+            "all_navigation_timings": legacy_navigation,
+            "cold_start_ms": legacy_raw_cold[0],
+            "cold_start_median_ms": benchmark.percentile(legacy_raw_cold, 50),
+            "cold_start_p95_ms": benchmark.percentile(legacy_raw_cold, 95),
+            "complete_render_median_ms": benchmark.percentile(legacy_raw_warm, 50),
+            "complete_render_p95_ms": benchmark.percentile(legacy_raw_warm, 95),
+            "completion_signal": "plotly-fallback",
+            "raw_cold_repeats_ms": list(legacy_raw_cold),
+            "raw_warm_repeats_ms": list(legacy_raw_warm),
+            "scene_hash": scene_hash,
+            "source_kind": "direct-plotly-same-scene-http",
+        },
+        "raw_cold_repeats_ms": list(raw_cold),
+        "raw_warm_repeats_ms": list(raw_warm),
+        "scene_hash": scene_hash,
+        "source_kind": "external-arrow-http",
+        "source_url": "http://127.0.0.1/scene.html",
+        "legacy_source_url": "http://127.0.0.1/legacy.html",
+        "status": "measured",
     }
 
 
@@ -155,36 +239,15 @@ def complete_result():
     preparation = {"median_seconds": 1.0, "p95_seconds": 1.0}
     total = {"median_seconds": 1.0, "p95_seconds": 1.0}
     plotly = {"median_seconds": 1.0, "p95_seconds": 1.0}
-    scene_hash = f"sha256:{'a' * 64}"
     raw_repetitions = [raw_worker_result(), raw_worker_result()]
     ordinary_raw = [
-        raw_worker_result(total=1.0),
-        raw_worker_result(total=1.0),
+        raw_worker_result(total=1.0, point_count=10),
+        raw_worker_result(total=1.0, point_count=10),
     ]
     return {
         "arrow_payload_bytes": 100,
         "artifact_role": "candidate",
-        "browser": {
-            "arrow_payload_bytes": 100,
-            "complete_render_median_ms": 100.0,
-            "complete_render_p95_ms": 118.0,
-            "completion_signal": "render promise plus final paint",
-            "cold_start_ms": 4000.0,
-            "engine": "chromium",
-            "engine_version": "150.0",
-            "legacy_same_scene": {
-                "complete_render_median_ms": 90.0,
-                "complete_render_p95_ms": 99.0,
-                "cold_start_ms": 4500.0,
-                "raw_warm_repeats_ms": [80.0, 100.0],
-                "scene_hash": scene_hash,
-                "source_kind": "direct-plotly-same-scene-http",
-            },
-            "raw_warm_repeats_ms": [80.0, 120.0],
-            "scene_hash": scene_hash,
-            "source_kind": "external-arrow-http",
-            "status": "measured",
-        },
+        "browser": complete_browser_result(repeats=2),
         "environment": ENVIRONMENT,
         "external_html_bytes": 100,
         "legacy_renderer_preparation": dict(preparation),
@@ -208,18 +271,6 @@ def complete_result():
         "schema_version": benchmark.BENCHMARK_SCHEMA_VERSION,
         "viewport_warm": {"median_ms": 1.0, "p95_ms": 1.0},
     }
-
-
-def complete_browser_result(*, repeats=2):
-    browser = complete_result()["browser"]
-    browser["raw_warm_repeats_ms"] = [100.0] * repeats
-    browser["complete_render_median_ms"] = 100.0
-    browser["complete_render_p95_ms"] = 100.0
-    legacy = browser["legacy_same_scene"]
-    legacy["raw_warm_repeats_ms"] = [90.0] * repeats
-    legacy["complete_render_median_ms"] = 90.0
-    legacy["complete_render_p95_ms"] = 90.0
-    return browser
 
 
 def complete_legacy_baseline():
@@ -501,13 +552,19 @@ def test_strict_artifact_schema_rejects_missing_plot_type_browser_evidence():
         (("complete_render_median_ms",), "complete_render_median_ms"),
         (("complete_render_p95_ms",), "complete_render_p95_ms"),
         (("cold_start_ms",), "cold_start_ms"),
+        (("raw_cold_repeats_ms",), "raw_cold_repeats_ms"),
+        (("cold_start_median_ms",), "cold_start_median_ms"),
+        (("cold_start_p95_ms",), "cold_start_p95_ms"),
         (("raw_warm_repeats_ms",), "raw_warm_repeats_ms"),
+        (("all_navigation_timings",), "all_navigation_timings"),
+        (("all_completion_signals",), "all_completion_signals"),
         (("legacy_same_scene",), "legacy_same_scene"),
         (
             ("legacy_same_scene", "source_kind"),
             "legacy_same_scene.source_kind",
         ),
         (("legacy_same_scene", "scene_hash"), "legacy_same_scene.scene_hash"),
+        (("legacy_same_scene", "completion_signal"), "legacy_same_scene.completion_signal"),
         (
             ("legacy_same_scene", "complete_render_median_ms"),
             "legacy_same_scene.complete_render_median_ms",
@@ -520,6 +577,26 @@ def test_strict_artifact_schema_rejects_missing_plot_type_browser_evidence():
         (
             ("legacy_same_scene", "raw_warm_repeats_ms"),
             "legacy_same_scene.raw_warm_repeats_ms",
+        ),
+        (
+            ("legacy_same_scene", "raw_cold_repeats_ms"),
+            "legacy_same_scene.raw_cold_repeats_ms",
+        ),
+        (
+            ("legacy_same_scene", "cold_start_median_ms"),
+            "legacy_same_scene.cold_start_median_ms",
+        ),
+        (
+            ("legacy_same_scene", "cold_start_p95_ms"),
+            "legacy_same_scene.cold_start_p95_ms",
+        ),
+        (
+            ("legacy_same_scene", "all_navigation_timings"),
+            "legacy_same_scene.all_navigation_timings",
+        ),
+        (
+            ("legacy_same_scene", "all_completion_signals"),
+            "legacy_same_scene.all_completion_signals",
         ),
     ],
 )
@@ -629,7 +706,14 @@ def test_compare_results_reports_every_missed_performance_gate():
     after["browser"]["complete_render_p95_ms"] = benchmark.percentile(
         after["browser"]["raw_warm_repeats_ms"], 95
     )
+    after["browser"]["raw_cold_repeats_ms"] = [5001.0, 5002.0, 5003.0]
     after["browser"]["cold_start_ms"] = 5001.0
+    after["browser"]["cold_start_median_ms"] = benchmark.percentile(
+        after["browser"]["raw_cold_repeats_ms"], 50
+    )
+    after["browser"]["cold_start_p95_ms"] = benchmark.percentile(
+        after["browser"]["raw_cold_repeats_ms"], 95
+    )
     after["ordinary_chart"]["median_seconds"] = 1.2
     after["ordinary_chart"]["p95_seconds"] = 1.2
     after["viewport_warm"] = {"median_ms": 501.0, "p95_ms": 1001.0}
@@ -1038,7 +1122,11 @@ def test_recorded_plot_type_browser_diagnostics_measures_each_family(monkeypatch
         assert timeout_ms == benchmark._BROWSER_TIMEOUT_MS
         name = Path(uri).stem
         calls[name] += 1
-        return float(10 * calls[name])
+        return {
+            "completion_signal": "starplot-product-promise",
+            "elapsed_ms": float(10 * calls[name]),
+            "navigation_timings": [_navigation_sample()],
+        }
 
     monkeypatch.setattr(benchmark, "_measure_browser_page", measure)
 
@@ -1117,7 +1205,11 @@ def test_primary_browser_measures_each_source_as_an_isolated_series(monkeypatch)
 
     def measure(page, url, timeout_ms):
         measured_urls.append(url)
-        return float(len(measured_urls))
+        return {
+            "completion_signal": "starplot-product-promise",
+            "elapsed_ms": float(len(measured_urls)),
+            "navigation_timings": [_navigation_sample()],
+        }
 
     monkeypatch.setattr(benchmark, "_measure_browser_page", measure)
 
@@ -1128,19 +1220,31 @@ def test_primary_browser_measures_each_source_as_an_isolated_series(monkeypatch)
     )
 
     assert measured_urls == [
+        # Cold measurements alternate the first-load order between series.
         "http://127.0.0.1/scene.html",
         "http://127.0.0.1/legacy.html",
+        "http://127.0.0.1/legacy.html",
+        "http://127.0.0.1/scene.html",
+        "http://127.0.0.1/scene.html",
+        "http://127.0.0.1/legacy.html",
+        # Warm measurements continue the alternating pattern.
         "http://127.0.0.1/legacy.html",
         "http://127.0.0.1/scene.html",
         "http://127.0.0.1/scene.html",
         "http://127.0.0.1/legacy.html",
     ]
-    assert [context.page_count for context in contexts] == [3, 3]
+    assert len(contexts) == 8  # 6 fresh cold contexts + 2 warm contexts
+    assert sum(context.page_count for context in contexts) == 10
+    assert all(context.page_count >= 1 for context in contexts)
     assert result["status"] == "measured"
     assert result["cold_start_ms"] == 1.0
-    assert result["raw_warm_repeats_ms"] == [4.0, 5.0]
+    assert result["raw_cold_repeats_ms"] == [1.0, 4.0, 5.0]
+    assert result["raw_warm_repeats_ms"] == [8.0, 9.0]
     assert result["legacy_same_scene"]["cold_start_ms"] == 2.0
-    assert result["legacy_same_scene"]["raw_warm_repeats_ms"] == [3.0, 6.0]
+    assert result["legacy_same_scene"]["raw_cold_repeats_ms"] == [2.0, 3.0, 6.0]
+    assert result["legacy_same_scene"]["raw_warm_repeats_ms"] == [7.0, 10.0]
+    assert result["completion_signal"] == "starplot-product-promise"
+    assert result["legacy_same_scene"]["completion_signal"] == "starplot-product-promise"
 
 
 def test_python_repeat_timeout_is_fatal(monkeypatch):
@@ -1168,12 +1272,36 @@ def test_browser_page_waits_for_instrumented_plotly_promise_and_final_paint():
 
         def evaluate(self, expression):
             events.append(("evaluate", expression))
-            return 987.6
+            return {
+                "completion_signal": "starplot-product-promise",
+                "elapsed_ms": 987.6,
+                "navigation_timings": [
+                    {
+                        "startTime": 0.0,
+                        "duration": 100.0,
+                        "domComplete": 50.0,
+                        "loadEventEnd": 60.0,
+                        "responseEnd": 40.0,
+                    }
+                ],
+            }
 
     page = FakePage()
-    elapsed = benchmark._measure_browser_page(page, "file:///plot.html", 1234)
+    sample = benchmark._measure_browser_page(page, "file:///plot.html", 1234)
 
-    assert elapsed == 987.6
+    assert sample == {
+        "completion_signal": "starplot-product-promise",
+        "elapsed_ms": 987.6,
+        "navigation_timings": [
+            {
+                "startTime": 0.0,
+                "duration": 100.0,
+                "domComplete": 50.0,
+                "loadEventEnd": 60.0,
+                "responseEnd": 40.0,
+            }
+        ],
+    }
     assert [event[0] for event in events] == ["init", "goto", "wait", "evaluate"]
     init_script = events[0][1]
     assert "newPlot" in init_script
@@ -1182,10 +1310,11 @@ def test_browser_page_waits_for_instrumented_plotly_promise_and_final_paint():
     assert init_script.count("requestAnimationFrame") >= 2
     completion_predicate = events[2][1]
     assert "starplotCompletedAt !== null" in completion_predicate
-    assert "__starplotBenchmark.complete === true" in completion_predicate
+    assert "plotly-fallback" in completion_predicate
     assert "requestAnimationFrame" not in completion_predicate
     assert "starplotCompletedAt" in events[3][1]
     assert "completedAt" in events[3][1]
+    assert "navigationTimings" in events[3][1]
 
 
 def test_browser_launcher_falls_back_to_system_chrome(monkeypatch):
@@ -1578,3 +1707,139 @@ def test_compare_results_rejects_tampered_aggregate():
         for failure in failures
     )
     assert any("scene_compile" in failure for failure in failures)
+
+
+def test_measured_browser_rejects_missing_completion_signal():
+    result = complete_result()
+    del result["browser"]["completion_signal"]
+    del result["browser"]["legacy_same_scene"]["completion_signal"]
+
+    with pytest.raises(ValueError, match="completion_signal"):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_measured_browser_rejects_unknown_completion_signal():
+    result = complete_result()
+    result["browser"]["completion_signal"] = "not-a-signal"
+
+    with pytest.raises(ValueError, match="completion_signal"):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_measured_browser_rejects_forged_cold_start_copied_from_warm():
+    result = complete_result()
+    copied = result["browser"]["raw_warm_repeats_ms"][0]
+    result["browser"]["raw_cold_repeats_ms"][0] = copied
+    result["browser"]["cold_start_ms"] = copied
+    result["browser"]["cold_start_median_ms"] = benchmark.percentile(
+        result["browser"]["raw_cold_repeats_ms"], 50
+    )
+    result["browser"]["cold_start_p95_ms"] = benchmark.percentile(
+        result["browser"]["raw_cold_repeats_ms"], 95
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="cold_start_ms must not be present in raw_warm_repeats_ms",
+    ):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_measured_browser_rejects_forged_cold_start_not_first_raw_cold():
+    result = complete_result()
+    result["browser"]["cold_start_ms"] = result["browser"]["raw_cold_repeats_ms"][-1]
+
+    with pytest.raises(
+        ValueError,
+        match="cold_start_ms must be the first raw cold measurement",
+    ):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_ordinary_chart_rejects_fewer_raw_repetitions_than_workload_repeats():
+    result = complete_result()
+    result["ordinary_chart"]["raw_repetitions"].pop()
+
+    with pytest.raises(
+        ValueError,
+        match="ordinary_chart.raw_repetitions must contain exactly",
+    ):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_primary_browser_cold_start_is_not_a_warm_repeat():
+    result = complete_result()
+    cold = result["browser"]["cold_start_ms"]
+    warm = result["browser"]["raw_warm_repeats_ms"]
+    legacy_cold = result["browser"]["legacy_same_scene"]["cold_start_ms"]
+    legacy_warm = result["browser"]["legacy_same_scene"]["raw_warm_repeats_ms"]
+
+    assert cold not in warm
+    assert legacy_cold not in legacy_warm
+    benchmark.validate_benchmark_artifact(result)
+
+
+def test_browser_page_rejects_unknown_completion_signal():
+    class FakePage:
+        def add_init_script(self, script):
+            pass
+
+        def goto(self, uri, wait_until, timeout):
+            pass
+
+        def wait_for_function(self, predicate, timeout):
+            pass
+
+        def evaluate(self, expression):
+            return {
+                "completion_signal": "not-a-signal",
+                "elapsed_ms": 100.0,
+                "navigation_timings": [_navigation_sample()],
+            }
+
+    with pytest.raises(RuntimeError, match="unknown completion signal"):
+        benchmark._measure_browser_page(FakePage(), "file:///plot.html", 1234)
+
+
+def test_browser_page_rejects_missing_navigation_timing():
+    class FakePage:
+        def add_init_script(self, script):
+            pass
+
+        def goto(self, uri, wait_until, timeout):
+            pass
+
+        def wait_for_function(self, predicate, timeout):
+            pass
+
+        def evaluate(self, expression):
+            return {
+                "completion_signal": "starplot-product-promise",
+                "elapsed_ms": 100.0,
+                "navigation_timings": [],
+            }
+
+    with pytest.raises(RuntimeError, match="PerformanceNavigationTiming"):
+        benchmark._measure_browser_page(FakePage(), "file:///plot.html", 1234)
+
+
+def test_browser_page_rejects_nonfinite_completion_timestamp():
+    class FakePage:
+        def add_init_script(self, script):
+            pass
+
+        def goto(self, uri, wait_until, timeout):
+            pass
+
+        def wait_for_function(self, predicate, timeout):
+            pass
+
+        def evaluate(self, expression):
+            return {
+                "completion_signal": "starplot-product-promise",
+                "elapsed_ms": float("nan"),
+                "navigation_timings": [_navigation_sample()],
+            }
+
+    with pytest.raises(RuntimeError, match="finite completion timestamp"):
+        benchmark._measure_browser_page(FakePage(), "file:///plot.html", 1234)

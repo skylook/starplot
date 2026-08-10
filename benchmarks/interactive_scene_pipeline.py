@@ -101,6 +101,9 @@ PERFORMANCE_GATES = {
 _SEED = 20260716
 _DEFAULT_REPEAT_TIMEOUT_SECONDS = 300.0
 _BROWSER_TIMEOUT_MS = 300_000
+# Cold measurements must be taken from a fresh browser context.  A minimum of
+# three cold samples gives a representative first-load distribution.
+_BROWSER_COLD_SAMPLES = 3
 _SCENE_COMPILE_SEMANTICS = "Native SceneCompiler.compile timing."
 _PLOT_TYPE_COVERAGE_SEMANTICS = (
     "One small, real recording/SceneCompiler/PlotlySceneAdapter sample for each "
@@ -110,6 +113,11 @@ _PLOT_TYPE_COVERAGE_SEMANTICS = (
 _PLOT_TYPE_BROWSER_SEMANTICS = (
     "One warm-up plus repeated external-Arrow HTTP renders for every supported "
     "interactive plot family; timings are diagnostic and have no cross-family gate."
+)
+# In-page completion signals the validator recognizes.  These are the only
+# legitimate values for browser completion evidence.
+_BROWSER_COMPLETION_SIGNALS = frozenset(
+    {"starplot-product-promise", "plotly-fallback"}
 )
 _SUPPORTED_INTERACTIVE_PLOT_KINDS = frozenset({"map", "horizon", "zenith", "optic"})
 _SOURCE_FINGERPRINT_SCOPE = [
@@ -141,7 +149,9 @@ _PLOTLY_COMPLETION_INIT_SCRIPT = r"""
     calls: 0,
     complete: false,
     completedAt: null,
+    completionSignal: null,
     method: null,
+    navigationTimings: null,
     startedAt: null,
     starplotCalls: 0,
     starplotCompletedAt: null
@@ -149,6 +159,38 @@ _PLOTLY_COMPLETION_INIT_SCRIPT = r"""
 
   const afterFinalPaint = (callback) => {
     requestAnimationFrame(() => requestAnimationFrame(callback));
+  };
+
+  const recordNavigation = () => {
+    state.navigationTimings = performance.getEntriesByType("navigation").map(
+      (entry) => ({
+        startTime: entry.startTime,
+        duration: entry.duration,
+        domComplete: entry.domComplete,
+        loadEventEnd: entry.loadEventEnd,
+        responseEnd: entry.responseEnd,
+      })
+    );
+  };
+
+  const markStarplotComplete = () => {
+    if (state.starplotCompletedAt !== null) return;
+    state.starplotCompletedAt = performance.now();
+    state.completionSignal = "starplot-product-promise";
+    recordNavigation();
+  };
+
+  const markPlotlyComplete = (generation) => {
+    // The Plotly fallback is only legitimate when no Starplot product render
+    // promise is present.  If starplotCalls is non-zero the product owns the
+    // completion and any Plotly callback must be ignored.
+    if (state.starplotCalls > 0) return;
+    if (state.completedAt !== null) return;
+    if (generation !== state.calls) return;
+    state.completedAt = performance.now();
+    state.complete = true;
+    state.completionSignal = "plotly-fallback";
+    recordNavigation();
   };
 
   const wrapPlotly = (plotly) => {
@@ -168,10 +210,7 @@ _PLOTLY_COMPLETION_INIT_SCRIPT = r"""
         const result = original.apply(this, args);
         Promise.resolve(result).then(() => {
           afterFinalPaint(() => {
-            if (generation === state.calls) {
-              state.completedAt = performance.now();
-              state.complete = true;
-            }
+            markPlotlyComplete(generation);
           });
         }, () => {});
         // Instrumentation must not add paint frames to the product promise.
@@ -202,7 +241,7 @@ _PLOTLY_COMPLETION_INIT_SCRIPT = r"""
     Promise.resolve(value).then(() => {
       if (generation === state.starplotCalls) {
         // renderScene resolves only after its own final-paint contract.
-        state.starplotCompletedAt = performance.now();
+        markStarplotComplete();
       }
     }, () => {});
   };
@@ -602,6 +641,19 @@ def _validate_candidate_aggregates(result: dict, repeats: int) -> None:
         result.get("raw_repetitions"), repeats, "raw_repetitions"
     )
 
+    expected_point_count = result.get("point_count")
+    for index, repetition in enumerate(raw):
+        if "point_count" in repetition:
+            observed = _require_positive_integer(
+                repetition,
+                "point_count",
+                f"raw_repetitions[{index}].point_count",
+            )
+            if observed != expected_point_count:
+                raise ValueError(
+                    f"raw_repetitions[{index}].point_count does not match workload"
+                )
+
     for key in ("payload_bytes", "arrow_payload_bytes", "external_html_bytes"):
         if key not in result:
             raise ValueError(f"{key} is missing")
@@ -679,6 +731,18 @@ def _validate_candidate_aggregates(result: dict, repeats: int) -> None:
             repeats,
             "ordinary_chart.raw_repetitions",
         )
+        for index, repetition in enumerate(ordinary_raw):
+            if "point_count" in repetition:
+                observed = _require_positive_integer(
+                    repetition,
+                    "point_count",
+                    f"ordinary_chart.raw_repetitions[{index}].point_count",
+                )
+                if observed != expected_ordinary_points:
+                    raise ValueError(
+                        f"ordinary_chart.raw_repetitions[{index}].point_count "
+                        "does not match workload"
+                    )
         _validate_summary_against_raw(
             ordinary,
             _raw_floats(
@@ -736,7 +800,124 @@ def _require_raw_repeats(
     ]
 
 
-def _validate_primary_browser(browser: object, repeats: int) -> None:
+def _require_nonempty_browser_repeats(
+    mapping: dict,
+    key: str,
+    label: str,
+) -> list[float]:
+    values = mapping.get(key)
+    if not isinstance(values, list) or not values:
+        raise ValueError(f"{label} must contain at least one repeat")
+    return [
+        _require_nonnegative_number({"value": value}, "value", label)
+        for value in values
+    ]
+
+
+def _validate_browser_series(
+    series: object,
+    label: str,
+    required_keys: tuple[str, ...],
+) -> list[float]:
+    if not isinstance(series, dict):
+        raise ValueError(f"{label} must be a mapping")
+    missing = set(required_keys) - series.keys()
+    if missing:
+        formatted = ", ".join(sorted(f"{label}.{key}" for key in missing))
+        raise ValueError(f"{label} missing keys: {formatted}")
+
+    completion_signal = series.get("completion_signal")
+    if completion_signal not in _BROWSER_COMPLETION_SIGNALS:
+        raise ValueError(f"{label}.completion_signal is missing or unknown")
+
+    raw_cold = _require_nonempty_browser_repeats(
+        series, "raw_cold_repeats_ms", f"{label}.raw_cold_repeats_ms"
+    )
+    raw_warm = _require_nonempty_browser_repeats(
+        series, "raw_warm_repeats_ms", f"{label}.raw_warm_repeats_ms"
+    )
+
+    cold_start = _require_nonnegative_number(
+        series, "cold_start_ms", f"{label}.cold_start_ms"
+    )
+    if not math.isclose(cold_start, raw_cold[0]):
+        raise ValueError(
+            f"{label}.cold_start_ms must be the first raw cold measurement"
+        )
+    if cold_start in raw_warm:
+        raise ValueError(
+            f"{label}.cold_start_ms must not be present in raw_warm_repeats_ms"
+        )
+
+    cold_median = _require_nonnegative_number(
+        series, "cold_start_median_ms", f"{label}.cold_start_median_ms"
+    )
+    cold_p95 = _require_nonnegative_number(
+        series, "cold_start_p95_ms", f"{label}.cold_start_p95_ms"
+    )
+    if cold_p95 < cold_median:
+        raise ValueError(
+            f"{label}.cold_start_p95_ms must be at least cold_start_median_ms"
+        )
+    if not math.isclose(cold_median, percentile(raw_cold, 50)) or not math.isclose(
+        cold_p95, percentile(raw_cold, 95)
+    ):
+        raise ValueError(f"{label} cold summary timings do not match raw_cold_repeats_ms")
+
+    median = _require_nonnegative_number(
+        series, "complete_render_median_ms", f"{label}.complete_render_median_ms"
+    )
+    p95 = _require_nonnegative_number(
+        series, "complete_render_p95_ms", f"{label}.complete_render_p95_ms"
+    )
+    if p95 < median:
+        raise ValueError(
+            f"{label}.complete_render_p95_ms must be at least complete_render_median_ms"
+        )
+    if not math.isclose(median, percentile(raw_warm, 50)) or not math.isclose(
+        p95, percentile(raw_warm, 95)
+    ):
+        raise ValueError(f"{label} summary timings do not match raw_warm_repeats_ms")
+
+    all_navigation = series.get("all_navigation_timings")
+    if isinstance(all_navigation, list):
+        if not all_navigation:
+            raise ValueError(f"{label}.all_navigation_timings must not be empty")
+        for index, entry in enumerate(all_navigation):
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"{label}.all_navigation_timings[{index}] must be a mapping"
+                )
+            nav = entry.get("navigation_timings")
+            if not isinstance(nav, list) or not nav:
+                raise ValueError(
+                    f"{label}.all_navigation_timings[{index}].navigation_timings "
+                    "must be a non-empty list"
+                )
+            for nav_index, timing in enumerate(nav):
+                if not isinstance(timing, dict) or not all(
+                    math.isfinite(timing.get(field, float("nan")))
+                    for field in ("startTime", "duration", "domComplete", "loadEventEnd", "responseEnd")
+                ):
+                    raise ValueError(
+                        f"{label}.all_navigation_timings[{index}]"
+                        f".navigation_timings[{nav_index}] is not finite"
+                    )
+
+    all_signals = series.get("all_completion_signals")
+    if isinstance(all_signals, list):
+        if not all_signals:
+            raise ValueError(f"{label}.all_completion_signals must not be empty")
+        for index, signal in enumerate(all_signals):
+            if signal not in _BROWSER_COMPLETION_SIGNALS:
+                raise ValueError(
+                    f"{label}.all_completion_signals[{index}] is an unknown signal"
+                )
+
+    return raw_warm
+
+
+def _validate_primary_browser(browser: object) -> None:
     if not isinstance(browser, dict):
         raise ValueError("browser must be a mapping")
     status = browser.get("status")
@@ -753,36 +934,31 @@ def _validate_primary_browser(browser: object, repeats: int) -> None:
             _require_nonempty_string(browser, "error", "browser.error")
         return
 
-    _require_nonempty_string(browser, "completion_signal", "browser.completion_signal")
     _require_nonempty_string(browser, "engine", "browser.engine")
     _require_nonempty_string(browser, "engine_version", "browser.engine_version")
     scene_hash = _require_scene_hash(browser, "scene_hash", "browser.scene_hash")
     _require_positive_integer(
         browser, "arrow_payload_bytes", "browser.arrow_payload_bytes"
     )
-    median = _require_nonnegative_number(
+
+    _validate_browser_series(
         browser,
-        "complete_render_median_ms",
-        "browser.complete_render_median_ms",
+        "browser",
+        (
+            "all_completion_signals",
+            "all_navigation_timings",
+            "cold_start_ms",
+            "cold_start_median_ms",
+            "cold_start_p95_ms",
+            "completion_signal",
+            "complete_render_median_ms",
+            "complete_render_p95_ms",
+            "raw_cold_repeats_ms",
+            "raw_warm_repeats_ms",
+            "scene_hash",
+            "source_kind",
+        ),
     )
-    p95 = _require_nonnegative_number(
-        browser, "complete_render_p95_ms", "browser.complete_render_p95_ms"
-    )
-    _require_nonnegative_number(browser, "cold_start_ms", "browser.cold_start_ms")
-    raw_warm = _require_raw_repeats(
-        browser,
-        "raw_warm_repeats_ms",
-        "browser.raw_warm_repeats_ms",
-        repeats,
-    )
-    if p95 < median:
-        raise ValueError(
-            "browser.complete_render_p95_ms must be at least complete_render_median_ms"
-        )
-    if not math.isclose(median, percentile(raw_warm, 50)) or not math.isclose(
-        p95, percentile(raw_warm, 95)
-    ):
-        raise ValueError("browser summary timings do not match raw_warm_repeats_ms")
 
     legacy = browser.get("legacy_same_scene")
     if not isinstance(legacy, dict):
@@ -799,39 +975,24 @@ def _validate_primary_browser(browser: object, repeats: int) -> None:
         raise ValueError(
             "browser.legacy_same_scene.scene_hash must match browser.scene_hash"
         )
-    legacy_median = _require_nonnegative_number(
+    _validate_browser_series(
         legacy,
-        "complete_render_median_ms",
-        "browser.legacy_same_scene.complete_render_median_ms",
+        "browser.legacy_same_scene",
+        (
+            "all_completion_signals",
+            "all_navigation_timings",
+            "cold_start_ms",
+            "cold_start_median_ms",
+            "cold_start_p95_ms",
+            "completion_signal",
+            "complete_render_median_ms",
+            "complete_render_p95_ms",
+            "raw_cold_repeats_ms",
+            "raw_warm_repeats_ms",
+            "scene_hash",
+            "source_kind",
+        ),
     )
-    legacy_p95 = _require_nonnegative_number(
-        legacy,
-        "complete_render_p95_ms",
-        "browser.legacy_same_scene.complete_render_p95_ms",
-    )
-    _require_nonnegative_number(
-        legacy,
-        "cold_start_ms",
-        "browser.legacy_same_scene.cold_start_ms",
-    )
-    legacy_raw_warm = _require_raw_repeats(
-        legacy,
-        "raw_warm_repeats_ms",
-        "browser.legacy_same_scene.raw_warm_repeats_ms",
-        repeats,
-    )
-    if legacy_p95 < legacy_median:
-        raise ValueError(
-            "browser.legacy_same_scene.complete_render_p95_ms must be at least "
-            "complete_render_median_ms"
-        )
-    if not math.isclose(
-        legacy_median, percentile(legacy_raw_warm, 50)
-    ) or not math.isclose(legacy_p95, percentile(legacy_raw_warm, 95)):
-        raise ValueError(
-            "browser.legacy_same_scene summary timings do not match "
-            "raw_warm_repeats_ms"
-        )
 
 
 def _validate_legacy_baseline(result: dict) -> None:
@@ -877,7 +1038,7 @@ def validate_benchmark_artifact(result: dict) -> None:
     _validate_environment(result.get("environment"))
     _require_positive_integer(result, "point_count", "point_count")
     repeats = _validate_candidate_provenance(result)
-    _validate_primary_browser(result.get("browser"), repeats)
+    _validate_primary_browser(result.get("browser"))
     _validate_candidate_aggregates(result, repeats)
     coverage = result.get("plot_type_coverage")
     if not isinstance(coverage, dict) or not isinstance(coverage.get("semantics"), str):
@@ -1482,6 +1643,7 @@ def _run_python_worker(point_count: int) -> dict:
         "external_html_bytes": external_html_bytes,
         "peak_rss_mb": peak_rss_mb,
         "plotly_construction_seconds": plotly_seconds,
+        "point_count": point_count,
         "viewport_warm_ms": viewport_warm_ms,
     }
 
@@ -1693,19 +1855,46 @@ def _launch_browser(playwright):
         )
 
 
-def _measure_browser_page(page, uri: str, timeout_ms: int) -> float:
-    """Measure in-page navigation through the product's final-paint contract."""
+def _measure_browser_page(page, uri: str, timeout_ms: int) -> dict:
+    """Measure in-page navigation through the product's final-paint contract.
+
+    The returned value is a dict tied to the page's own clock and navigation
+    timing: ``elapsed_ms`` is the product render-paint completion,
+    ``completion_signal`` records whether the Starplot product promise or the
+    Plotly fallback produced the sample, and ``navigation_timings`` holds the
+    ``PerformanceNavigationTiming`` entries available at completion.
+    """
     page.add_init_script(_PLOTLY_COMPLETION_INIT_SCRIPT)
     page.goto(uri, wait_until="load", timeout=timeout_ms)
     page.wait_for_function(
-        """() => window.__starplotBenchmark.starplotCompletedAt !== null
-          || window.__starplotBenchmark.complete === true""",
+        """() => {
+          const state = window.__starplotBenchmark;
+          if (state === undefined || state === null) return false;
+          if (state.starplotCalls > 0) {
+            return state.starplotCompletedAt !== null;
+          }
+          return state.completionSignal === "plotly-fallback";
+        }""",
         timeout=timeout_ms,
     )
-    elapsed_ms = page.evaluate(
-        """() => window.__starplotBenchmark.starplotCompletedAt
-          ?? window.__starplotBenchmark.completedAt"""
+    sample = page.evaluate(
+        """() => {
+          const state = window.__starplotBenchmark;
+          return {
+            completion_signal: state.completionSignal,
+            elapsed_ms: state.starplotCompletedAt ?? state.completedAt,
+            navigation_timings: state.navigationTimings || []
+          };
+        }"""
     )
+    if not isinstance(sample, dict):
+        raise RuntimeError("browser did not return a completion sample")
+    completion_signal = sample.get("completion_signal")
+    if completion_signal not in _BROWSER_COMPLETION_SIGNALS:
+        raise RuntimeError(
+            f"browser reported unknown completion signal: {completion_signal!r}"
+        )
+    elapsed_ms = sample.get("elapsed_ms")
     if (
         isinstance(elapsed_ms, bool)
         or not isinstance(elapsed_ms, int | float)
@@ -1713,7 +1902,27 @@ def _measure_browser_page(page, uri: str, timeout_ms: int) -> float:
         or elapsed_ms < 0
     ):
         raise RuntimeError("browser did not report a finite completion timestamp")
-    return float(elapsed_ms)
+    navigation = sample.get("navigation_timings")
+    if (
+        not isinstance(navigation, list)
+        or not navigation
+        or not all(
+            isinstance(entry, dict)
+            and all(
+                math.isfinite(entry.get(field, float("nan")))
+                for field in ("startTime", "duration", "domComplete", "loadEventEnd", "responseEnd")
+            )
+            for entry in navigation
+        )
+    ):
+        raise RuntimeError("browser did not report finite PerformanceNavigationTiming")
+    first_navigation = navigation[0]
+    if elapsed_ms < first_navigation.get("loadEventEnd", 0):
+        raise RuntimeError(
+            "product completion timestamp precedes the navigation load event"
+        )
+    sample["elapsed_ms"] = float(elapsed_ms)
+    return sample
 
 
 @contextmanager
@@ -1839,13 +2048,14 @@ def run_recorded_plot_type_browser_diagnostics(repeats: int) -> dict[str, object
                             )
                             page = context.new_page()
                             try:
-                                elapsed_ms = _measure_browser_page(
+                                sample = _measure_browser_page(
                                     page,
                                     str(fixture["source_url"]),
                                     _BROWSER_TIMEOUT_MS,
                                 )
                             finally:
                                 page.close()
+                            elapsed_ms = sample["elapsed_ms"]
                             print(
                                 f"Browser {name} diagnostic {label}: complete "
                                 f"({elapsed_ms:.3f} ms)",
@@ -1888,7 +2098,14 @@ def run_browser_benchmark(
     repeats: int,
     fixture_timeout_seconds: float = _DEFAULT_REPEAT_TIMEOUT_SECONDS,
 ) -> dict:
-    """Measure a real external Arrow bundle over the supported HTTP server."""
+    """Measure a real external Arrow bundle over the supported HTTP server.
+
+    Cold measurements use a fresh browser context for every sample, and at
+    least ``_BROWSER_COLD_SAMPLES`` are collected for each series, with the
+    external/legacy first-load order alternating so that any browser-level
+    startup asymmetry is averaged.  Warm repeats are measured separately in a
+    persistent context and never include the cold measurement.
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -1901,7 +2118,33 @@ def run_browser_benchmark(
 
     measurements: list[float] = []
     legacy_measurements: list[float] = []
-    cold_starts: dict[str, float] = {}
+    cold_measurements: list[float] = []
+    legacy_cold_measurements: list[float] = []
+    all_navigation_timings: list[dict] = []
+    all_completion_signals: list[str] = []
+
+    def _collect_sample(
+        page,
+        item: dict,
+        kind: str,
+    ) -> float:
+        sample = _measure_browser_page(
+            page, item["url"], _BROWSER_TIMEOUT_MS,
+        )
+        elapsed_ms = sample["elapsed_ms"]
+        all_navigation_timings.append({
+            "kind": kind,
+            "series": item["key"],
+            "completion_signal": sample["completion_signal"],
+            "navigation_timings": sample["navigation_timings"],
+        })
+        all_completion_signals.append(sample["completion_signal"])
+        print(
+            f"Browser {item['name']} {kind}: complete ({elapsed_ms:.3f} ms)",
+            flush=True,
+        )
+        return elapsed_ms
+
     try:
         with _external_browser_fixture(
             point_count, fixture_timeout_seconds
@@ -1914,16 +2157,39 @@ def run_browser_benchmark(
                         "key": "external",
                         "name": "external Arrow",
                         "url": fixture["source_url"],
-                        "values": measurements,
                     },
                     {
                         "key": "legacy",
                         "name": "legacy direct",
                         "url": fixture["legacy_source_url"],
-                        "values": legacy_measurements,
                     },
                 ]
-                contexts = []
+                for cold_index in range(_BROWSER_COLD_SAMPLES):
+                    label = f"cold start {cold_index + 1}/{_BROWSER_COLD_SAMPLES}"
+                    ordered_series = (
+                        series
+                        if cold_index % 2 == 0
+                        else list(reversed(series))
+                    )
+                    for item in ordered_series:
+                        print(f"Browser {item['name']} {label}: starting", flush=True)
+                        context = browser.new_context(
+                            viewport={"width": 1000, "height": 500}
+                        )
+                        try:
+                            page = context.new_page()
+                            try:
+                                cold_ms = _collect_sample(page, item, label)
+                            finally:
+                                page.close()
+                            if item["key"] == "external":
+                                cold_measurements.append(cold_ms)
+                            else:
+                                legacy_cold_measurements.append(cold_ms)
+                        finally:
+                            context.close()
+
+                contexts: list[object] = []
                 try:
                     for item in series:
                         context = browser.new_context(
@@ -1931,33 +2197,24 @@ def run_browser_benchmark(
                         )
                         contexts.append(context)
                         item["context"] = context
-                    for iteration in range(repeats + 1):
-                        label = (
-                            "cold start"
-                            if iteration == 0
-                            else f"warm repeat {iteration}/{repeats}"
-                        )
+                    for iteration in range(1, repeats + 1):
                         ordered_series = (
-                            series if iteration % 2 == 0 else list(reversed(series))
+                            series
+                            if iteration % 2 == 0
+                            else list(reversed(series))
                         )
                         for item in ordered_series:
-                            name = item["name"]
-                            print(f"Browser {name} {label}: starting", flush=True)
+                            label = f"warm repeat {iteration}/{repeats}"
+                            print(f"Browser {item['name']} {label}: starting", flush=True)
                             page = item["context"].new_page()
                             try:
-                                elapsed_ms = _measure_browser_page(
-                                    page, item["url"], _BROWSER_TIMEOUT_MS,
-                                )
+                                warm_ms = _collect_sample(page, item, label)
                             finally:
                                 page.close()
-                            print(
-                                f"Browser {name} {label}: complete ({elapsed_ms:.3f} ms)",
-                                flush=True,
-                            )
-                            if iteration == 0:
-                                cold_starts[item["key"]] = elapsed_ms
+                            if item["key"] == "external":
+                                measurements.append(warm_ms)
                             else:
-                                item["values"].append(elapsed_ms)
+                                legacy_measurements.append(warm_ms)
                 finally:
                     for context in reversed(contexts):
                         context.close()
@@ -1972,24 +2229,51 @@ def run_browser_benchmark(
             "status": "measurement_failed",
         }
 
+    def _series_completion_signal(signals: list[str]) -> str:
+        if not signals:
+            return ""
+        if all(signal == signals[0] for signal in signals):
+            return signals[0]
+        # Mixed signals are still auditable as long as every value is known.
+        return ";".join(sorted(set(signals)))
+
     return {
+        "all_completion_signals": all_completion_signals,
+        "all_navigation_timings": all_navigation_timings,
         "complete_render_median_ms": percentile(measurements, 50),
         "complete_render_p95_ms": percentile(measurements, 95),
-        "completion_signal": (
-            "Starplot render promise including scale correction plus two animation "
-            "frames; Plotly promise fallback for legacy fixture"
+        "completion_signal": _series_completion_signal(
+            [s for s, n in zip(all_completion_signals, all_navigation_timings)
+             if n["series"] == "external"]
         ),
-        "cold_start_ms": cold_starts["external"],
+        "cold_start_ms": cold_measurements[0],
+        "cold_start_median_ms": percentile(cold_measurements, 50),
+        "cold_start_p95_ms": percentile(cold_measurements, 95),
         "engine": "chromium",
         "engine_version": browser_version,
         "legacy_same_scene": {
+            "all_completion_signals": [
+                s for s, n in zip(all_completion_signals, all_navigation_timings)
+                if n["series"] == "legacy"
+            ],
+            "all_navigation_timings": [
+                n for n in all_navigation_timings if n["series"] == "legacy"
+            ],
+            "cold_start_ms": legacy_cold_measurements[0],
+            "cold_start_median_ms": percentile(legacy_cold_measurements, 50),
+            "cold_start_p95_ms": percentile(legacy_cold_measurements, 95),
             "complete_render_median_ms": percentile(legacy_measurements, 50),
             "complete_render_p95_ms": percentile(legacy_measurements, 95),
-            "cold_start_ms": cold_starts["legacy"],
+            "completion_signal": _series_completion_signal(
+                [s for s, n in zip(all_completion_signals, all_navigation_timings)
+                 if n["series"] == "legacy"]
+            ),
+            "raw_cold_repeats_ms": list(legacy_cold_measurements),
             "raw_warm_repeats_ms": list(legacy_measurements),
             "scene_hash": fixture["scene_hash"],
             "source_kind": fixture["legacy_source_kind"],
         },
+        "raw_cold_repeats_ms": list(cold_measurements),
         "raw_warm_repeats_ms": list(measurements),
         **fixture,
         "status": "measured",
