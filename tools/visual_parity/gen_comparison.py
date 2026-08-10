@@ -14,13 +14,17 @@ from __future__ import annotations
 
 import argparse
 import base64
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 import hashlib
+import importlib.metadata
+import importlib.util
 from html.parser import HTMLParser
 from http.server import ThreadingHTTPServer
 import json
 import os
+import platform
 from pathlib import Path
+import uuid
 import re
 import shutil
 import subprocess
@@ -44,12 +48,29 @@ from starplot.interactive.scene_provider import SceneProvider
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "comparison_outputs"
-DATA_CACHE = OUTPUT / ".data-cache"
 ALL_TRANSPORTS = ("inline", "external", "provider")
 _EXAMPLE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-_VISUAL_RUNTIME_ASSETS = (
+
+_VISUAL_CODE_FINGERPRINT_SCOPE = (
+    "src/starplot/interactive",
+    "pyproject.toml",
+)
+
+_RUNTIME_ASSET_PATHS = (
     Path("src/starplot/interactive/assets/starplot-scene-loader.js"),
     Path("src/starplot/interactive/assets/plotly-scene-adapter.js"),
+    Path("src/starplot/interactive/assets/vendor/plotly-starplot-3.3.1.min.js"),
+    Path("src/starplot/interactive/assets/vendor/PLOTLY_CUSTOM_BUNDLE.txt"),
+    Path("src/starplot/interactive/assets/vendor/apache-arrow.min.js"),
+)
+
+_RUNTIME_PACKAGES = (
+    "matplotlib",
+    "plotly",
+    "kaleido",
+    "numpy",
+    "pyarrow",
+    "playwright",
 )
 
 
@@ -69,18 +90,50 @@ def _git_stdout(root: Path, *args: str) -> str:
     ).stdout
 
 
-def _visual_evidence_provenance(root: Path = ROOT) -> dict[str, object]:
-    """Bind comparison artifacts to the revision and browser runtime assets."""
-    return {
-        "git_revision": _git_stdout(root, "rev-parse", "HEAD").strip(),
-        "tracked_dirty": bool(
-            _git_stdout(root, "status", "--porcelain", "--untracked-files=no").strip()
-        ),
-        "assets": {
-            path.as_posix(): hashlib.sha256((root / path).read_bytes()).hexdigest()
-            for path in _VISUAL_RUNTIME_ASSETS
-        },
-    }
+def _tracked_dirty(root: Path = ROOT) -> bool:
+    """Return whether the tracked tree has uncommitted changes.
+
+    Untracked and ignored files are ignored so that documentation work in
+    progress does not block visual evidence generation.
+    """
+    return bool(
+        _git_stdout(root, "status", "--porcelain", "--untracked-files=no").strip()
+    )
+
+
+def _tracked_visual_code_entries(root: Path = ROOT) -> list[tuple[str, bytes]]:
+    """Return tracked (relative path, bytes) pairs for the visual code scope."""
+    tracked = _git_stdout(
+        root,
+        "ls-files",
+        "--",
+        *_VISUAL_CODE_FINGERPRINT_SCOPE,
+    ).splitlines()
+    return sorted((rel, (root / rel).read_bytes()) for rel in tracked if rel)
+
+
+def _fingerprint_source_entries(
+    entries: Iterable[tuple[str, bytes]],
+) -> str:
+    """Compute a deterministic, path-bound SHA-256 over source entries."""
+    digest = hashlib.sha256()
+    for relative_path_text, content in entries:
+        relative_path = relative_path_text.encode()
+        digest.update(len(relative_path).to_bytes(8, "big"))
+        digest.update(relative_path)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _source_fingerprint(root: Path = ROOT) -> str:
+    """Fingerprint the actual visual source files used by the comparison."""
+    return _fingerprint_source_entries(_tracked_visual_code_entries(root))
+
+
+def _source_fingerprint_scope(root: Path = ROOT) -> list[str]:
+    """List the relative paths that feed the source fingerprint."""
+    return [rel for rel, _ in _tracked_visual_code_entries(root)]
 
 
 class _InlinePayloadParser(HTMLParser):
@@ -348,6 +401,86 @@ def _launch_browser(playwright):
         ) from error
 
 
+def _runtime_versions() -> dict[str, str | None]:
+    """Return runtime versions for packages relevant to visual evidence."""
+    versions = {"python": platform.python_version()}
+    for package in _RUNTIME_PACKAGES:
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except Exception:
+            versions[package] = None
+    return versions
+
+
+def _platform_info() -> str:
+    """Return a platform identifier for the host running the comparison."""
+    return platform.platform()
+
+
+def _browser_info() -> dict[str, str] | None:
+    """Return the browser engine and version, or None if Playwright is unavailable."""
+    try:
+        if importlib.util.find_spec("playwright") is None:
+            return None
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            browser = _launch_browser(playwright)
+            try:
+                return {
+                    "engine": browser.browser_type.name,
+                    "version": browser.version,
+                }
+            finally:
+                browser.close()
+    except Exception:
+        return None
+
+
+def _hash_file(root: Path, relative: Path) -> str:
+    """Return the SHA-256 hex digest of a file relative to ``root``."""
+    return hashlib.sha256((root / relative).read_bytes()).hexdigest()
+
+
+def _runtime_asset_hashes(root: Path = ROOT) -> dict[str, str]:
+    """Return SHA-256 hashes for the interactive runtime assets."""
+    return {p.as_posix(): _hash_file(root, p) for p in _RUNTIME_ASSET_PATHS}
+
+
+def _example_script_hashes(root: Path, name: str) -> dict[str, str]:
+    """Return SHA-256 hashes for the original and interactive example scripts."""
+    paths = {
+        "original": Path("examples") / f"{name}.py",
+        "interactive": Path("examples") / "interactive" / f"{name}_interactive.py",
+    }
+    return {key: _hash_file(root, path) for key, path in paths.items()}
+
+
+def _runner_code_hashes(root: Path = ROOT) -> dict[str, str]:
+    """Return SHA-256 hashes for the visual parity harness code."""
+    hashes: dict[str, str] = {}
+    for path in sorted((root / "tools" / "visual_parity").glob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        hashes[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashes
+
+
+def _snapshot_provenance(root: Path = ROOT, name: str | None = None) -> dict[str, object]:
+    """Capture a full provenance snapshot before or after generating evidence."""
+    return {
+        "git_revision": _git_stdout(root, "rev-parse", "HEAD").strip(),
+        "tracked_dirty": _tracked_dirty(root),
+        "source_fingerprint": _source_fingerprint(root),
+        "source_fingerprint_scope": _source_fingerprint_scope(root),
+        "assets": _runtime_asset_hashes(root),
+        "runtime_versions": _runtime_versions(),
+        "browser": _browser_info(),
+        "platform": _platform_info(),
+        "example_scripts": _example_script_hashes(root, name) if name else None,
+        "runner_code": _runner_code_hashes(root),
+    }
+
+
 def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, height: int, transports: tuple[str, ...], html_files: dict[str, str]) -> dict[str, dict]:
     try:
         from playwright.sync_api import sync_playwright
@@ -553,18 +686,109 @@ def _run_interactive(name: str, folder: Path, environment: Mapping[str, str]) ->
         raise RuntimeError(result.stderr)
 
 
+def _require_clean_tree(provenance: dict[str, object]) -> None:
+    """Fail closed if the tracked source tree is not clean."""
+    if provenance["tracked_dirty"]:
+        raise RuntimeError(
+            "tracked source tree is dirty; commit or stash changes before "
+            "generating visual evidence"
+        )
+
+
+def _assert_snapshots_equal(pre: dict[str, object], post: dict[str, object]) -> None:
+    """Raise if the post-generation snapshot differs from the pre snapshot."""
+    if pre != post:
+        changed = {
+            key
+            for key in set(pre.keys()) | set(post.keys())
+            if pre.get(key) != post.get(key)
+        }
+        raise RuntimeError(
+            "provenance changed during generation; visual evidence rejected "
+            f"(changed keys: {sorted(changed)})"
+        )
+
+
+def _remove_path(path: Path) -> None:
+    """Remove a file or directory."""
+    if not path.exists():
+        return
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _is_under(path: Path, parent: Path) -> bool:
+    """Return whether ``path`` is contained within ``parent``."""
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _atomic_publish(staging: Path, final: Path, backup: Path) -> None:
+    """Atomically publish ``staging`` to ``final`` using a same-filesystem backup."""
+    staging = staging.resolve()
+    final = final.resolve()
+    backup = backup.resolve()
+    staging_root = (OUTPUT / ".staging").resolve()
+    if not _is_under(staging, staging_root):
+        raise ValueError(f"staging path is not under {staging_root}: {staging}")
+    if not _is_under(backup, staging_root):
+        raise ValueError(f"backup path is not under {staging_root}: {backup}")
+    if backup.exists():
+        _remove_path(backup)
+    moved_final_to_backup = False
+    if final.exists():
+        os.replace(final, backup)
+        moved_final_to_backup = True
+    try:
+        os.replace(staging, final)
+    except Exception:
+        if moved_final_to_backup and backup.exists():
+            try:
+                os.replace(backup, final)
+            except Exception:
+                pass
+        raise
+    if backup.exists():
+        _remove_path(backup)
+
+
+def _safe_remove_staging(staging: Path, staging_root: Path | None = None) -> None:
+    """Remove ``staging`` only if it lives under the configured staging root."""
+    if staging_root is None:
+        staging_root = OUTPUT / ".staging"
+    staging = staging.resolve()
+    staging_root = staging_root.resolve()
+    if _is_under(staging, staging_root) and staging.exists():
+        _remove_path(staging)
+
+
 def run_example(name: str, transports: tuple[str, ...]) -> Path:
     """Render and verify one example through the requested transports."""
     _validate_name(name)
     original = ROOT / "examples" / f"{name}.py"
-    if not original.is_file() or not (ROOT / "examples" / "interactive" / f"{name}_interactive.py").is_file():
+    interactive = ROOT / "examples" / "interactive" / f"{name}_interactive.py"
+    if not original.is_file() or not interactive.is_file():
         raise ValueError(f"unknown example: {name}")
-    folder = OUTPUT / name
-    if folder.exists():
-        shutil.rmtree(folder)
-    folder.mkdir(parents=True)
-    DATA_CACHE.mkdir(parents=True, exist_ok=True)
-    environment = {**os.environ, "STARPLOT_DATA_PATH": str(DATA_CACHE)}
+
+    pre_snapshot = _snapshot_provenance(ROOT, name)
+    _require_clean_tree(pre_snapshot)
+
+    unique = uuid.uuid4().hex
+    staging_root = OUTPUT / ".staging"
+    staging_root.mkdir(parents=True, exist_ok=True)
+    staging = staging_root / f"{name}-{unique}"
+    staging.mkdir()
+    backup = staging_root / f"{name}-{unique}-backup"
+    final = OUTPUT / name
+
+    data_cache = OUTPUT / ".data-cache"
+    data_cache.mkdir(parents=True, exist_ok=True)
+    environment = {**os.environ, "STARPLOT_DATA_PATH": str(data_cache)}
     # The runner subprocess must be able to import starplot from src/.
     pythonpath_parts = [str(ROOT / "src")]
     existing_pythonpath = os.environ.get("PYTHONPATH")
@@ -573,39 +797,37 @@ def run_example(name: str, transports: tuple[str, ...]) -> Path:
     environment["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
     # Tell the runner which transports to export and verify.
     environment["STARPLOT_COMPARISON_TRANSPORTS"] = ",".join(transports)
-    server = _ProviderServer(folder)
+    server = _ProviderServer(staging)
     server.start()
     if "provider" in transports:
         environment["STARPLOT_COMPARISON_PROVIDER_MANIFEST_URL"] = f"{server.origin}/provider/manifest.json"
     try:
         print(f"[1/4] Running original: {original.name}")
-        pngs_before = _snapshot_pngs(folder)
-        result = subprocess.run([sys.executable, str(original)], cwd=folder, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=900, env=environment)
+        pngs_before = _snapshot_pngs(staging)
+        result = subprocess.run([sys.executable, str(original)], cwd=staging, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=900, env=environment)
         if result.returncode:
             raise RuntimeError(result.stderr)
-        original_png = _find_new_png(folder, pngs_before, preferred_name=f"{name}.png")
-        original_png.replace(folder / "orig.png")
+        original_png = _find_new_png(staging, pngs_before, preferred_name=f"{name}.png")
+        original_png.replace(staging / "orig.png")
         print(f"[2/4] Compiling one Scene and exporting: {name}_interactive.py")
-        pngs_before = _snapshot_pngs(folder)
-        _run_interactive(name, folder, environment)
+        pngs_before = _snapshot_pngs(staging)
+        _run_interactive(name, staging, environment)
         interactive_png = _find_new_png(
-            folder,
+            staging,
             pngs_before,
             preferred_name=f"{name}.png",
             excluded={"plotly.png"},
         )
-        interactive_png.replace(folder / "interactive.png")
-        exports = json.loads((folder / "comparison-exports.json").read_text(encoding="utf-8"))
+        interactive_png.replace(staging / "interactive.png")
+        exports = json.loads((staging / "comparison-exports.json").read_text(encoding="utf-8"))
         exports["interactive_png"] = "interactive.png"
-        exports["provenance"] = _visual_evidence_provenance()
-        (folder / "comparison-exports.json").write_text(json.dumps(exports, indent=2) + "\n", encoding="utf-8")
         print("[3/4] Verifying canonical transport bytes and decoded columns")
-        report = _verify_transports(folder, server, exports, transports)
+        report = _verify_transports(staging, server, exports, transports)
         print("[4/4] Rendering browser screenshots")
         if exports.get("external_bundle"):
-            manifest_bytes = (folder / exports["external_bundle"] / "manifest.json").read_bytes()
+            manifest_bytes = (staging / exports["external_bundle"] / "manifest.json").read_bytes()
         elif exports.get("inline_html"):
-            manifest_bytes, _ = _read_inline_export(folder / exports["inline_html"])
+            manifest_bytes, _ = _read_inline_export(staging / exports["inline_html"])
         else:
             raise RuntimeError("no exported manifest available for browser sizing")
         manifest = parse_scene_manifest(manifest_bytes)
@@ -614,7 +836,7 @@ def run_example(name: str, transports: tuple[str, ...]) -> Path:
             for transport in transports
             if f"{transport}_html" in exports
         }
-        browser_report = _browser_screenshots(folder, server, int(manifest.viewport.get("reference_width", 1200)), int(manifest.viewport.get("reference_height", 900)), transports, html_files)
+        browser_report = _browser_screenshots(staging, server, int(manifest.viewport.get("reference_width", 1200)), int(manifest.viewport.get("reference_height", 900)), transports, html_files)
         expected_layer_ids = [layer.id for layer in manifest.layers]
         for transport, browser_metrics in browser_report.items():
             layer_ids = browser_metrics["layer_ids"]
@@ -628,15 +850,15 @@ def run_example(name: str, transports: tuple[str, ...]) -> Path:
             ]
             if collapsed_ids != expected_layer_ids:
                 raise AssertionError(f"{transport}: browser traces do not preserve the canonical layer order")
-        (folder / "browser-render.json").write_text(json.dumps(browser_report, indent=2) + "\n", encoding="utf-8")
-        _write_diff(folder, name, transports, exports)
+        (staging / "browser-render.json").write_text(json.dumps(browser_report, indent=2) + "\n", encoding="utf-8")
+        _write_diff(staging, name, transports, exports)
         verified = ", ".join(transports)
         provider_note = (
             "- Provider HTTP manifest/layer bytes and headers: PASS\n"
             if "provider" in transports
             else ""
         )
-        (folder / "transport.md").write_text(
+        (staging / "transport.md").write_text(
             "# Transport verification\n\n"
             f"- Scene hash: `{report['scene_hash']}`\n"
             f"- Manifest SHA-256: `{report['manifest_sha256']}`\n"
@@ -647,10 +869,21 @@ def run_example(name: str, transports: tuple[str, ...]) -> Path:
             + "\n".join(f"| {item['id']} | {item['rows']} | {item['bytes']} | `{item['sha256']}` |" for item in report["layers"])
             + "\n", encoding="utf-8",
         )
+
+        post_snapshot = _snapshot_provenance(ROOT, name)
+        _assert_snapshots_equal(pre_snapshot, post_snapshot)
+
+        exports["provenance"] = pre_snapshot
+        (staging / "comparison-exports.json").write_text(json.dumps(exports, indent=2) + "\n", encoding="utf-8")
+
+        _atomic_publish(staging, final, backup)
+    except Exception:
+        _safe_remove_staging(staging)
+        raise
     finally:
         server.close()
-    print(f"Done: {folder}")
-    return folder
+    print(f"Done: {final}")
+    return final
 
 
 def main() -> None:
