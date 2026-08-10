@@ -27,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Iterable
 from contextlib import ExitStack, contextmanager
 
 import numpy as np
@@ -48,6 +49,7 @@ REQUIRED_ARTIFACT_KEYS = REQUIRED_RESULT_KEYS | {
     "plot_type_coverage",
     "plotly_construction",
     "provenance",
+    "raw_repetitions",
     "schema_version",
 }
 REQUIRED_LEGACY_BASELINE_KEYS = {
@@ -298,6 +300,15 @@ def _git_output(*args: str) -> str:
     return completed.stdout
 
 
+def _git_bytes(*args: str) -> bytes:
+    return subprocess.run(
+        ["git", *args],
+        cwd=_REPOSITORY_ROOT,
+        capture_output=True,
+        check=True,
+    ).stdout
+
+
 def _source_fingerprint_paths() -> list[Path]:
     tracked = _git_output(
         "ls-files",
@@ -312,16 +323,44 @@ def _source_fingerprint_paths() -> list[Path]:
     ]
 
 
-def _source_fingerprint() -> str:
+def _fingerprint_source_entries(
+    entries: Iterable[tuple[str, bytes]],
+) -> str:
     digest = hashlib.sha256()
-    for path in _source_fingerprint_paths():
-        relative_path = path.relative_to(_REPOSITORY_ROOT).as_posix().encode()
-        content = path.read_bytes()
+    for relative_path_text, content in entries:
+        relative_path = relative_path_text.encode()
         digest.update(len(relative_path).to_bytes(8, "big"))
         digest.update(relative_path)
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return f"sha256:{digest.hexdigest()}"
+
+
+def _source_fingerprint() -> str:
+    return _fingerprint_source_entries(
+        (
+            path.relative_to(_REPOSITORY_ROOT).as_posix(),
+            path.read_bytes(),
+        )
+        for path in _source_fingerprint_paths()
+    )
+
+
+def _source_fingerprint_at_revision(revision: str) -> str:
+    tracked = _git_output(
+        "ls-tree",
+        "-r",
+        "--name-only",
+        revision,
+        "--",
+        "benchmarks/interactive_scene_pipeline.py",
+        "pyproject.toml",
+        "src/starplot",
+    )
+    paths = sorted(filter(None, tracked.splitlines()))
+    return _fingerprint_source_entries(
+        (path, _git_bytes("show", f"{revision}:{path}")) for path in paths
+    )
 
 
 def _tracked_worktree_dirty() -> bool:
@@ -375,6 +414,33 @@ def _is_full_git_revision(value: object) -> bool:
     )
 
 
+def _validate_source_revision(revision: str, expected_fingerprint: str) -> None:
+    try:
+        object_type = _git_output("cat-file", "-t", revision).strip()
+    except subprocess.CalledProcessError as error:
+        raise ValueError(
+            "provenance.source.git_revision does not identify an existing commit"
+        ) from error
+    if object_type != "commit":
+        raise ValueError(
+            "provenance.source.git_revision does not identify an existing commit"
+        )
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", revision, "HEAD"],
+        cwd=_REPOSITORY_ROOT,
+        capture_output=True,
+        check=False,
+    )
+    if ancestor.returncode != 0:
+        raise ValueError(
+            "provenance.source.git_revision is not an ancestor of the current HEAD"
+        )
+    if _source_fingerprint_at_revision(revision) != expected_fingerprint:
+        raise ValueError(
+            "provenance.source fingerprint does not match its git_revision"
+        )
+
+
 def _validate_candidate_provenance(result: dict) -> int:
     provenance = result.get("provenance")
     if not isinstance(provenance, dict):
@@ -385,10 +451,12 @@ def _validate_candidate_provenance(result: dict) -> int:
     _require_scene_hash(source, "fingerprint", "provenance.source.fingerprint")
     if source.get("fingerprint_scope") != _SOURCE_FINGERPRINT_SCOPE:
         raise ValueError("provenance.source.fingerprint_scope is invalid")
-    if not _is_full_git_revision(source.get("git_revision")):
+    revision = source.get("git_revision")
+    if not _is_full_git_revision(revision):
         raise ValueError("provenance.source.git_revision must be a full git revision")
     if not isinstance(source.get("tracked_dirty"), bool):
         raise ValueError("provenance.source.tracked_dirty must be boolean")
+    _validate_source_revision(revision, source["fingerprint"])
 
     current_source = _current_source_provenance()
     # An artifact-only follow-up commit legitimately changes HEAD without
@@ -426,6 +494,200 @@ def _validate_candidate_provenance(result: dict) -> int:
         ):
             raise ValueError(f"{label} must contain exactly {repeats} repeats")
     return repeats
+
+
+def _require_worker_repetition(entry: object, index: int, label: str) -> dict:
+    if not isinstance(entry, dict):
+        raise ValueError(f"{label}[{index}] must be a mapping")
+    for key in (
+        "arrow_payload_bytes",
+        "external_html_bytes",
+        "legacy_renderer_preparation_seconds",
+        "legacy_renderer_total_seconds",
+        "payload_bytes",
+        "peak_rss_mb",
+        "plotly_construction_seconds",
+        "viewport_warm_ms",
+    ):
+        if key not in entry:
+            raise ValueError(f"{label}[{index}] must contain {key}")
+    return entry
+
+
+def _validated_worker_repetitions(
+    repetitions: object, repeats: int, label: str
+) -> list[dict]:
+    if not isinstance(repetitions, list) or len(repetitions) != repeats:
+        raise ValueError(f"{label} must contain exactly {repeats} repeats")
+    for index, entry in enumerate(repetitions):
+        _require_worker_repetition(entry, index, label)
+    return repetitions
+
+
+def _raw_floats(repetitions: list[dict], key: str, label: str) -> list[float]:
+    return [
+        _require_nonnegative_number(
+            repetition, key, f"{label}[{index}].{key}"
+        )
+        for index, repetition in enumerate(repetitions)
+    ]
+
+
+def _raw_ints(repetitions: list[dict], key: str, label: str) -> set[int]:
+    return {
+        _require_positive_integer(
+            repetition, key, f"{label}[{index}].{key}"
+        )
+        for index, repetition in enumerate(repetitions)
+    }
+
+
+def _validate_summary_against_raw(
+    summary: object, raw_values: list[float], label: str
+) -> None:
+    if not isinstance(summary, dict):
+        raise ValueError(f"{label} must be a mapping")
+    expected = summarize(raw_values)
+    for field in ("median_seconds", "p95_seconds"):
+        observed = _require_nonnegative_number(
+            summary, field, f"{label}.{field}"
+        )
+        if not math.isclose(
+            observed, expected[field], rel_tol=1e-12, abs_tol=1e-12
+        ):
+            raise ValueError(f"{label}.{field} does not match raw repetitions")
+
+
+def _validate_viewport_against_raw(
+    viewport: object, repetitions: list[dict], label: str
+) -> None:
+    if not isinstance(viewport, dict):
+        raise ValueError("viewport_warm must be a mapping")
+    samples: list[float] = []
+    for index, repetition in enumerate(repetitions):
+        values = repetition.get("viewport_warm_ms")
+        if not isinstance(values, list) or not values:
+            raise ValueError(
+                f"{label}[{index}].viewport_warm_ms must be a non-empty list"
+            )
+        for sample_index, value in enumerate(values):
+            samples.append(
+                _require_nonnegative_number(
+                    {"value": value},
+                    "value",
+                    f"{label}[{index}].viewport_warm_ms[{sample_index}]",
+                )
+            )
+    if not samples:
+        raise ValueError(f"{label} viewport_warm_ms produced no samples")
+    expected = {
+        "median_ms": percentile(samples, 50),
+        "p95_ms": percentile(samples, 95),
+    }
+    for field in ("median_ms", "p95_ms"):
+        observed = _require_nonnegative_number(
+            viewport, field, f"viewport_warm.{field}"
+        )
+        if not math.isclose(
+            observed, expected[field], rel_tol=1e-12, abs_tol=1e-12
+        ):
+            raise ValueError(
+                f"viewport_warm.{field} does not match raw repetitions"
+            )
+
+
+def _validate_candidate_aggregates(result: dict, repeats: int) -> None:
+    """Recompute every persisted aggregate from raw worker repetitions."""
+    raw = _validated_worker_repetitions(
+        result.get("raw_repetitions"), repeats, "raw_repetitions"
+    )
+
+    for key in ("payload_bytes", "arrow_payload_bytes", "external_html_bytes"):
+        if key not in result:
+            raise ValueError(f"{key} is missing")
+        raw_values = _raw_ints(raw, key, "raw_repetitions")
+        if len(raw_values) != 1:
+            raise ValueError(
+                f"{key} values are not identical across raw repetitions"
+            )
+        top_value = _require_positive_integer(result, key, key)
+        if top_value != raw_values.pop():
+            raise ValueError(f"{key} does not match raw repetitions")
+
+    peak_rss_values = _raw_floats(raw, "peak_rss_mb", "raw_repetitions")
+    expected_peak_rss = max(peak_rss_values)
+    observed_peak_rss = _require_nonnegative_number(
+        result, "peak_rss_mb", "peak_rss_mb"
+    )
+    if not math.isclose(
+        observed_peak_rss, expected_peak_rss, rel_tol=1e-12, abs_tol=1e-12
+    ):
+        raise ValueError("peak_rss_mb does not match raw repetitions")
+
+    _validate_summary_against_raw(
+        result.get("scene_compile"),
+        _raw_floats(raw, "legacy_renderer_preparation_seconds", "raw_repetitions"),
+        "scene_compile",
+    )
+    _validate_summary_against_raw(
+        result.get("legacy_renderer_preparation"),
+        _raw_floats(raw, "legacy_renderer_preparation_seconds", "raw_repetitions"),
+        "legacy_renderer_preparation",
+    )
+    _validate_summary_against_raw(
+        result.get("plotly_construction"),
+        _raw_floats(raw, "plotly_construction_seconds", "raw_repetitions"),
+        "plotly_construction",
+    )
+    _validate_summary_against_raw(
+        result.get("legacy_renderer_total"),
+        _raw_floats(raw, "legacy_renderer_total_seconds", "raw_repetitions"),
+        "legacy_renderer_total",
+    )
+
+    browser = result.get("browser")
+    if isinstance(browser, dict) and browser.get("status") == "measured":
+        arrow_payload = result.get("arrow_payload_bytes")
+        if arrow_payload is not None and browser.get(
+            "arrow_payload_bytes"
+        ) != arrow_payload:
+            raise ValueError(
+                "browser.arrow_payload_bytes does not match raw repetitions"
+            )
+
+    if "viewport_warm" in result:
+        _validate_viewport_against_raw(
+            result["viewport_warm"], raw, "raw_repetitions"
+        )
+
+    ordinary = result.get("ordinary_chart")
+    if isinstance(ordinary, dict):
+        expected_ordinary_points = (
+            result.get("provenance", {}).get("workload", {}).get(
+                "ordinary_point_count"
+            )
+        )
+        if (
+            expected_ordinary_points is not None
+            and ordinary.get("point_count") != expected_ordinary_points
+        ):
+            raise ValueError(
+                "ordinary_chart.point_count does not match workload"
+            )
+        ordinary_raw = _validated_worker_repetitions(
+            ordinary.get("raw_repetitions"),
+            repeats,
+            "ordinary_chart.raw_repetitions",
+        )
+        _validate_summary_against_raw(
+            ordinary,
+            _raw_floats(
+                ordinary_raw,
+                "legacy_renderer_total_seconds",
+                "ordinary_chart.raw_repetitions",
+            ),
+            "ordinary_chart",
+        )
 
 
 def _validate_legacy_provenance(result: dict) -> None:
@@ -616,6 +878,7 @@ def validate_benchmark_artifact(result: dict) -> None:
     _require_positive_integer(result, "point_count", "point_count")
     repeats = _validate_candidate_provenance(result)
     _validate_primary_browser(result.get("browser"), repeats)
+    _validate_candidate_aggregates(result, repeats)
     coverage = result.get("plot_type_coverage")
     if not isinstance(coverage, dict) or not isinstance(coverage.get("semantics"), str):
         raise ValueError("plot_type_coverage must include string semantics")

@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -40,6 +41,8 @@ TEST_SOURCE_PROVENANCE = {
     "tracked_dirty": False,
 }
 
+_REAL_VALIDATE_SOURCE_REVISION = benchmark._validate_source_revision
+
 
 @pytest.fixture(autouse=True)
 def stable_current_source_provenance(monkeypatch):
@@ -49,6 +52,11 @@ def stable_current_source_provenance(monkeypatch):
             "_current_source_provenance",
             lambda: dict(TEST_SOURCE_PROVENANCE),
         )
+    monkeypatch.setattr(
+        benchmark,
+        "_validate_source_revision",
+        lambda _revision, _fingerprint: None,
+    )
 
 
 def candidate_provenance(
@@ -118,9 +126,41 @@ def complete_plot_type_coverage():
     }
 
 
+def raw_worker_result(
+    *,
+    preparation=1.0,
+    total=1.0,
+    plotly=1.0,
+    viewport=None,
+    payload=1000,
+    arrow=100,
+    external=100,
+    peak=10.0,
+):
+    if viewport is None:
+        viewport = [1.0] * 5
+    return {
+        "arrow_payload_bytes": arrow,
+        "external_html_bytes": external,
+        "legacy_renderer_preparation_seconds": preparation,
+        "legacy_renderer_total_seconds": total,
+        "payload_bytes": payload,
+        "peak_rss_mb": peak,
+        "plotly_construction_seconds": plotly,
+        "viewport_warm_ms": list(viewport),
+    }
+
+
 def complete_result():
-    summary = {"median_seconds": 1.0, "p95_seconds": 1.2}
+    preparation = {"median_seconds": 1.0, "p95_seconds": 1.0}
+    total = {"median_seconds": 1.0, "p95_seconds": 1.0}
+    plotly = {"median_seconds": 1.0, "p95_seconds": 1.0}
     scene_hash = f"sha256:{'a' * 64}"
+    raw_repetitions = [raw_worker_result(), raw_worker_result()]
+    ordinary_raw = [
+        raw_worker_result(total=1.0),
+        raw_worker_result(total=1.0),
+    ]
     return {
         "arrow_payload_bytes": 100,
         "artifact_role": "candidate",
@@ -147,21 +187,26 @@ def complete_result():
         },
         "environment": ENVIRONMENT,
         "external_html_bytes": 100,
-        "legacy_renderer_preparation": summary,
-        "legacy_renderer_total": summary,
-        "ordinary_chart": {**summary, "point_count": 10},
+        "legacy_renderer_preparation": dict(preparation),
+        "legacy_renderer_total": dict(total),
+        "ordinary_chart": {
+            **dict(total),
+            "point_count": 10,
+            "raw_repetitions": ordinary_raw,
+        },
         "payload_bytes": 1000,
         "peak_rss_mb": 10.0,
         "plot_type_coverage": complete_plot_type_coverage(),
-        "plotly_construction": summary,
+        "plotly_construction": dict(plotly),
         "point_count": 100,
         "provenance": candidate_provenance(),
+        "raw_repetitions": raw_repetitions,
         "scene_compile": {
-            **summary,
+            **dict(preparation),
             "semantics": "compatibility alias for legacy_renderer_total",
         },
         "schema_version": benchmark.BENCHMARK_SCHEMA_VERSION,
-        "viewport_warm": {"median_ms": 10.0, "p95_ms": 12.0},
+        "viewport_warm": {"median_ms": 1.0, "p95_ms": 1.0},
     }
 
 
@@ -314,6 +359,25 @@ def test_candidate_source_revision_may_precede_an_artifact_only_commit(monkeypat
     )
 
     benchmark.validate_benchmark_artifact(result)
+
+
+def test_candidate_source_revision_must_identify_an_existing_commit(monkeypatch):
+    monkeypatch.setattr(
+        benchmark, "_validate_source_revision", _REAL_VALIDATE_SOURCE_REVISION
+    )
+
+    with pytest.raises(ValueError, match="does not identify an existing commit"):
+        benchmark._validate_source_revision("0" * 40, f"sha256:{'c' * 64}")
+
+
+def test_candidate_source_revision_must_match_its_recorded_fingerprint(monkeypatch):
+    monkeypatch.setattr(
+        benchmark, "_validate_source_revision", _REAL_VALIDATE_SOURCE_REVISION
+    )
+    revision = benchmark._git_output("rev-parse", "HEAD").strip()
+
+    with pytest.raises(ValueError, match="fingerprint does not match"):
+        benchmark._validate_source_revision(revision, f"sha256:{'0' * 64}")
 
 
 def test_candidate_schema_rejects_workload_fingerprint_mismatch():
@@ -538,10 +602,26 @@ def test_benchmark_summary_reports_median_and_p95():
 def test_compare_results_reports_every_missed_performance_gate():
     before = complete_legacy_baseline()
     after = complete_result()
-    after["scene_compile"] = {"median_seconds": 0.75, "p95_seconds": 0.8}
+
+    for repetition in after["raw_repetitions"]:
+        repetition["legacy_renderer_preparation_seconds"] = 0.75
+        repetition["peak_rss_mb"] = 7.0
+        repetition["arrow_payload_bytes"] = 31 * 1024 * 1024
+        repetition["external_html_bytes"] = 2 * 1024 * 1024
+        repetition["viewport_warm_ms"] = [501.0, 501.0, 501.0, 501.0, 1001.0]
+
+    for repetition in after["ordinary_chart"]["raw_repetitions"]:
+        repetition["legacy_renderer_total_seconds"] = 1.2
+
+    after["scene_compile"] = {"median_seconds": 0.75, "p95_seconds": 0.75}
+    after["legacy_renderer_preparation"] = {
+        "median_seconds": 0.75,
+        "p95_seconds": 0.75,
+    }
     after["peak_rss_mb"] = 7.0
     after["arrow_payload_bytes"] = 31 * 1024 * 1024
     after["external_html_bytes"] = 2 * 1024 * 1024
+    after["browser"]["arrow_payload_bytes"] = 31 * 1024 * 1024
     after["browser"]["raw_warm_repeats_ms"] = [120.0, 6000.0]
     after["browser"]["complete_render_median_ms"] = benchmark.percentile(
         after["browser"]["raw_warm_repeats_ms"], 50
@@ -551,6 +631,7 @@ def test_compare_results_reports_every_missed_performance_gate():
     )
     after["browser"]["cold_start_ms"] = 5001.0
     after["ordinary_chart"]["median_seconds"] = 1.2
+    after["ordinary_chart"]["p95_seconds"] = 1.2
     after["viewport_warm"] = {"median_ms": 501.0, "p95_ms": 1001.0}
 
     failures = benchmark.compare_results(before, after)
@@ -644,9 +725,6 @@ def test_compare_results_rejects_host_mismatch_before_gate_evaluation():
 def test_compare_results_rejects_unmeasured_metrics():
     before = complete_legacy_baseline()
     after = complete_result()
-    del after["arrow_payload_bytes"]
-    del after["external_html_bytes"]
-    after["ordinary_chart"]["median_seconds"] = None
     del after["viewport_warm"]
     after["plot_type_coverage"]["browser"] = {
         "semantics": "external Arrow browser diagnostics",
@@ -656,9 +734,6 @@ def test_compare_results_rejects_unmeasured_metrics():
 
     failures = benchmark.compare_results(before, after)
 
-    assert any("arrow_payload_bytes is missing" in failure for failure in failures)
-    assert any("external_html_bytes is missing" in failure for failure in failures)
-    assert any("ordinary_chart result is missing" in failure for failure in failures)
     assert any("viewport_warm_median is missing" in failure for failure in failures)
     assert any(
         "browser diagnostics are not measured" in failure for failure in failures
@@ -668,8 +743,6 @@ def test_compare_results_rejects_unmeasured_metrics():
 def test_compare_results_fails_closed_for_unmeasured_primary_browser():
     before = complete_legacy_baseline()
     after = complete_result()
-    after["scene_compile"]["median_seconds"] = 0.4
-    after["peak_rss_mb"] = 5.0
     after["browser"] = {
         "complete_render_median_ms": None,
         "complete_render_p95_ms": None,
@@ -686,7 +759,16 @@ def test_compare_results_fails_closed_for_unmeasured_primary_browser():
 def test_cross_family_browser_timings_remain_diagnostic_only():
     before = complete_legacy_baseline()
     after = complete_result()
-    after["scene_compile"]["median_seconds"] = 0.4
+
+    for repetition in after["raw_repetitions"]:
+        repetition["legacy_renderer_preparation_seconds"] = 0.4
+        repetition["peak_rss_mb"] = 5.0
+
+    after["scene_compile"] = {"median_seconds": 0.4, "p95_seconds": 0.4}
+    after["legacy_renderer_preparation"] = {
+        "median_seconds": 0.4,
+        "p95_seconds": 0.4,
+    }
     after["peak_rss_mb"] = 5.0
     after["browser"]["raw_warm_repeats_ms"] = [90.0, 90.0]
     after["browser"]["complete_render_median_ms"] = 90.0
@@ -1302,3 +1384,197 @@ def test_host_fingerprint_distinguishes_nodes_without_exposing_node(monkeypatch)
     assert private_node_one not in fingerprint_one
     assert private_node_two not in fingerprint_two
     assert len(fingerprint_one) == 16
+
+
+def _tampered_complete_result():
+    """Return a mutable, valid complete_result for aggregate tamper tests."""
+    return complete_result()
+
+
+def test_candidate_source_revision_must_be_ancestor_of_head(monkeypatch):
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if len(cmd) >= 3 and cmd[:3] == [
+            "git",
+            "merge-base",
+            "--is-ancestor",
+        ]:
+            return subprocess.CompletedProcess(
+                cmd, returncode=1, stdout="", stderr=""
+            )
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(benchmark.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        benchmark, "_validate_source_revision", _REAL_VALIDATE_SOURCE_REVISION
+    )
+    revision = benchmark._git_output("rev-parse", "HEAD").strip()
+
+    with pytest.raises(ValueError, match="is not an ancestor"):
+        benchmark._validate_source_revision(
+            revision, f"sha256:{'c' * 64}"
+        )
+
+
+def test_persisted_candidate_source_revision_and_fingerprint_match(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        benchmark, "_validate_source_revision", _REAL_VALIDATE_SOURCE_REVISION
+    )
+    path = (
+        benchmark._REPOSITORY_ROOT
+        / "benchmarks/baselines/interactive_scene_arrow.json"
+    )
+    artifact = json.loads(path.read_text())
+    source = artifact["provenance"]["source"]
+    benchmark._validate_source_revision(
+        source["git_revision"], source["fingerprint"]
+    )
+
+
+def test_persisted_candidate_raw_aggregates_are_consistent():
+    path = (
+        benchmark._REPOSITORY_ROOT
+        / "benchmarks/baselines/interactive_scene_arrow.json"
+    )
+    artifact = json.loads(path.read_text())
+    repeats = artifact["provenance"]["workload"]["repeats"]
+    benchmark._validate_candidate_aggregates(artifact, repeats)
+
+
+@pytest.mark.parametrize(
+    ("path", "message"),
+    [
+        (
+            ("scene_compile", "median_seconds"),
+            "scene_compile.median_seconds does not match raw repetitions",
+        ),
+        (
+            ("plotly_construction", "p95_seconds"),
+            "plotly_construction.p95_seconds does not match raw repetitions",
+        ),
+        (
+            ("legacy_renderer_total", "median_seconds"),
+            "legacy_renderer_total.median_seconds does not match raw repetitions",
+        ),
+        (
+            ("legacy_renderer_preparation", "p95_seconds"),
+            "legacy_renderer_preparation.p95_seconds does not match raw repetitions",
+        ),
+        ("payload_bytes", "payload_bytes does not match raw repetitions"),
+        (
+            "arrow_payload_bytes",
+            "arrow_payload_bytes does not match raw repetitions",
+        ),
+        (
+            "external_html_bytes",
+            "external_html_bytes does not match raw repetitions",
+        ),
+        ("peak_rss_mb", "peak_rss_mb does not match raw repetitions"),
+    ],
+)
+def test_artifact_aggregate_rejects_tampered_top_level_value(path, message):
+    result = _tampered_complete_result()
+    if isinstance(path, tuple):
+        target = result
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = 999.0
+    else:
+        result[path] = 999
+
+    with pytest.raises(ValueError, match=re.escape(message)):
+        benchmark.validate_benchmark_artifact(result)
+
+
+@pytest.mark.parametrize(
+    ("field", "raw_index", "message"),
+    [
+        ("payload_bytes", 0, "payload_bytes values are not identical"),
+        ("arrow_payload_bytes", 0, "arrow_payload_bytes values are not identical"),
+        ("external_html_bytes", 0, "external_html_bytes values are not identical"),
+    ],
+)
+def test_artifact_aggregate_rejects_inconsistent_payload_sizes(
+    field, raw_index, message
+):
+    result = _tampered_complete_result()
+    result["raw_repetitions"][raw_index][field] = 123
+
+    with pytest.raises(ValueError, match=re.escape(message)):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_artifact_aggregate_rejects_non_finite_raw_peak_rss():
+    result = _tampered_complete_result()
+    result["raw_repetitions"][0]["peak_rss_mb"] = float("nan")
+
+    with pytest.raises(ValueError, match="peak_rss_mb"):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_artifact_aggregate_rejects_bool_masquerading_as_numeric():
+    result = _tampered_complete_result()
+    result["raw_repetitions"][0]["plotly_construction_seconds"] = True
+
+    with pytest.raises(ValueError, match="plotly_construction_seconds"):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_artifact_aggregate_rejects_empty_viewport_sample():
+    result = _tampered_complete_result()
+    result["raw_repetitions"][0]["viewport_warm_ms"] = []
+
+    with pytest.raises(ValueError, match="viewport_warm_ms"):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_artifact_aggregate_rejects_tampered_viewport_warm():
+    result = _tampered_complete_result()
+    result["raw_repetitions"][0]["viewport_warm_ms"][0] = 999.0
+    result["viewport_warm"]["median_ms"] = 999.0
+
+    with pytest.raises(ValueError, match="viewport_warm.median_ms"):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_artifact_aggregate_rejects_tampered_ordinary_chart():
+    result = _tampered_complete_result()
+    result["ordinary_chart"]["raw_repetitions"][0][
+        "legacy_renderer_total_seconds"
+    ] = 999.0
+
+    with pytest.raises(ValueError, match="ordinary_chart.median_seconds"):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_artifact_aggregate_rejects_ordinary_point_count_mismatch(monkeypatch):
+    result = _tampered_complete_result()
+    workload = result["provenance"]["workload"]
+    monkeypatch.setattr(
+        benchmark,
+        "_workload_provenance",
+        lambda *args, **kwargs: workload,
+    )
+    result["ordinary_chart"]["point_count"] = 999
+
+    with pytest.raises(
+        ValueError, match="ordinary_chart.point_count does not match workload"
+    ):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_compare_results_rejects_tampered_aggregate():
+    before = complete_legacy_baseline()
+    after = complete_result()
+    after["scene_compile"]["median_seconds"] = 999.0
+
+    failures = benchmark.compare_results(before, after)
+
+    assert any(
+        "candidate artifact schema is invalid" in failure
+        for failure in failures
+    )
+    assert any("scene_compile" in failure for failure in failures)
