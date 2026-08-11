@@ -1,8 +1,9 @@
 # Interactive web export
 
-`starplot.interactive` keeps Matplotlib as the geometry authority, then compiles its
-final projected coordinates and styles into an immutable Scene. The same Scene
-drives `to_plotly()`, inline HTML, external bundles, and remote API responses.
+`starplot.interactive` keeps Matplotlib as the geometry authority, then records its
+final projected coordinates and styles. The same recorded drawing commands drive
+`to_plotly()`, the `ScenePackage` compiled by `export_html()`, inline HTML,
+external bundles, and remote API responses.
 
 Install the optional dependency before using Plotly output:
 
@@ -21,7 +22,9 @@ their Matplotlib counterparts and add two methods:
 - `export_html()` — write a self-contained or backend-driven HTML file.
 
 ```python
+from starplot import Miller, _
 from starplot.interactive import InteractiveMapPlot
+from starplot.styles import PlotStyle, extensions
 
 p = InteractiveMapPlot(
     projection=Miller(),
@@ -45,8 +48,8 @@ p.export_html("chart.html")
 ## 1. Notebook use with `to_plotly()`
 
 `to_plotly()` returns a standard `plotly.graph_objects.Figure` rendered from the
-same Scene used by `export_html()`. You can call `fig.show()` in a Jupyter
-notebook, add traces, or save it with Plotly's own `write_html()`.
+same recorded drawing commands used by `export_html()`. You can call `fig.show()`
+in a Jupyter notebook, add traces, or save it with Plotly's own `write_html()`.
 
 ```python
 from starplot.interactive import InteractiveMapPlot
@@ -178,14 +181,15 @@ and body bytes. The example below uses Flask, but the same pattern works in
 FastAPI, Django, or any WSGI/ASGI server.
 
 ```python
-import math
 from flask import Flask, request, Response
+from starplot import Miller, _
 from starplot.interactive import (
     InteractiveMapPlot,
     SceneProvider,
     ViewportRequest,
     parse_scene_manifest,
 )
+from starplot.styles import PlotStyle, extensions
 
 app = Flask(__name__)
 
@@ -343,12 +347,12 @@ plot.export_html(
     transparent: bool = False,
     data_mode: str = "external",          # "external" | "inline" | "remote"
     library_mode: str | None = None,       # "cdn" | "directory" | "inline"
-    data_url: str | None = None,           # required for remote
-    allowed_data_origins: tuple[str] = (), # extra layer origins for remote
+    data_url: str | None = None,             # required for remote
+    allowed_data_origins: tuple[str, ...] = (), # extra layer origins for remote
 )
 ```
 
-Returns an `ExportResult` with `html_path`, `bundle`, `manifest_bytes`,
+Returns an `ExportResult` with `html_path`, `bundle_path`, `manifest_bytes`,
 `layer_bytes`, and `scene_hash`.
 
 ### `export_scene_html(...)`
@@ -400,7 +404,8 @@ their Matplotlib counterparts.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Blank page, `file://` with external mode | External bundles cannot be loaded from `file://` because of `fetch()` CORS | Use `data_mode="inline"` or serve over HTTP |
-| Layers fail to load from CDN | `connect-src` CSP missing CDN origin | Add `allowed_data_origins=("https://cdn.jsdelivr.net",)` or use `library_mode="inline"` |
+| Plotly/Arrow libraries fail to load from their CDN | `script-src` CSP missing the library CDN origin | Add the CDN origin to `script-src`, or use `library_mode="inline"` / `library_mode="directory"` |
 | `data_url` rejected | It must be absolute `http(s)` with no fragment or userinfo | Use `https://host/path/manifest.json` |
+| Remote layer data fails to load from a separate origin | `connect-src` CSP missing data origin or the origin is not in `allowed_data_origins` | Add the data origin to `allowed_data_origins` and to `connect-src` |
 | Remote layers 404 | The requested URI does not match any `data_source.uri` | Map the URL path to the correct layer id using the manifest |
 | Hover not working | The layer uses `InteractionPolicy.NONE` | Use `hover` or `hover-and-detail` when building the Scene; this is automatic for star/object layers in `Interactive*Plot` |

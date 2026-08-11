@@ -1,7 +1,7 @@
 """Minimal remote SceneProvider server using only the Python standard library.
 
-This example builds the same Orion scene as ``map_orion_interactive.py`` and
-serves it through a remote ``SceneProvider``:
+This example builds a simplified Orion scene (same field as
+``map_orion_interactive.py``) and serves it through a remote ``SceneProvider``:
 
 - ``/`` or ``/orion-remote.html`` — the client HTML shell.
 - ``/scenes/orion/manifest.json`` — the scene manifest.
@@ -66,7 +66,12 @@ def _build_client_html_and_provider():
     )
 
     manifest = parse_scene_manifest(export.manifest_bytes)
-    provider = SceneProvider(manifest, export.manifest_bytes, export.layer_bytes)
+    provider = SceneProvider(
+        manifest,
+        export.manifest_bytes,
+        export.layer_bytes,
+        detail_provider=_CatalogDetailProvider(),
+    )
     uri_to_id = {layer.data_source.uri: layer.id for layer in manifest.layers}
     return export.html_path, provider, uri_to_id
 

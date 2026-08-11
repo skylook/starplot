@@ -10,7 +10,8 @@ This example writes four artefacts into the current working directory:
 - ``orion-plotly.html`` — a plain Plotly HTML written by the returned
   ``plotly.graph_objects.Figure``.
 
-The Orion field is the same one used by ``map_orion_interactive.py``.
+The Orion field is the same one used by ``map_orion_interactive.py``, but the
+scene is simplified so the example focuses on the export modes.
 """
 
 from starplot import Miller, _
