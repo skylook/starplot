@@ -79,9 +79,11 @@ def _build_client_html_and_provider():
 class _CatalogDetailProvider:
     """Placeholder detail provider that echoes object_id.
 
-    A real implementation would look up the object in a catalog database.
-    This is only used when layers declare ``InteractionPolicy.HOVER_AND_DETAIL``
-    and the client requests an object detail.
+    A real implementation would look up the object in a catalog database. This
+    is only used when a scene both advertises ``catalog_detail: true`` in its
+    manifest capabilities and has at least one layer with
+    ``InteractionPolicy.HOVER_AND_DETAIL``. The simplified Orion scene used here
+    does not, so the detail endpoint returns 404 through the provider.
     """
 
     def get_object(self, object_id: str) -> Mapping[str, object] | None:
@@ -143,6 +145,8 @@ class _Handler(BaseHTTPRequestHandler):
         if parts[2:] == ["manifest.json"]:
             resp = self.provider.manifest(self.headers.get("If-None-Match"))
         elif len(parts) == 4 and parts[2] == "detail":
+            # Only reachable in the browser when catalog_detail is true and a
+            # layer uses HOVER_AND_DETAIL; this stub scene does not.
             object_id = parts[3]
             resp = self.provider.object_detail(object_id)
         else:

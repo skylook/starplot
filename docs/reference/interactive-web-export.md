@@ -194,6 +194,14 @@ from starplot.styles import PlotStyle, extensions
 app = Flask(__name__)
 
 
+class CatalogDetailProvider:
+    """Optional: look up a full catalog row by the layer's object_id."""
+
+    def get_object(self, object_id: str):
+        # Replace with a real database lookup.
+        return {"object_id": object_id, "detail": "not implemented"}
+
+
 def build_scene_provider():
     p = InteractiveMapPlot(
         projection=Miller(),
@@ -210,7 +218,12 @@ def build_scene_provider():
     # only because that gives us the bundle bytes; the client HTML is remote.
     export = p.export_html("orion.html", data_mode="external")
     manifest = parse_scene_manifest(export.manifest_bytes)
-    provider = SceneProvider(manifest, export.manifest_bytes, export.layer_bytes)
+    provider = SceneProvider(
+        manifest,
+        export.manifest_bytes,
+        export.layer_bytes,
+        detail_provider=CatalogDetailProvider(),
+    )
 
     # Build a uri -> layer_id lookup. The JavaScript loader requests
     # layer files by their manifest data_source.uri.
@@ -295,6 +308,10 @@ Three things to notice:
 3. **Bytes, not JSON.** `SceneResponse.body_bytes()` is already the correct
    bytes for the response. Do not `json.dumps()` the manifest again; that would
    break the canonical byte contract.
+4. **Detail endpoints are optional.** Provide a `detail_provider` to
+   `SceneProvider`. The browser only calls it when the manifest advertises
+   `catalog_detail: true` and a layer uses `InteractionPolicy.HOVER_AND_DETAIL`;
+   otherwise `object_detail()` returns 404.
 
 ### 6.3 CORS
 
@@ -376,12 +393,19 @@ result = export_scene_html(
 ```python
 from starplot.interactive import SceneProvider, parse_scene_manifest
 
-provider = SceneProvider(manifest, manifest_bytes, layer_bytes)
+provider = SceneProvider(
+    manifest,
+    manifest_bytes,
+    layer_bytes,
+    detail_provider=MyCatalogDetailProvider(),  # optional
+)
 provider.manifest(if_none_match=None)
 provider.layer(layer_id, request=None, if_none_match=None)
 provider.object_detail(object_id)
 ```
 
+`detail_provider` is optional. It is only used when the manifest enables
+`catalog_detail` and at least one layer uses `InteractionPolicy.HOVER_AND_DETAIL`.
 Use `parse_scene_manifest()` to turn `manifest_bytes` into the Pydantic model
 `SceneProvider` expects.
 
