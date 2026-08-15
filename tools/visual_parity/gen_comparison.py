@@ -496,7 +496,11 @@ def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, heig
         try:
             for name in transports:
                 page_errors: list[str] = []
-                page = browser.new_page(viewport={"width": width, "height": height}, device_scale_factor=1)
+                context = browser.new_context(
+                    viewport={"width": width, "height": height},
+                    device_scale_factor=1,
+                )
+                page = context.new_page()
                 try:
                     page.on("pageerror", lambda error: page_errors.append(str(error)))
                     html_file = html_files[name]
@@ -531,7 +535,7 @@ def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, heig
                     page.screenshot(path=str(folder / f"{name}.png"), full_page=False)
                     print(f"  browser {name}: captured", flush=True)
                 finally:
-                    page.close()
+                    context.close()
         finally:
             browser.close()
     return reports
