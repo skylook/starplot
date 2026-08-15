@@ -579,7 +579,7 @@ def test_marker_size_calibration_matches_matplotlib_circle_extent():
     assert calibrate_marker_size(
         3800.0, dpi=100.0, width=4800.0, source_axes_width=4800.0,
         min_size=0.0, symbol="star_8",
-    ) == pytest.approx(math.sqrt(3800.0) * 100.0 / 72.0)
+    ) == pytest.approx(math.sqrt(3800.0) * 100.0 / 144.0)
     for symbol in ("point", "star_4"):
         assert calibrate_marker_size(
             3800.0, dpi=100.0, width=4800.0, source_axes_width=4800.0,

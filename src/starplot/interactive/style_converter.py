@@ -118,7 +118,7 @@ def _marker_extent_factor(symbol: str | None) -> float:
     # Plotly renders these compact Starplot glyphs at roughly twice the visual
     # diameter of Matplotlib's corresponding marker path for the same scatter
     # area. Ordinary circles and squares already agree directly.
-    if symbol in {"point", "star_4"}:
+    if symbol in {"point", "star_4", "star_8"}:
         return 0.5
     # Matplotlib scales custom paths so the bounding-box width equals sqrt(s).
     # The ellipse path's major axis is 2.0 units while its bbox width is ~1.9488,

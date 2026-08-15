@@ -29,8 +29,15 @@
     circle_dot: "circle-dot",
     comet: "star-diamond",
     star_4: "star-square",
-    // Keep this native Plotly symbol aligned with the Python adapter.
-    star_8: "asterisk",
+    // Plotly's native asterisk is accepted by plotly.py but disappears at
+    // chart scale in the browser renderer. Use an explicit eight-ray path for
+    // the browser while the Python adapter retains the native approximation.
+    star_8: (
+      "M 0,-10 L 0.689,-1.663 L 7.071,-7.071 L 1.663,-0.689 " +
+      "L 10,0 L 1.663,0.689 L 7.071,7.071 L 0.689,1.663 " +
+      "L 0,10 L -0.689,1.663 L -7.071,7.071 L -1.663,0.689 " +
+      "L -10,0 L -1.663,-0.689 L -7.071,-7.071 L -0.689,-1.663 Z"
+    ),
     // Matplotlib's ellipse marker is a 2:1 ellipse rotated 15°. Plotly custom
     // SVG path markers are centered at the origin with r=10 equal to half the
     // marker size; this path is the same 100-point ellipse scaled to that grid.
