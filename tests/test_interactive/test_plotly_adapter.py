@@ -694,8 +694,8 @@ def test_star_8_marker_uses_shared_native_starburst():
         clip_id=None,
     )
 
-    assert MARKER_SYMBOL_MAP["star_8"] == "asterisk"
-    assert PlotlySceneAdapter().render(_compile(command)).data[0].marker.symbol == "asterisk"
+    assert MARKER_SYMBOL_MAP["star_8"] == "star"
+    assert PlotlySceneAdapter().render(_compile(command)).data[0].marker.symbol == "star"
 
 
 def test_relative_identity_coordinates_stay_float32_typed_arrays():

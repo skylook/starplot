@@ -545,7 +545,7 @@ test("ellipse scatter marker uses a rotated 2:1 SVG path instead of a circle", a
   assert.ok(trace.marker.symbol.endsWith("Z"));
 });
 
-test("star_8 scatter marker uses an explicit eight-ray browser path", async () => {
+test("star_8 scatter marker preserves starburst semantics", async () => {
   const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
   const scene = { styles: [], palettes: [{ id: "p", colors: ["#fff"] }] };
   const stars = layer("stars", "scatter", 1, { palette_id: "p", symbol: "star_8" });
@@ -557,9 +557,7 @@ test("star_8 scatter marker uses an explicit eight-ray browser path", async () =
   });
 
   const trace = runtime.layerToPlotlyTrace(stars, table, scene);
-  assert.ok(trace.marker.symbol.startsWith("M 0,-10"));
-  assert.ok(trace.marker.symbol.endsWith("Z"));
-  assert.equal((trace.marker.symbol.match(/ L /g) || []).length, 15);
+  assert.equal(trace.marker.symbol, "star");
 });
 
 test("gradients honor clip identities, directions, and fail closed for unsupported modes", async () => {

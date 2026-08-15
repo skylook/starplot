@@ -18,9 +18,9 @@ MARKER_SYMBOL_MAP = {
     "circle_dot": "circle-dot",
     "comet": "star-diamond",
     "star_4": "star-square",
-    # ``asterisk`` is a compact native starburst accepted by both plotly.py
-    # and plotly.js, unlike a custom SVG marker path.
-    "star_8": "asterisk",
+    # Plotly has no native eight-ray glyph. Its native filled star preserves
+    # the important starburst semantics in both Python and browser renderers.
+    "star_8": "star",
     # plotly.py 5.24.1 does not validate arbitrary SVG path marker strings, so
     # the Python adapter keeps the circle approximation. The browser JS adapter
     # overrides this with the actual rotated ellipse SVG path.
