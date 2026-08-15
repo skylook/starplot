@@ -7,7 +7,7 @@ from starplot import Moon, Binoculars, Observer
 from starplot.styles import PlotStyle, extensions
 
 # time of partial eclipse. total eclipse started at 15:13:46
-dt = datetime(2024, 4, 8, 14, 45, 0, tzinfo=ZoneInfo("US/Eastern"))
+dt = datetime(2024, 4, 8, 14, 45, 0, 0, tzinfo=ZoneInfo("US/Eastern"))
 
 
 observer = Observer(
@@ -16,7 +16,7 @@ observer = Observer(
     lon=-81.669722,
 )
 
-m = Moon.get(dt=observer.dt, lat=observer.lat, lon=observer.lon)
+m = Moon.get(observer)
 
 op = InteractiveOpticPlot(
     ra=m.ra,
