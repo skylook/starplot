@@ -848,6 +848,39 @@ def test_compile_builds_frozen_viewport_clips_and_context_mappings():
         scene.viewport["reference_width"] = 1
 
 
+def test_compile_carries_only_browser_legend_presentation_fields():
+    style = {
+        **STYLE,
+        "show_legend": True,
+        "legend_labels": ["Star"],
+        "legend_title": "Legend",
+        "legend_background_color": "#f1f6fe",
+        "legend_border_color": "#123456",
+        "legend_font_color": "#101010",
+        "legend_font_size": 15.0,
+        "legend_title_font_size": 18.0,
+        "magnitude_scale": {
+            "title": "Star Magnitude",
+            "labels": ["0", "1"],
+            "sizes": [8.0, 4.0],
+            "color": "#000000",
+            "edge_color": "#ffffff",
+        },
+        "unrelated_backend_state": "must-not-leak",
+    }
+
+    scene = SceneCompiler().compile([], PROJECTION, style, 1200, 800, False)
+
+    assert scene.viewport["legend_title"] == "Legend"
+    assert scene.viewport["legend_background_color"] == "#f1f6fe"
+    assert scene.viewport["legend_border_color"] == "#123456"
+    assert scene.viewport["legend_font_color"] == "#101010"
+    assert scene.viewport["legend_font_size"] == 15.0
+    assert scene.viewport["legend_title_font_size"] == 18.0
+    assert scene.viewport["magnitude_scale"]["labels"] == ("0", "1")
+    assert "unrelated_backend_state" not in scene.viewport
+
+
 @pytest.mark.parametrize(("width", "height"), [(0, 1), (1, 0), (-1, 1), (1, -1)])
 def test_compile_requires_positive_reference_dimensions(width, height):
     with pytest.raises(ValueError, match="width and height"):

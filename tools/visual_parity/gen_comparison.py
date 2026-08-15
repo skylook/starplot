@@ -522,7 +522,9 @@ def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, heig
                         const traces = Array.from(graph.data || []);
                         return {
                           trace_count: traces.length,
-                          layer_ids: traces.map((trace) => trace.meta && trace.meta.starplot_layer_id),
+                          layer_ids: traces
+                            .map((trace) => trace.meta && trace.meta.starplot_layer_id)
+                            .filter(Boolean),
                           trace_types: traces.reduce((counts, trace) => {
                             counts[trace.type] = (counts[trace.type] || 0) + 1;
                             return counts;

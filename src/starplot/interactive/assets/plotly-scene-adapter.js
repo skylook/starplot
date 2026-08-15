@@ -915,6 +915,33 @@
         fillcolor: axesBg, line: { width: 0 }, layer: "below",
       });
     }
+    const fontPixelScale = Number(options.fontPixelScale || 1);
+    const scaledLegendFont = (value, fallback) => {
+      const numeric = Number(value);
+      return Math.max(8, (Number.isFinite(numeric) ? numeric : fallback) * fontPixelScale);
+    };
+    const legendFontColor = viewport.legend_font_color || "#ffffff";
+    const legendTitle = viewport.legend_title == null
+      ? null : escapePlotlyText(viewport.legend_title);
+    const legend = {
+      bgcolor: viewport.legend_background_color || "rgba(0,0,0,0.5)",
+      bordercolor: viewport.legend_border_color || "rgba(255,255,255,0.2)",
+      borderwidth: 1,
+      font: {
+        color: legendFontColor,
+        size: scaledLegendFont(viewport.legend_font_size, 11),
+      },
+      grouptitlefont: {
+        color: legendFontColor,
+        size: scaledLegendFont(viewport.legend_title_font_size, 11),
+      },
+    };
+    if (legendTitle) {
+      legend.title = {
+        text: legendTitle,
+        font: { ...legend.grouptitlefont },
+      };
+    }
     return {
       // Matplotlib's transparent figure exports are composited against the
       // comparison page's white canvas.  Do the same instead of painting the
@@ -935,10 +962,46 @@
       xaxis3: { range: [0, 1], domain: [0, 1], overlaying: "x", visible: false, fixedrange: true },
       yaxis3: { range: [0, 1], domain: [0, 1], overlaying: "y", visible: false, fixedrange: true },
       showlegend: Boolean(viewport.show_legend || viewport.showlegend),
+      legend,
       margin: { autoexpand: false, ...(options.margin || viewport.margin || { l: 10, r: 10, t: 10, b: 10 }) },
       annotations: [],
       shapes,
     };
+  }
+
+  function magnitudeScaleTraces(scene, metrics = {}) {
+    const viewport = scene.viewport || {};
+    if (!Boolean(viewport.show_legend || viewport.showlegend)) return [];
+    const scale = viewport.magnitude_scale;
+    if (!scale || !Array.isArray(scale.labels) || !Array.isArray(scale.sizes)) return [];
+    const count = Math.min(scale.labels.length, scale.sizes.length, 64);
+    const fontPixelScale = Number(metrics.fontPixelScale || 1);
+    const title = escapePlotlyText(scale.title || "Star Magnitude");
+    const traces = [];
+    for (let index = 0; index < count; index += 1) {
+      const rawSize = Number(scale.sizes[index]);
+      if (!Number.isFinite(rawSize) || rawSize < 0) continue;
+      traces.push({
+        type: "scatter",
+        x: [null],
+        y: [null],
+        mode: "markers",
+        marker: {
+          symbol: "circle",
+          size: [Math.max(1.5, rawSize * fontPixelScale)],
+          color: scale.color || "#000000",
+          line: { color: scale.edge_color || "#000000", width: 0 },
+        },
+        name: escapePlotlyText(scale.labels[index]),
+        legendgroup: "star-magnitude-scale",
+        legendgrouptitle: index === 0 ? { text: title } : undefined,
+        legendrank: 2000 + index,
+        showlegend: true,
+        hoverinfo: "skip",
+        meta: { starplot_ui: "magnitude-scale" },
+      });
+    }
+    return traces;
   }
 
   function _estimatedResponsiveAxesWidth(viewport, margin, target, yDomain) {
@@ -1213,6 +1276,13 @@
             ? Number(shape.line.width)
             : null;
         }),
+        legendFontSize: layout.legend && layout.legend.font
+          ? Number(layout.legend.font.size) : null,
+        legendTitleFontSize: layout.legend && layout.legend.title
+          && layout.legend.title.font
+          ? Number(layout.legend.title.font.size) : null,
+        legendGroupTitleFontSize: layout.legend && layout.legend.grouptitlefont
+          ? Number(layout.legend.grouptitlefont.size) : null,
       };
     }
     if (state.appliedWidthScale === undefined) state.appliedWidthScale = metrics.widthScale;
@@ -1295,6 +1365,26 @@
         }));
         await Plotly.relayout(target, { annotations: newAnnotations });
       }
+    }
+    const legendUpdate = {};
+    const legendScale = correctedFontPixelScale / metrics.fontPixelScale;
+    if (state.scaleBaseline.legendFontSize != null) {
+      legendUpdate["legend.font.size"] = Math.max(
+        8, state.scaleBaseline.legendFontSize * legendScale,
+      );
+    }
+    if (state.scaleBaseline.legendTitleFontSize != null) {
+      legendUpdate["legend.title.font.size"] = Math.max(
+        8, state.scaleBaseline.legendTitleFontSize * legendScale,
+      );
+    }
+    if (state.scaleBaseline.legendGroupTitleFontSize != null) {
+      legendUpdate["legend.grouptitlefont.size"] = Math.max(
+        8, state.scaleBaseline.legendGroupTitleFontSize * legendScale,
+      );
+    }
+    if (Object.keys(legendUpdate).length) {
+      await Plotly.relayout(target, legendUpdate);
     }
     state.appliedWidthScale = correctedWidthScale;
   }
@@ -1390,8 +1480,11 @@
     layout.shapes = [...layout.shapes, ...orderedEffects.flatMap((item) => item.shapes || [])];
     const marginBottom = Math.max(0, ...orderedEffects.map((item) => Number(item.marginBottom || 0)));
     if (marginBottom) layout.margin = { ...metrics.margin, b: Math.max(Number(metrics.margin.b || 10), marginBottom) };
-    const plotlyTraces = slots.flatMap((layer) =>
-      traces.get(layer.id) || [placeholder(layer, forceSvgTracePlane)]);
+    const plotlyTraces = [
+      ...slots.flatMap((layer) =>
+        traces.get(layer.id) || [placeholder(layer, forceSvgTracePlane)]),
+      ...magnitudeScaleTraces(scene, metrics),
+    ];
     const polygonShapeIndices = _polygonShapeIndices(layout, orderedEffects);
     const correctionState = {
       scene, slots, traces, plotlyTraces, layout, metrics,
@@ -1414,6 +1507,13 @@
             ? Number(shape.line.width)
             : null;
         }),
+        legendFontSize: layout.legend && layout.legend.font
+          ? Number(layout.legend.font.size) : null,
+        legendTitleFontSize: layout.legend && layout.legend.title
+          && layout.legend.title.font
+          ? Number(layout.legend.title.font.size) : null,
+        legendGroupTitleFontSize: layout.legend && layout.legend.grouptitlefont
+          ? Number(layout.legend.grouptitlefont.size) : null,
       },
     };
     await Plotly.react(target, plotlyTraces, layout,
@@ -1451,5 +1551,6 @@
     _applyScaleCorrection,
     _applyAnnotationStrokes,
     _applyEllipseMarkerTransforms,
+    magnitudeScaleTraces,
   });
 })(typeof window !== "undefined" ? window : globalThis);

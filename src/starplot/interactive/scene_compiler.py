@@ -426,6 +426,20 @@ class SceneCompiler:
             "show_legend": bool(style.get("show_legend", False)),
             "legend_labels": list(style.get("legend_labels") or []),
         }
+        # Browser exports do not carry the complete backend style dictionary.
+        # Copy only the presentation fields needed to reproduce the recorded
+        # Matplotlib legend, including its synthetic magnitude scale.
+        for key in (
+            "legend_background_color",
+            "legend_border_color",
+            "legend_font_color",
+            "legend_font_size",
+            "legend_title",
+            "legend_title_font_size",
+            "magnitude_scale",
+        ):
+            if style.get(key) is not None:
+                viewport[key] = style[key]
         margin = _viewport_margin(projection, width_value, height_value)
         if margin is not None:
             viewport["margin"] = margin

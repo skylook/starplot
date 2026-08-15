@@ -713,6 +713,64 @@ test("info table widths and viewport layout remain exact in initial Plotly reser
   assert.equal(effects.annotations.length, 2);
 });
 
+test("browser legend preserves recorded styling and magnitude scale", async () => {
+  const calls = [];
+  const Plotly = {
+    async react(...args) { calls.push(args); },
+    async restyle() {},
+    async relayout() {},
+  };
+  const runtime = await loadRuntime(
+    ["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly },
+  );
+  const source = {
+    async loadManifest() {
+      return {
+        viewport: {
+          show_legend: true,
+          dpi: 72,
+          source_axes_width: 1000,
+          target_axes_width: 500,
+          legend_title: "Legend <unsafe>",
+          legend_background_color: "#f1f6fe",
+          legend_border_color: "#123456",
+          legend_font_color: "#101010",
+          legend_font_size: 20,
+          legend_title_font_size: 24,
+          magnitude_scale: {
+            title: "Magnitude <unsafe>",
+            labels: ["0", "<one>"],
+            sizes: [10, 4],
+            color: "#000000",
+            edge_color: "#ffffff",
+          },
+        },
+        styles: [], palettes: [], clips: [], layers: [],
+      };
+    },
+    async *loadLayer() {},
+  };
+
+  await runtime.renderScene("chart", source, { Plotly });
+
+  const [target, traces, layout] = calls[0];
+  assert.ok(target);
+  assert.equal(layout.legend.bgcolor, "#f1f6fe");
+  assert.equal(layout.legend.bordercolor, "#123456");
+  assert.equal(layout.legend.font.color, "#101010");
+  assert.equal(layout.legend.font.size, 10);
+  assert.equal(layout.legend.title.text, "Legend &lt;unsafe&gt;");
+  assert.equal(layout.legend.title.font.size, 12);
+  assert.equal(layout.legend.grouptitlefont.size, 12);
+  assert.deepEqual(Array.from(traces, (trace) => trace.name), ["0", "&lt;one&gt;"]);
+  assert.deepEqual(Array.from(traces[0].marker.size), [5]);
+  assert.equal(
+    traces[0].legendgrouptitle.text,
+    "Magnitude &lt;unsafe&gt;",
+  );
+  assert.ok(traces.every((trace) => trace.meta.starplot_ui === "magnitude-scale"));
+});
+
 test("layout-only layers keep one trace slot and emit valid annotations and footer shapes", async () => {
   const calls = { react: [], restyle: [], relayout: [] };
   const Plotly = {
@@ -1004,7 +1062,15 @@ test("scale correction is idempotent and updates subpixel marker opacity with si
 test("successive scale corrections derive line and polygon widths from the compile baseline", async () => {
   const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
   const trace = { type: "scatter", line: { width: 4 } };
-  const layout = { annotations: [], shapes: [{ type: "path", line: { width: 6 } }] };
+  const layout = {
+    annotations: [],
+    shapes: [{ type: "path", line: { width: 6 } }],
+    legend: {
+      font: { size: 16 },
+      title: { font: { size: 20 } },
+      grouptitlefont: { size: 18 },
+    },
+  };
   const state = {
     scene: { viewport: { source_axes_width: 1000, target_axes_width: 1000, dpi: 72 } },
     slots: [{ id: "line" }], traces: new Map([["line", [trace]]]), layout,
@@ -1013,12 +1079,22 @@ test("successive scale corrections derive line and polygon widths from the compi
   };
   const target = { _fullLayout: null };
   const snapshots = [];
+  const legendSnapshots = [];
   const Plotly = {
     async restyle(_target, update) {
       trace.line.width = update["line.width"][0];
     },
     async relayout(_target, update) {
-      layout.shapes[0].line.width = update["shapes[0].line.width"];
+      if (update["shapes[0].line.width"] != null) {
+        layout.shapes[0].line.width = update["shapes[0].line.width"];
+      }
+      if (update["legend.font.size"] != null) {
+        legendSnapshots.push([
+          update["legend.font.size"],
+          update["legend.title.font.size"],
+          update["legend.grouptitlefont.size"],
+        ]);
+      }
     },
   };
 
@@ -1032,6 +1108,7 @@ test("successive scale corrections derive line and polygon widths from the compi
   }
 
   assert.deepEqual(snapshots, [[2, 3], [1, 1.5], [3, 4.5]]);
+  assert.deepEqual(legendSnapshots, [[8, 10, 9], [8, 8, 8], [12, 15, 13.5]]);
 });
 
 test("scale correction indexes traces after optional-layer placeholders", async () => {
