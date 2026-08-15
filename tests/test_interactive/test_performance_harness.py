@@ -94,7 +94,7 @@ def legacy_provenance():
     }
 
 
-def complete_plot_type_coverage():
+def complete_plot_type_coverage(repeats=2):
     return {
         "semantics": "real recording coverage",
         "browser": {
@@ -103,9 +103,11 @@ def complete_plot_type_coverage():
             "status": "measured",
             "plot_types": {
                 name: {
+                    "all_completion_signals": ["starplot-product-promise"] * repeats,
                     "arrow_payload_bytes": 100,
                     "complete_render_median_ms": 10.0,
-                    "complete_render_p95_ms": 12.0,
+                    "complete_render_p95_ms": 10.0,
+                    "raw_render_repeats_ms": [10.0] * repeats,
                     "scene_hash": f"sha256:{name}",
                 }
                 for name in ("map", "horizon", "zenith", "optic")
@@ -778,15 +780,15 @@ def test_compare_results_rejects_environment_mismatch_before_gate_evaluation():
     ]
 
 
-def test_compare_results_rejects_starplot_version_mismatch():
+def test_compare_results_treats_starplot_version_as_source_not_environment():
     before = complete_legacy_baseline()
     after = complete_result()
     after["environment"] = {**ENVIRONMENT, "starplot": "forged-release"}
 
-    assert benchmark.compare_results(before, after) == [
-        "environment.starplot differs; benchmark workloads are not comparable "
-        "('0.19.5' != 'forged-release')"
-    ]
+    assert not any(
+        "environment.starplot" in failure
+        for failure in benchmark.compare_results(before, after)
+    )
 
 
 def test_browser_gates_separate_transport_overhead_from_absolute_product_budget():
@@ -859,7 +861,8 @@ def test_cross_family_browser_timings_remain_diagnostic_only():
     after["browser"]["complete_render_p95_ms"] = 90.0
     for evidence in after["plot_type_coverage"]["browser"]["plot_types"].values():
         evidence["complete_render_median_ms"] = 1_000_000.0
-        evidence["complete_render_p95_ms"] = 2_000_000.0
+        evidence["complete_render_p95_ms"] = 1_000_000.0
+        evidence["raw_render_repeats_ms"] = [1_000_000.0] * 2
 
     assert benchmark.compare_results(before, after) == []
 
@@ -948,7 +951,7 @@ def test_python_benchmark_aggregates_isolated_stage_results(monkeypatch):
         return browser_result
 
     monkeypatch.setattr(benchmark, "run_browser_benchmark", run_browser)
-    plot_type_coverage = complete_plot_type_coverage()
+    plot_type_coverage = complete_plot_type_coverage(repeats=1)
     monkeypatch.setattr(
         benchmark,
         "run_recorded_plot_type_coverage",
@@ -1024,7 +1027,7 @@ def test_python_benchmark_measures_browser_before_cpu_intensive_samples(monkeypa
 
     def run_browser_diagnostics(repeats):
         events.append("browser diagnostics")
-        return complete_plot_type_coverage()["browser"]
+        return complete_plot_type_coverage(repeats=repeats)["browser"]
 
     monkeypatch.setattr(benchmark, "_run_python_samples", run_samples)
     monkeypatch.setattr(benchmark, "run_browser_benchmark", run_browser)
@@ -1140,9 +1143,26 @@ def test_recorded_plot_type_browser_diagnostics_measures_each_family(monkeypatch
     assert browser.context.closed
     assert browser.closed
     for name, evidence in result["plot_types"].items():
+        assert evidence["all_completion_signals"] == [
+            "starplot-product-promise",
+            "starplot-product-promise",
+        ]
         assert evidence["complete_render_median_ms"] == 25.0
         assert evidence["complete_render_p95_ms"] == pytest.approx(29.5)
+        assert evidence["raw_render_repeats_ms"] == [20.0, 30.0]
         assert evidence["scene_hash"] == f"sha256:{name}"
+
+
+def test_plot_type_browser_diagnostics_fail_closed_without_product_promise():
+    result = complete_result()
+    evidence = result["plot_type_coverage"]["browser"]["plot_types"]["map"]
+    evidence["all_completion_signals"] = ["plotly-fallback"] * 2
+
+    with pytest.raises(
+        ValueError,
+        match="map.*requires starplot-product-promise for every repeat",
+    ):
+        benchmark.validate_benchmark_artifact(result)
 
 
 def test_primary_browser_measures_each_source_as_an_isolated_series(monkeypatch):
@@ -1206,7 +1226,11 @@ def test_primary_browser_measures_each_source_as_an_isolated_series(monkeypatch)
     def measure(page, url, timeout_ms):
         measured_urls.append(url)
         return {
-            "completion_signal": "starplot-product-promise",
+            "completion_signal": (
+                "plotly-fallback"
+                if url.endswith("legacy.html")
+                else "starplot-product-promise"
+            ),
             "elapsed_ms": float(len(measured_urls)),
             "navigation_timings": [_navigation_sample()],
         }
@@ -1244,7 +1268,11 @@ def test_primary_browser_measures_each_source_as_an_isolated_series(monkeypatch)
     assert result["legacy_same_scene"]["raw_cold_repeats_ms"] == [2.0, 3.0, 6.0]
     assert result["legacy_same_scene"]["raw_warm_repeats_ms"] == [7.0, 10.0]
     assert result["completion_signal"] == "starplot-product-promise"
-    assert result["legacy_same_scene"]["completion_signal"] == "starplot-product-promise"
+    assert result["legacy_same_scene"]["completion_signal"] == "plotly-fallback"
+    assert set(result["all_completion_signals"]) == {"starplot-product-promise"}
+    assert set(result["legacy_same_scene"]["all_completion_signals"]) == {
+        "plotly-fallback"
+    }
 
 
 def test_python_repeat_timeout_is_fatal(monkeypatch):
@@ -1723,6 +1751,23 @@ def test_measured_browser_rejects_unknown_completion_signal():
     result["browser"]["completion_signal"] = "not-a-signal"
 
     with pytest.raises(ValueError, match="completion_signal"):
+        benchmark.validate_benchmark_artifact(result)
+
+
+def test_measured_primary_browser_requires_starplot_product_promise():
+    result = complete_result()
+    browser = result["browser"]
+    browser["completion_signal"] = "plotly-fallback"
+    browser["all_completion_signals"] = [
+        "plotly-fallback" for _ in browser["all_completion_signals"]
+    ]
+    for entry in browser["all_navigation_timings"]:
+        entry["completion_signal"] = "plotly-fallback"
+
+    with pytest.raises(
+        ValueError,
+        match="browser.completion_signal must be starplot-product-promise",
+    ):
         benchmark.validate_benchmark_artifact(result)
 
 

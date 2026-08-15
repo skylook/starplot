@@ -31,13 +31,19 @@ from starplot.interactive.scene_manifest import (
 )
 
 
-class DataMode(str, Enum):
+class _StringEnum(str, Enum):
+    """Python 3.10-compatible string enum with ``StrEnum`` string behavior."""
+
+    __str__ = str.__str__
+
+
+class DataMode(_StringEnum):
     INLINE = "inline"
     EXTERNAL = "external"
     REMOTE = "remote"
 
 
-class LibraryMode(str, Enum):
+class LibraryMode(_StringEnum):
     CDN = "cdn"
     DIRECTORY = "directory"
     INLINE = "inline"

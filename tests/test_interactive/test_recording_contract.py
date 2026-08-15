@@ -180,16 +180,30 @@ def test_optic_info_records_the_public_footer_contract():
         for command in plot._recorder.commands
         if command.gid == "optic-info-table"
     )
+    table = list(plot.ax.tables)[-1]
+    cells = table.get_celld()
+    columns = [cells[0, col].get_text().get_text() for col in range(5)]
+    values = [cells[1, col].get_text().get_text() for col in range(5)]
+    widths = [cells[0, col].get_width() for col in range(5)]
+
     assert footer.kind == "info_table"
-    assert footer.data["columns"] == [
+    assert columns == [
         "Target (Alt/Az)",
         "Target (RA/DEC)",
         "Observer Lat, Lon",
         "Observer Date/Time",
         "Optic - Refractor",
     ]
-    assert len(footer.data["values"]) == 5
-    assert footer.data["widths"] == [0.15, 0.15, 0.2, 0.2, 0.3]
+    assert values == [
+        "41\N{DEGREE SIGN} / 108\N{DEGREE SIGN} (E)",
+        "6.00h / 10.00\N{DEGREE SIGN}",
+        "33.36\N{DEGREE SIGN}, -116.84\N{DEGREE SIGN}",
+        "12/16/2023 @ 21:00:00 PST",
+        "430mm w/ 11mm (39x) @  82\N{DEGREE SIGN} = 2.10\N{DEGREE SIGN} TFOV",
+    ]
+    assert footer.data["columns"] == columns
+    assert footer.data["values"] == values
+    assert footer.data["widths"] == pytest.approx(widths)
 
 
 @pytest.mark.parametrize("plot_factory, expected_kind", [
@@ -472,3 +486,13 @@ def test_magnitude_scale_and_zenith_info_are_recorded():
         str(value) for value in range(-1, 9)
     ]
     assert len(plot._interactive_magnitude_scale["sizes"]) == 10
+
+
+def test_zenith_info_preserves_explicit_zero_alpha():
+    from starplot.styles import LabelStyle
+
+    plot = make_zenith_plot()
+    plot.info(style=LabelStyle(font_alpha=0))
+
+    command = next(c for c in plot._recorder.commands if c.gid == "zenith-info")
+    assert command.style["alpha"] == 0

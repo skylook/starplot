@@ -1,5 +1,6 @@
 """Contracts for the immutable, backend-neutral Scene boundary."""
 
+from collections.abc import Mapping
 from types import MappingProxyType
 
 import numpy as np
@@ -158,6 +159,19 @@ def test_columnar_data_deeply_snapshots_object_columns():
         np.ndarray.setflags(columns["metadata"], write=True)
 
 
+def test_object_column_base_escape_cannot_mutate_scene_storage():
+    columns = ColumnarData.from_mapping(
+        {"metadata": np.array([{"aliases": ["M31"]}], dtype=object)}
+    )
+    exposed = columns["metadata"]
+
+    exposed.base.setflags(write=True)
+    exposed.base[0] = {"aliases": ("tampered",)}
+
+    assert exposed[0]["aliases"] == ("tampered",)
+    assert columns["metadata"][0]["aliases"] == ("M31",)
+
+
 def test_columnar_data_is_contiguous_read_only_and_aligned():
     columns = ColumnarData.from_mapping({
         "x": [1.0, 2.0],
@@ -167,7 +181,7 @@ def test_columnar_data_is_contiguous_read_only_and_aligned():
     assert columns.row_count == 2
     assert columns["x"].flags.c_contiguous
     assert not columns["x"].flags.writeable
-    assert isinstance(columns.columns, MappingProxyType)
+    assert isinstance(columns.columns, Mapping)
     with pytest.raises(ValueError):
         columns["x"][0] = 9
     with pytest.raises(TypeError):

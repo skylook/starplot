@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import shapely.geometry
 
+import starplot.interactive.scene as scene_module
 import starplot.interactive.scene_compiler as compiler_module
 from starplot.interactive.commands import (
     ClipGeometry as RecordedClipGeometry,
@@ -1186,16 +1187,23 @@ def test_filter_columns_retains_each_boolean_selection_without_second_copy(
         }
     )
     captured = []
+    readonly_calls = []
     real_seal = compiler_module._seal_owned_array
+    real_readonly = scene_module.readonly_array
 
     def seal_spy(array):
         captured.append(array)
         return real_seal(array)
 
+    def readonly_spy(value, dtype=None):
+        readonly_calls.append(value)
+        return real_readonly(value, dtype=dtype)
+
     def forbidden_from_mapping(cls, values):
         raise AssertionError("selected columns must not be copied again")
 
     monkeypatch.setattr(compiler_module, "_seal_owned_array", seal_spy)
+    monkeypatch.setattr(scene_module, "readonly_array", readonly_spy)
     monkeypatch.setattr(
         ColumnarData,
         "from_mapping",
@@ -1205,6 +1213,7 @@ def test_filter_columns_retains_each_boolean_selection_without_second_copy(
     filtered = filter_columns(data, np.array([True, False, True]))
 
     assert filtered.row_count == 2
+    assert readonly_calls == []
     assert len(captured) == 2
     assert filtered["x"] is captured[0]
     assert filtered["name"] is captured[1]

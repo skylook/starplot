@@ -25,6 +25,7 @@ from starplot.interactive import (
 from starplot.interactive.commands import CoordinateSpace
 from starplot.interactive.scene import CoordinateEncoding, CoordinateEncodingKind
 import starplot.interactive.web_export as web_export
+import tools.build_plotly_bundle as build_plotly_bundle
 
 
 def _load_generated_inline_html_with_javascript(html: str) -> None:
@@ -143,6 +144,11 @@ def test_modes_preserve_identical_scene_hash(tmp_path, data_mode, library_mode):
     assert result.scene_hash == expected.scene_hash
     assert result.manifest_bytes == expected.manifest_bytes
     assert result.layer_bytes["stars"]
+
+
+@pytest.mark.parametrize("mode", [*DataMode, *LibraryMode])
+def test_export_modes_preserve_string_enum_semantics(mode):
+    assert str(mode) == mode.value
 
 
 def test_external_default_writes_hashed_arrow_bundle(tmp_path):
@@ -292,15 +298,11 @@ def test_offline_modes_use_the_reviewed_custom_plotly_bundle(monkeypatch, tmp_pa
     )
     payload = custom.read_bytes()
     html = external.html_path.read_text(encoding="utf-8")
-    assert len(payload) == 1_533_024
-    assert hashlib.sha256(payload).hexdigest() == (
-        "a71bd729eb405abeb75a40df6aa826039043a6e84c2afac33d47aa8009e1c130"
-    )
+    contract = build_plotly_bundle.bundle_contract()
+    assert len(payload) == int(contract.provenance["output_bytes"])
+    assert hashlib.sha256(payload).hexdigest() == contract.provenance["output_sha256"]
     assert b"plotly.js (starplot - minified) v3.3.1" in payload[:256]
-    assert (
-        'integrity="sha384-7YvfTH8Nho5YUQqt4yYfagdwWlaXTy6hUHE+'
-        '2sPiu7Zi2CPr3NLyLvttJFVbNedw"'
-    ) in html
+    assert f'integrity="{contract.provenance["output_sri"]}"' in html
 
     inline = export_scene_html(
         _scene(), "inline.html", data_mode="inline", library_mode="inline"

@@ -1390,6 +1390,8 @@
   }
 
   function _ensureResizeHandler(target, state, Plotly) {
+    if (!target || (typeof target !== "object" && typeof target !== "function")) return;
+    target._starplotResizeContext = { state, Plotly };
     if (target._starplotResizeHandler) return;
     if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
     let timer = null;
@@ -1398,9 +1400,11 @@
       timer = setTimeout(async () => {
         timer = null;
         // Re-measure and re-correct after Plotly's responsive resize settles.
-        await _applyScaleCorrection(target, state, Plotly);
+        const context = target._starplotResizeContext;
+        if (!context) return;
+        await _applyScaleCorrection(target, context.state, context.Plotly);
         _applyEllipseMarkerTransforms(target);
-        _applyAnnotationStrokes(target, state);
+        _applyAnnotationStrokes(target, context.state);
       }, 150);
     };
     window.addEventListener("resize", handler);

@@ -1306,6 +1306,46 @@ test("Fix 3: resize handler is registered and re-corrects on resize", async () =
   assert.ok(calls.restyle.length > restyleCountBefore, "resize must trigger restyle");
 });
 
+test("resize handler uses the latest state after rendering the target twice", async () => {
+  const resizeListeners = [];
+  const runtime = await loadRuntime(
+    ["starplot-scene-loader.js", "plotly-scene-adapter.js"],
+    { addEventListener(event, handler) { if (event === "resize") resizeListeners.push(handler); } },
+  );
+  const first = scaleCorrectionScene({ sourceAxesWidth: 3600, markerSize: 5 });
+  const second = scaleCorrectionScene({ sourceAxesWidth: 1800, markerSize: 30 });
+  const { Plotly, calls } = mockPlotly({
+    layoutWidth: 1280, layoutHeight: 800, xDomain: [0.19, 0.81],
+  });
+  const target = {
+    _fullLayout: null,
+    getBoundingClientRect() { return { width: 1280, height: 800 }; },
+    querySelectorAll() { return []; },
+  };
+
+  await runtime.renderScene(target, first.source, { Plotly });
+  await runtime.renderScene(target, second.source, { Plotly });
+  assert.equal(resizeListeners.length, 1, "the target keeps one resize listener");
+  assert.equal(target._starplotResizeContext.state.scene, second.scene);
+
+  target._fullLayout = {
+    ...target._fullLayout,
+    width: 800, height: 600,
+    xaxis: { domain: [0.25, 0.75] }, yaxis: { domain: [0, 1] },
+  };
+  resizeListeners[0]();
+  await new Promise(resolve => setTimeout(resolve, 200));
+
+  const latestMarkerUpdate = calls.restyle
+    .filter(call => call.update["marker.size"])
+    .at(-1);
+  assert.ok(latestMarkerUpdate);
+  assert.ok(
+    latestMarkerUpdate.update["marker.size"][0][0] > 5,
+    "resize correction must derive from the second scene's marker baseline",
+  );
+});
+
 test("Fix 4: sceneLayout uses xaxis.scaleanchor='y' matching Python adapter", async () => {
   const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"]);
   const { source } = scaleCorrectionScene({ sourceAxesWidth: 3600 });

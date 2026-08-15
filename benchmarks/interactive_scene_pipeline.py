@@ -140,7 +140,6 @@ _COMPARABLE_ENVIRONMENT_KEYS = (
     "plotly",
     "pyarrow",
     "shapely",
-    "starplot",
 )
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _PLOTLY_COMPLETION_INIT_SCRIPT = r"""
@@ -818,6 +817,7 @@ def _validate_browser_series(
     series: object,
     label: str,
     required_keys: tuple[str, ...],
+    expected_completion_signal: str | None = None,
 ) -> list[float]:
     if not isinstance(series, dict):
         raise ValueError(f"{label} must be a mapping")
@@ -829,6 +829,13 @@ def _validate_browser_series(
     completion_signal = series.get("completion_signal")
     if completion_signal not in _BROWSER_COMPLETION_SIGNALS:
         raise ValueError(f"{label}.completion_signal is missing or unknown")
+    if (
+        expected_completion_signal is not None
+        and completion_signal != expected_completion_signal
+    ):
+        raise ValueError(
+            f"{label}.completion_signal must be {expected_completion_signal}"
+        )
 
     raw_cold = _require_nonempty_browser_repeats(
         series, "raw_cold_repeats_ms", f"{label}.raw_cold_repeats_ms"
@@ -888,6 +895,20 @@ def _validate_browser_series(
                 raise ValueError(
                     f"{label}.all_navigation_timings[{index}] must be a mapping"
                 )
+            entry_signal = entry.get("completion_signal")
+            if entry_signal not in _BROWSER_COMPLETION_SIGNALS:
+                raise ValueError(
+                    f"{label}.all_navigation_timings[{index}] has an unknown "
+                    "completion signal"
+                )
+            if (
+                expected_completion_signal is not None
+                and entry_signal != expected_completion_signal
+            ):
+                raise ValueError(
+                    f"{label}.all_navigation_timings[{index}] must use "
+                    f"{expected_completion_signal}"
+                )
             nav = entry.get("navigation_timings")
             if not isinstance(nav, list) or not nav:
                 raise ValueError(
@@ -912,6 +933,23 @@ def _validate_browser_series(
             if signal not in _BROWSER_COMPLETION_SIGNALS:
                 raise ValueError(
                     f"{label}.all_completion_signals[{index}] is an unknown signal"
+                )
+            if (
+                expected_completion_signal is not None
+                and signal != expected_completion_signal
+            ):
+                raise ValueError(
+                    f"{label}.all_completion_signals[{index}] must be "
+                    f"{expected_completion_signal}"
+                )
+        if isinstance(all_navigation, list):
+            navigation_signals = [
+                entry["completion_signal"] for entry in all_navigation
+            ]
+            if all_signals != navigation_signals:
+                raise ValueError(
+                    f"{label}.all_completion_signals must match "
+                    "all_navigation_timings"
                 )
 
     return raw_warm
@@ -958,6 +996,7 @@ def _validate_primary_browser(browser: object) -> None:
             "scene_hash",
             "source_kind",
         ),
+        expected_completion_signal="starplot-product-promise",
     )
 
     legacy = browser.get("legacy_same_scene")
@@ -992,6 +1031,7 @@ def _validate_primary_browser(browser: object) -> None:
             "scene_hash",
             "source_kind",
         ),
+        expected_completion_signal="plotly-fallback",
     )
 
 
@@ -1122,6 +1162,29 @@ def validate_benchmark_artifact(result: dict) -> None:
                 raise ValueError(
                     f"plot_type_coverage browser {name!r} requires a scene hash"
                 )
+            completion_signals = evidence.get("all_completion_signals")
+            if (
+                not isinstance(completion_signals, list)
+                or len(completion_signals) != repeats
+                or any(
+                    signal != "starplot-product-promise"
+                    for signal in completion_signals
+                )
+            ):
+                raise ValueError(
+                    f"plot_type_coverage browser {name!r} requires "
+                    "starplot-product-promise for every repeat"
+                )
+            raw_repeats = _require_nonempty_browser_repeats(
+                evidence,
+                "raw_render_repeats_ms",
+                f"plot_type_coverage browser {name!r}.raw_render_repeats_ms",
+            )
+            if len(raw_repeats) != repeats:
+                raise ValueError(
+                    f"plot_type_coverage browser {name!r} requires exactly "
+                    f"{repeats} raw render repeats"
+                )
             for metric in (
                 "complete_render_median_ms",
                 "complete_render_p95_ms",
@@ -1137,6 +1200,15 @@ def validate_benchmark_artifact(result: dict) -> None:
                         f"plot_type_coverage browser {name!r} requires non-negative "
                         f"{metric}"
                     )
+            if not math.isclose(
+                evidence["complete_render_median_ms"], percentile(raw_repeats, 50)
+            ) or not math.isclose(
+                evidence["complete_render_p95_ms"], percentile(raw_repeats, 95)
+            ):
+                raise ValueError(
+                    f"plot_type_coverage browser {name!r} summary timings do not "
+                    "match raw render repeats"
+                )
 
 
 def percentile(values: list[float], q: float) -> float:
@@ -1807,6 +1879,8 @@ def _host_fingerprint() -> str:
 
 
 def _environment(browser_result: dict) -> dict[str, object]:
+    from starplot import __version__ as source_starplot_version
+
     browser = " ".join(
         value
         for value in (
@@ -1829,7 +1903,7 @@ def _environment(browser_result: dict) -> dict[str, object]:
         "pyarrow": _package_version("pyarrow"),
         "python": platform.python_version(),
         "shapely": _package_version("shapely"),
-        "starplot": _package_version("starplot"),
+        "starplot": source_starplot_version,
     }
 
 
@@ -2026,6 +2100,9 @@ def run_recorded_plot_type_browser_diagnostics(repeats: int) -> dict[str, object
     measurements = {
         name: [] for name in sorted(_SUPPORTED_INTERACTIVE_PLOT_KINDS)
     }
+    completion_signals = {
+        name: [] for name in sorted(_SUPPORTED_INTERACTIVE_PLOT_KINDS)
+    }
     try:
         with _recorded_plot_type_browser_fixture() as fixtures, sync_playwright() as playwright:
             browser = _launch_browser(playwright)
@@ -2056,6 +2133,12 @@ def run_recorded_plot_type_browser_diagnostics(repeats: int) -> dict[str, object
                             finally:
                                 page.close()
                             elapsed_ms = sample["elapsed_ms"]
+                            completion_signal = sample["completion_signal"]
+                            if completion_signal != "starplot-product-promise":
+                                raise RuntimeError(
+                                    f"{name} diagnostic did not complete through the "
+                                    "Starplot product promise"
+                                )
                             print(
                                 f"Browser {name} diagnostic {label}: complete "
                                 f"({elapsed_ms:.3f} ms)",
@@ -2063,6 +2146,7 @@ def run_recorded_plot_type_browser_diagnostics(repeats: int) -> dict[str, object
                             )
                             if iteration:
                                 measurements[name].append(elapsed_ms)
+                                completion_signals[name].append(completion_signal)
                 finally:
                     context.close()
             finally:
@@ -2080,9 +2164,11 @@ def run_recorded_plot_type_browser_diagnostics(repeats: int) -> dict[str, object
         "engine_version": browser_version,
         "plot_types": {
             name: {
+                "all_completion_signals": completion_signals[name],
                 "arrow_payload_bytes": int(fixtures[name]["arrow_payload_bytes"]),
                 "complete_render_median_ms": percentile(values, 50),
                 "complete_render_p95_ms": percentile(values, 95),
+                "raw_render_repeats_ms": list(values),
                 "scene_hash": fixtures[name]["scene_hash"],
             }
             for name, values in measurements.items()
@@ -2237,37 +2323,35 @@ def run_browser_benchmark(
         # Mixed signals are still auditable as long as every value is known.
         return ";".join(sorted(set(signals)))
 
+    external_navigation = [
+        entry for entry in all_navigation_timings if entry["series"] == "external"
+    ]
+    external_signals = [entry["completion_signal"] for entry in external_navigation]
+    legacy_navigation = [
+        entry for entry in all_navigation_timings if entry["series"] == "legacy"
+    ]
+    legacy_signals = [entry["completion_signal"] for entry in legacy_navigation]
+
     return {
-        "all_completion_signals": all_completion_signals,
-        "all_navigation_timings": all_navigation_timings,
+        "all_completion_signals": external_signals,
+        "all_navigation_timings": external_navigation,
         "complete_render_median_ms": percentile(measurements, 50),
         "complete_render_p95_ms": percentile(measurements, 95),
-        "completion_signal": _series_completion_signal(
-            [s for s, n in zip(all_completion_signals, all_navigation_timings)
-             if n["series"] == "external"]
-        ),
+        "completion_signal": _series_completion_signal(external_signals),
         "cold_start_ms": cold_measurements[0],
         "cold_start_median_ms": percentile(cold_measurements, 50),
         "cold_start_p95_ms": percentile(cold_measurements, 95),
         "engine": "chromium",
         "engine_version": browser_version,
         "legacy_same_scene": {
-            "all_completion_signals": [
-                s for s, n in zip(all_completion_signals, all_navigation_timings)
-                if n["series"] == "legacy"
-            ],
-            "all_navigation_timings": [
-                n for n in all_navigation_timings if n["series"] == "legacy"
-            ],
+            "all_completion_signals": legacy_signals,
+            "all_navigation_timings": legacy_navigation,
             "cold_start_ms": legacy_cold_measurements[0],
             "cold_start_median_ms": percentile(legacy_cold_measurements, 50),
             "cold_start_p95_ms": percentile(legacy_cold_measurements, 95),
             "complete_render_median_ms": percentile(legacy_measurements, 50),
             "complete_render_p95_ms": percentile(legacy_measurements, 95),
-            "completion_signal": _series_completion_signal(
-                [s for s, n in zip(all_completion_signals, all_navigation_timings)
-                 if n["series"] == "legacy"]
-            ),
+            "completion_signal": _series_completion_signal(legacy_signals),
             "raw_cold_repeats_ms": list(legacy_cold_measurements),
             "raw_warm_repeats_ms": list(legacy_measurements),
             "scene_hash": fixture["scene_hash"],

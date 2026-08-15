@@ -137,6 +137,12 @@ def _edge_color_string(color):
     return _rgb_string(color)
 
 
+def _artist_alpha(artist):
+    """Return the artist alpha while preserving an explicit transparent value."""
+    alpha = artist.get_alpha()
+    return float(1.0 if alpha is None else alpha)
+
+
 class RecordingMixin:
     """Mixin that records drawing commands alongside matplotlib rendering."""
 
@@ -966,7 +972,7 @@ class RecordingMixin:
                         style_dict={
                             "font_size": label.get_fontsize(),
                             "font_color": _rgba_to_hex(label.get_color()),
-                            "font_alpha": float(label.get_alpha() or 1.0),
+                            "font_alpha": _artist_alpha(label),
                             "font_weight": label.get_fontweight(),
                             "font_name": label.get_fontname() or "Inter",
                             "ha": label.get_horizontalalignment(),
@@ -1077,7 +1083,7 @@ class RecordingMixin:
                         style_dict={
                             "font_size": label.get_fontsize(),
                             "font_color": _rgba_to_hex(label.get_color()),
-                            "font_alpha": float(label.get_alpha() or 1.0),
+                            "font_alpha": _artist_alpha(label),
                             "font_weight": label.get_fontweight(),
                             "font_name": label.get_fontname() or "Inter",
                             "ha": label.get_horizontalalignment(),
@@ -1924,7 +1930,7 @@ class RecordingMixin:
                             "font_name": txt.get_fontname() or "Inter",
                             "ha": txt.get_ha(),
                             "va": txt.get_va(),
-                            "alpha": float(txt.get_alpha() or 1.0),
+                            "alpha": _artist_alpha(txt),
                             "rotation": float(txt.get_rotation() or 0.0),
                         },
                         gid="zenith-info",
@@ -1940,42 +1946,23 @@ class RecordingMixin:
             return result
 
         try:
-            from starplot.utils import azimuth_to_string
-
             resolved_style = style or self.style.info_text
-            dt_str = (
-                self.observer.dt.strftime("%m/%d/%Y @ %H:%M:%S")
-                + " "
-                + self.observer.dt.tzname()
-            )
-
-            columns = [
-                "Target (Alt/Az)",
-                "Target (RA/DEC)",
-                "Observer Lat, Lon",
-                "Observer Date/Time",
-                f"Optic - {self.optic.label}",
-            ]
-            values = [
-                f"{self.pos_alt:.0f}\N{DEGREE SIGN} / {self.pos_az:.0f}\N{DEGREE SIGN} ({azimuth_to_string(self.pos_az)})",
-                f"{(self.ra / 15):.2f}h / {self.dec:.2f}\N{DEGREE SIGN}",
-                f"{self.observer.lat:.2f}\N{DEGREE SIGN}, {self.observer.lon:.2f}\N{DEGREE SIGN}",
-                dt_str,
-                str(self.optic),
-            ]
-            widths = [0.15, 0.15, 0.2, 0.2, 0.3]
+            table = list(self.ax.tables)[tables_before:][-1]
+            cells = table.get_celld()
+            column_indexes = sorted(col for row, col in cells if row == 0 and col >= 0)
+            columns = [cells[0, col].get_text().get_text() for col in column_indexes]
+            values = [cells[1, col].get_text().get_text() for col in column_indexes]
+            widths = [float(cells[0, col].get_width()) for col in column_indexes]
 
             font_color = resolved_style.font_color.as_hex()
             font_name = resolved_style.font_name or resolved_style.font_family or "Inter"
             background_color = self.style.figure_background_color.as_hex()
             line_color = self.style.border_line_color.as_hex()
-            new_tables = list(self.ax.tables)[tables_before:]
-            if new_tables:
-                cells = list(new_tables[-1].get_celld().values())
-                if cells:
-                    background_color = _rgba_to_hex(cells[0].get_facecolor())
-                    line_color = _rgba_to_hex(cells[0].get_edgecolor())
-                    font_color = _rgba_to_hex(cells[0].get_text().get_color())
+            artist_cells = list(cells.values())
+            if artist_cells:
+                background_color = _rgba_to_hex(artist_cells[0].get_facecolor())
+                line_color = _rgba_to_hex(artist_cells[0].get_edgecolor())
+                font_color = _rgba_to_hex(artist_cells[0].get_text().get_color())
 
             self._recorder.record_info_table(
                 columns=columns,

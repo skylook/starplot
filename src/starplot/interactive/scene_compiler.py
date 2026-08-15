@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import re
-from types import MappingProxyType
 from typing import Any, Mapping
 
 from matplotlib.colors import to_hex, to_rgba
@@ -23,7 +22,9 @@ from starplot.interactive.scene import (
     SceneKind,
     SceneLayer,
     ScenePackage,
+    _column_mapping,
     _seal_owned_array,
+    _stored_column_items,
     readonly_array,
 )
 from starplot.interactive.style_converter import calibrate_marker_sizes_array
@@ -202,12 +203,12 @@ def filter_columns(data: ColumnarData, mask) -> ColumnarData:
         raise ValueError("mask length must match the ColumnarData row count")
 
     columns = {}
-    for name, column in data.columns.items():
-        selected = column[mask_array]
+    for name, column in _stored_column_items(data.columns):
+        selected = np.asarray(column)[mask_array]
         columns[name] = _seal_owned_array(selected)
 
     instance = object.__new__(ColumnarData)
-    object.__setattr__(instance, "columns", MappingProxyType(columns))
+    object.__setattr__(instance, "columns", _column_mapping(columns))
     object.__setattr__(instance, "row_count", int(np.count_nonzero(mask_array)))
     return instance
 

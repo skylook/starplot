@@ -220,6 +220,39 @@ def _validated_row_count(
     return row_count
 
 
+class _ColumnMapping(Mapping[str, np.ndarray]):
+    """Expose object columns as snapshots so their owner never escapes the Scene."""
+
+    def __init__(self, columns: Mapping[str, np.ndarray]):
+        self.__columns = MappingProxyType(dict(columns))
+
+    def __getitem__(self, name: str) -> np.ndarray:
+        column = self.__columns[name]
+        if column.dtype.hasobject:
+            return readonly_array(column)
+        return column
+
+    def __iter__(self):
+        return iter(self.__columns)
+
+    def __len__(self) -> int:
+        return len(self.__columns)
+
+    def _stored_items(self):
+        """Return trusted internal storage for Scene implementation code only."""
+        return self.__columns.items()
+
+
+def _column_mapping(columns: Mapping[str, np.ndarray]) -> Mapping[str, np.ndarray]:
+    return _ColumnMapping(columns)
+
+
+def _stored_column_items(columns: Mapping[str, np.ndarray]):
+    if isinstance(columns, _ColumnMapping):
+        return columns._stored_items()
+    return columns.items()
+
+
 def _freeze_value(value):
     """Recursively freeze values retained by the Scene boundary."""
     if isinstance(value, Mapping):
@@ -254,7 +287,7 @@ class ColumnarData:
     def __post_init__(self):
         columns = {name: readonly_array(value) for name, value in self.columns.items()}
         _validated_row_count(columns, self.row_count)
-        object.__setattr__(self, "columns", MappingProxyType(columns))
+        object.__setattr__(self, "columns", _column_mapping(columns))
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "ColumnarData":
@@ -271,7 +304,7 @@ class ColumnarData:
 
         row_count = _validated_row_count(columns)
         instance = object.__new__(cls)
-        object.__setattr__(instance, "columns", MappingProxyType(dict(columns)))
+        object.__setattr__(instance, "columns", _column_mapping(columns))
         object.__setattr__(instance, "row_count", row_count)
         return instance
 
