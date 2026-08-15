@@ -4,20 +4,12 @@
   "browser": {
     "all_completion_signals": [
       "starplot-product-promise",
-      "plotly-fallback",
-      "plotly-fallback",
       "starplot-product-promise",
       "starplot-product-promise",
-      "plotly-fallback",
-      "plotly-fallback",
       "starplot-product-promise",
       "starplot-product-promise",
-      "plotly-fallback",
-      "plotly-fallback",
       "starplot-product-promise",
       "starplot-product-promise",
-      "plotly-fallback",
-      "plotly-fallback",
       "starplot-product-promise"
     ],
     "all_navigation_timings": [
@@ -26,52 +18,24 @@
         "kind": "cold start 1/3",
         "navigation_timings": [
           {
-            "domComplete": 463.3999999910593,
-            "duration": 463.3999999910593,
-            "loadEventEnd": 463.3999999910593,
-            "responseEnd": 251.59999999403954,
+            "domComplete": 215.09999999403954,
+            "duration": 215.09999999403954,
+            "loadEventEnd": 215.09999999403954,
+            "responseEnd": 11.300000011920929,
             "startTime": 0
           }
         ],
         "series": "external"
       },
       {
-        "completion_signal": "plotly-fallback",
-        "kind": "cold start 1/3",
-        "navigation_timings": [
-          {
-            "domComplete": 4453.399999991059,
-            "duration": 4455.5999999940395,
-            "loadEventEnd": 4455.5999999940395,
-            "responseEnd": 793.5,
-            "startTime": 0
-          }
-        ],
-        "series": "legacy"
-      },
-      {
-        "completion_signal": "plotly-fallback",
-        "kind": "cold start 2/3",
-        "navigation_timings": [
-          {
-            "domComplete": 4388.100000008941,
-            "duration": 4390,
-            "loadEventEnd": 4390,
-            "responseEnd": 900.9000000059605,
-            "startTime": 0
-          }
-        ],
-        "series": "legacy"
-      },
-      {
         "completion_signal": "starplot-product-promise",
         "kind": "cold start 2/3",
         "navigation_timings": [
           {
-            "domComplete": 632.4000000059605,
-            "duration": 632.4000000059605,
-            "loadEventEnd": 632.4000000059605,
-            "responseEnd": 426.40000000596046,
+            "domComplete": 254.40000000596046,
+            "duration": 254.40000000596046,
+            "loadEventEnd": 254.40000000596046,
+            "responseEnd": 4.199999988079071,
             "startTime": 0
           }
         ],
@@ -82,52 +46,24 @@
         "kind": "cold start 3/3",
         "navigation_timings": [
           {
-            "domComplete": 627.5,
-            "duration": 627.5,
-            "loadEventEnd": 627.5,
-            "responseEnd": 423.79999999701977,
+            "domComplete": 254.09999999403954,
+            "duration": 254.09999999403954,
+            "loadEventEnd": 254.09999999403954,
+            "responseEnd": 2.5999999940395355,
             "startTime": 0
           }
         ],
         "series": "external"
       },
       {
-        "completion_signal": "plotly-fallback",
-        "kind": "cold start 3/3",
-        "navigation_timings": [
-          {
-            "domComplete": 4261.100000008941,
-            "duration": 4263,
-            "loadEventEnd": 4263,
-            "responseEnd": 824.9000000059605,
-            "startTime": 0
-          }
-        ],
-        "series": "legacy"
-      },
-      {
-        "completion_signal": "plotly-fallback",
-        "kind": "warm repeat 1/5",
-        "navigation_timings": [
-          {
-            "domComplete": 4691.9000000059605,
-            "duration": 4693.9000000059605,
-            "loadEventEnd": 4693.9000000059605,
-            "responseEnd": 781.9000000059605,
-            "startTime": 0
-          }
-        ],
-        "series": "legacy"
-      },
-      {
         "completion_signal": "starplot-product-promise",
         "kind": "warm repeat 1/5",
         "navigation_timings": [
           {
-            "domComplete": 324.29999999701977,
-            "duration": 324.29999999701977,
-            "loadEventEnd": 324.29999999701977,
-            "responseEnd": 2.2999999970197678,
+            "domComplete": 249,
+            "duration": 249,
+            "loadEventEnd": 249,
+            "responseEnd": 5.4000000059604645,
             "startTime": 0
           }
         ],
@@ -138,52 +74,24 @@
         "kind": "warm repeat 2/5",
         "navigation_timings": [
           {
-            "domComplete": 303.5,
-            "duration": 303.6000000089407,
-            "loadEventEnd": 303.6000000089407,
-            "responseEnd": 2.9000000059604645,
+            "domComplete": 249.90000000596046,
+            "duration": 249.90000000596046,
+            "loadEventEnd": 249.90000000596046,
+            "responseEnd": 2.7000000178813934,
             "startTime": 0
           }
         ],
         "series": "external"
       },
       {
-        "completion_signal": "plotly-fallback",
-        "kind": "warm repeat 2/5",
-        "navigation_timings": [
-          {
-            "domComplete": 4013.6000000089407,
-            "duration": 4015.5,
-            "loadEventEnd": 4015.5,
-            "responseEnd": 523.6000000089407,
-            "startTime": 0
-          }
-        ],
-        "series": "legacy"
-      },
-      {
-        "completion_signal": "plotly-fallback",
-        "kind": "warm repeat 3/5",
-        "navigation_timings": [
-          {
-            "domComplete": 3895.2000000029802,
-            "duration": 3897.2000000029802,
-            "loadEventEnd": 3897.2000000029802,
-            "responseEnd": 544.2000000029802,
-            "startTime": 0
-          }
-        ],
-        "series": "legacy"
-      },
-      {
         "completion_signal": "starplot-product-promise",
         "kind": "warm repeat 3/5",
         "navigation_timings": [
           {
-            "domComplete": 297.8999999910593,
-            "duration": 297.8999999910593,
-            "loadEventEnd": 297.8999999910593,
-            "responseEnd": 2.2999999970197678,
+            "domComplete": 254.69999998807907,
+            "duration": 254.69999998807907,
+            "loadEventEnd": 254.69999998807907,
+            "responseEnd": 2.699999988079071,
             "startTime": 0
           }
         ],
@@ -194,52 +102,24 @@
         "kind": "warm repeat 4/5",
         "navigation_timings": [
           {
-            "domComplete": 313,
-            "duration": 313,
-            "loadEventEnd": 313,
-            "responseEnd": 1.7000000029802322,
+            "domComplete": 243.59999999403954,
+            "duration": 243.59999999403954,
+            "loadEventEnd": 243.59999999403954,
+            "responseEnd": 0.9000000059604645,
             "startTime": 0
           }
         ],
         "series": "external"
       },
       {
-        "completion_signal": "plotly-fallback",
-        "kind": "warm repeat 4/5",
-        "navigation_timings": [
-          {
-            "domComplete": 3923,
-            "duration": 3925.2999999970198,
-            "loadEventEnd": 3925.2999999970198,
-            "responseEnd": 542.2999999970198,
-            "startTime": 0
-          }
-        ],
-        "series": "legacy"
-      },
-      {
-        "completion_signal": "plotly-fallback",
-        "kind": "warm repeat 5/5",
-        "navigation_timings": [
-          {
-            "domComplete": 4096.399999991059,
-            "duration": 4098.699999988079,
-            "loadEventEnd": 4098.699999988079,
-            "responseEnd": 551.1999999880791,
-            "startTime": 0
-          }
-        ],
-        "series": "legacy"
-      },
-      {
         "completion_signal": "starplot-product-promise",
         "kind": "warm repeat 5/5",
         "navigation_timings": [
           {
-            "domComplete": 325.70000000298023,
-            "duration": 325.79999999701977,
-            "loadEventEnd": 325.79999999701977,
-            "responseEnd": 2.2000000029802322,
+            "domComplete": 249.30000001192093,
+            "duration": 249.30000001192093,
+            "loadEventEnd": 249.30000001192093,
+            "responseEnd": 2.7000000178813934,
             "startTime": 0
           }
         ],
@@ -247,14 +127,14 @@
       }
     ],
     "arrow_payload_bytes": 13011688,
-    "cold_start_median_ms": 2786.5999999940395,
-    "cold_start_ms": 2553.8999999910593,
-    "cold_start_p95_ms": 2795.509999999404,
-    "complete_render_median_ms": 2364.4000000059605,
-    "complete_render_p95_ms": 2391.4799999922516,
+    "cold_start_median_ms": 3108.5999999940395,
+    "cold_start_ms": 2635.4000000059605,
+    "cold_start_p95_ms": 3167.009999999404,
+    "complete_render_median_ms": 3116.9000000059605,
+    "complete_render_p95_ms": 3178.2200000166895,
     "completion_signal": "starplot-product-promise",
     "engine": "chromium",
-    "engine_version": "151.0.7922.109",
+    "engine_version": "136.0.7103.25",
     "legacy_same_scene": {
       "all_completion_signals": [
         "plotly-fallback",
@@ -272,10 +152,10 @@
           "kind": "cold start 1/3",
           "navigation_timings": [
             {
-              "domComplete": 4453.399999991059,
-              "duration": 4455.5999999940395,
-              "loadEventEnd": 4455.5999999940395,
-              "responseEnd": 793.5,
+              "domComplete": 5801.5999999940395,
+              "duration": 5804.9000000059605,
+              "loadEventEnd": 5804.9000000059605,
+              "responseEnd": 677.7999999821186,
               "startTime": 0
             }
           ],
@@ -286,10 +166,10 @@
           "kind": "cold start 2/3",
           "navigation_timings": [
             {
-              "domComplete": 4388.100000008941,
-              "duration": 4390,
-              "loadEventEnd": 4390,
-              "responseEnd": 900.9000000059605,
+              "domComplete": 5795.800000011921,
+              "duration": 5798.4000000059605,
+              "loadEventEnd": 5798.4000000059605,
+              "responseEnd": 677.7000000178814,
               "startTime": 0
             }
           ],
@@ -300,10 +180,10 @@
           "kind": "cold start 3/3",
           "navigation_timings": [
             {
-              "domComplete": 4261.100000008941,
-              "duration": 4263,
-              "loadEventEnd": 4263,
-              "responseEnd": 824.9000000059605,
+              "domComplete": 5845.4000000059605,
+              "duration": 5848.0999999940395,
+              "loadEventEnd": 5848.0999999940395,
+              "responseEnd": 681.5999999940395,
               "startTime": 0
             }
           ],
@@ -314,10 +194,10 @@
           "kind": "warm repeat 1/5",
           "navigation_timings": [
             {
-              "domComplete": 4691.9000000059605,
-              "duration": 4693.9000000059605,
-              "loadEventEnd": 4693.9000000059605,
-              "responseEnd": 781.9000000059605,
+              "domComplete": 5923,
+              "duration": 5926.600000023842,
+              "loadEventEnd": 5926.600000023842,
+              "responseEnd": 691.4000000059605,
               "startTime": 0
             }
           ],
@@ -328,10 +208,10 @@
           "kind": "warm repeat 2/5",
           "navigation_timings": [
             {
-              "domComplete": 4013.6000000089407,
-              "duration": 4015.5,
-              "loadEventEnd": 4015.5,
-              "responseEnd": 523.6000000089407,
+              "domComplete": 5830.300000011921,
+              "duration": 5833.200000017881,
+              "loadEventEnd": 5833.200000017881,
+              "responseEnd": 690,
               "startTime": 0
             }
           ],
@@ -342,10 +222,10 @@
           "kind": "warm repeat 3/5",
           "navigation_timings": [
             {
-              "domComplete": 3895.2000000029802,
-              "duration": 3897.2000000029802,
-              "loadEventEnd": 3897.2000000029802,
-              "responseEnd": 544.2000000029802,
+              "domComplete": 5779.299999982119,
+              "duration": 5781.699999988079,
+              "loadEventEnd": 5781.699999988079,
+              "responseEnd": 686.0999999940395,
               "startTime": 0
             }
           ],
@@ -356,10 +236,10 @@
           "kind": "warm repeat 4/5",
           "navigation_timings": [
             {
-              "domComplete": 3923,
-              "duration": 3925.2999999970198,
-              "loadEventEnd": 3925.2999999970198,
-              "responseEnd": 542.2999999970198,
+              "domComplete": 5754.299999982119,
+              "duration": 5757.299999982119,
+              "loadEventEnd": 5757.299999982119,
+              "responseEnd": 676.6999999880791,
               "startTime": 0
             }
           ],
@@ -370,202 +250,258 @@
           "kind": "warm repeat 5/5",
           "navigation_timings": [
             {
-              "domComplete": 4096.399999991059,
-              "duration": 4098.699999988079,
-              "loadEventEnd": 4098.699999988079,
-              "responseEnd": 551.1999999880791,
+              "domComplete": 5816.5999999940395,
+              "duration": 5818.9000000059605,
+              "loadEventEnd": 5818.9000000059605,
+              "responseEnd": 668.5999999940395,
               "startTime": 0
             }
           ],
           "series": "legacy"
         }
       ],
-      "cold_start_median_ms": 4390.600000008941,
-      "cold_start_ms": 4456.0999999940395,
-      "cold_start_p95_ms": 4449.54999999553,
-      "complete_render_median_ms": 4016.0,
-      "complete_render_p95_ms": 4575.520000004768,
+      "cold_start_median_ms": 5805.4000000059605,
+      "cold_start_ms": 5805.4000000059605,
+      "cold_start_p95_ms": 5844.279999995231,
+      "complete_render_median_ms": 5819.4000000059605,
+      "complete_render_p95_ms": 5908.4800000190735,
       "completion_signal": "plotly-fallback",
       "raw_cold_repeats_ms": [
-        4456.0999999940395,
-        4390.600000008941,
-        4263.5
+        5805.4000000059605,
+        5798.9000000059605,
+        5848.5999999940395
       ],
       "raw_warm_repeats_ms": [
-        4694.600000008941,
-        4016.0,
-        3897.7000000029802,
-        3925.9000000059605,
-        4099.199999988079
+        5927.200000017881,
+        5833.600000023842,
+        5782.299999982119,
+        5757.799999982119,
+        5819.4000000059605
       ],
       "scene_hash": "sha256:7223be2b9bb1aeeebbe5bbc059dfd651b0a11888e049ffd72b70694fcfebebb3",
       "source_kind": "direct-plotly-same-scene-http"
     },
     "legacy_source_kind": "direct-plotly-same-scene-http",
-    "legacy_source_url": "http://127.0.0.1:56723/legacy.html",
+    "legacy_source_url": "http://127.0.0.1:53047/legacy.html",
     "raw_cold_repeats_ms": [
-      2553.8999999910593,
-      2796.5,
-      2786.5999999940395
+      2635.4000000059605,
+      3108.5999999940395,
+      3173.5
     ],
     "raw_warm_repeats_ms": [
-      2394.8999999910593,
-      2335.2000000029802,
-      2329.7999999970198,
-      2377.7999999970198,
-      2364.4000000059605
+      3116.699999988079,
+      3116.9000000059605,
+      3102.5999999940395,
+      3138.300000011921,
+      3188.2000000178814
     ],
     "scene_hash": "sha256:7223be2b9bb1aeeebbe5bbc059dfd651b0a11888e049ffd72b70694fcfebebb3",
     "source_kind": "external-arrow-http",
-    "source_url": "http://127.0.0.1:56723/scene.html",
+    "source_url": "http://127.0.0.1:53047/scene.html",
     "status": "measured"
   },
   "environment": {
-    "browser": "chromium 151.0.7922.109",
-    "captured_at_utc": "2026-08-10T01:14:58.369844+00:00",
+    "browser": "chromium 136.0.7103.25",
+    "captured_at_utc": "2026-08-15T15:23:43.880934+00:00",
     "cpu": "i386",
     "cpu_count": 12,
-    "host_fingerprint": "2c491292ea611770",
+    "host_fingerprint": "b25bef15f3b63cc9",
     "machine": "x86_64",
-    "numpy": "2.2.2",
-    "os": "macOS-10.16-x86_64-i386-64bit-Mach-O",
-    "playwright": "1.58.0",
-    "plotly": "6.5.2",
-    "pyarrow": "19.0.0",
-    "python": "3.13.2",
-    "shapely": "2.0.7",
-    "starplot": "0.19.5"
+    "numpy": "1.26.3",
+    "os": "macOS-14.6.1-x86_64-i386-64bit",
+    "playwright": "1.52.0",
+    "plotly": "6.1.1",
+    "pyarrow": "16.1.0",
+    "python": "3.12.2",
+    "shapely": "2.0.6",
+    "starplot": "0.20.4"
   },
   "external_html_bytes": 1760,
   "legacy_renderer_preparation": {
-    "median_seconds": 10.039307668994297,
-    "p95_seconds": 10.439848067995626
+    "median_seconds": 14.492894106020685,
+    "p95_seconds": 14.851433883782011
   },
   "legacy_renderer_total": {
-    "median_seconds": 10.188224598998204,
-    "p95_seconds": 10.613718167005572
+    "median_seconds": 14.661735004978254,
+    "p95_seconds": 15.047893876384478
   },
   "ordinary_chart": {
-    "median_seconds": 0.16039934199943673,
-    "p95_seconds": 0.1612746635917574,
+    "median_seconds": 0.2066861370112747,
+    "p95_seconds": 0.21867622243007645,
     "point_count": 5000,
     "raw_repetitions": [
       {
         "arrow_payload_bytes": 68616,
         "external_html_bytes": 1760,
-        "legacy_renderer_preparation_seconds": 0.05498342998907901,
-        "legacy_renderer_total_seconds": 0.16148436098592356,
+        "legacy_renderer_preparation_seconds": 0.0756761819939129,
+        "legacy_renderer_total_seconds": 0.19164956302847713,
         "payload_bytes": 184259,
-        "peak_rss_mb": 232.3359375,
-        "plotly_construction_seconds": 0.10650093099684455,
+        "peak_rss_mb": 206.05078125,
+        "plotly_construction_seconds": 0.11597338103456423,
         "point_count": 5000,
         "viewport_warm_ms": [
-          0.10319800639990717,
-          0.10191599722020328,
-          0.07912999717518687,
-          0.07726199692115188,
-          0.0763830030336976
+          0.14279299648478627,
+          0.11796102626249194,
+          0.10874099098145962,
+          0.10722898878157139,
+          0.10526902042329311
         ]
       },
       {
         "arrow_payload_bytes": 68616,
         "external_html_bytes": 1760,
-        "legacy_renderer_preparation_seconds": 0.05228835699381307,
-        "legacy_renderer_total_seconds": 0.15841310100222472,
+        "legacy_renderer_preparation_seconds": 0.08495547203347087,
+        "legacy_renderer_total_seconds": 0.2066861370112747,
         "payload_bytes": 184259,
-        "peak_rss_mb": 231.34375,
-        "plotly_construction_seconds": 0.10612474400841165,
+        "peak_rss_mb": 204.90625,
+        "plotly_construction_seconds": 0.12173066497780383,
         "point_count": 5000,
         "viewport_warm_ms": [
-          0.10442199709359556,
-          0.0991790002444759,
-          0.07997499778866768,
-          0.07816300785634667,
-          0.07726499461568892
+          0.16353098908439279,
+          0.18657802138477564,
+          0.14642701717093587,
+          0.12144504580646753,
+          0.11379597708582878
         ]
       },
       {
         "arrow_payload_bytes": 68616,
         "external_html_bytes": 1760,
-        "legacy_renderer_preparation_seconds": 0.0525456380128162,
-        "legacy_renderer_total_seconds": 0.15925559900642838,
+        "legacy_renderer_preparation_seconds": 0.08210810704622418,
+        "legacy_renderer_total_seconds": 0.22085395903559402,
         "payload_bytes": 184259,
-        "peak_rss_mb": 229.3359375,
-        "plotly_construction_seconds": 0.10670996099361219,
+        "peak_rss_mb": 205.1875,
+        "plotly_construction_seconds": 0.13874585198936984,
         "point_count": 5000,
         "viewport_warm_ms": [
-          0.1040700008161366,
-          0.10634200589265674,
-          0.08074099605437368,
-          0.07884799560997635,
-          0.07731400546617806
+          0.2246599760837853,
+          0.13474695151671767,
+          0.1802429906092584,
+          0.3285770071670413,
+          0.16188202425837517
         ]
       },
       {
         "arrow_payload_bytes": 68616,
         "external_html_bytes": 1760,
-        "legacy_renderer_preparation_seconds": 0.05274361300689634,
-        "legacy_renderer_total_seconds": 0.16043587401509285,
+        "legacy_renderer_preparation_seconds": 0.07279731798917055,
+        "legacy_renderer_total_seconds": 0.20996527600800619,
         "payload_bytes": 184259,
-        "peak_rss_mb": 232.5078125,
-        "plotly_construction_seconds": 0.10769226100819651,
+        "peak_rss_mb": 205.3359375,
+        "plotly_construction_seconds": 0.13716795801883563,
         "point_count": 5000,
         "viewport_warm_ms": [
-          0.10456499876454473,
-          0.09144800424110144,
-          0.08098699618130922,
-          0.07871400157455355,
-          0.0778419926064089
+          0.2599379513412714,
+          0.23464096011593938,
+          0.13373000547289848,
+          0.11671899119392037,
+          0.11100101983174682
         ]
       },
       {
         "arrow_payload_bytes": 68616,
         "external_html_bytes": 1760,
-        "legacy_renderer_preparation_seconds": 0.05329396999150049,
-        "legacy_renderer_total_seconds": 0.16039934199943673,
+        "legacy_renderer_preparation_seconds": 0.07532823696965352,
+        "legacy_renderer_total_seconds": 0.19338988396339118,
         "payload_bytes": 184259,
-        "peak_rss_mb": 231.52734375,
-        "plotly_construction_seconds": 0.10710537200793624,
+        "peak_rss_mb": 205.484375,
+        "plotly_construction_seconds": 0.11806164699373767,
         "point_count": 5000,
         "viewport_warm_ms": [
-          0.10545300028752536,
-          0.0966669904300943,
-          0.08075300138443708,
-          0.0790799967944622,
-          0.07821900362614542
+          0.14986400492489338,
+          0.11900201207026839,
+          0.10875699808821082,
+          0.10667397873476148,
+          0.10479200864210725
         ]
       }
     ]
   },
   "payload_bytes": 31173033,
-  "peak_rss_mb": 500.08984375,
+  "peak_rss_mb": 468.140625,
   "plot_type_coverage": {
     "browser": {
       "engine": "chromium",
-      "engine_version": "151.0.7922.109",
+      "engine_version": "136.0.7103.25",
       "plot_types": {
         "horizon": {
-          "arrow_payload_bytes": 11720,
-          "complete_render_median_ms": 510.20000000298023,
-          "complete_render_p95_ms": 526.1800000011921,
-          "scene_hash": "sha256:825a30cd7f0cbf9b974f68b01d4c6984047b87f51e4c8d127340e6517687faaa"
+          "all_completion_signals": [
+            "starplot-product-promise",
+            "starplot-product-promise",
+            "starplot-product-promise",
+            "starplot-product-promise",
+            "starplot-product-promise"
+          ],
+          "arrow_payload_bytes": 11728,
+          "complete_render_median_ms": 515.0999999940395,
+          "complete_render_p95_ms": 515.7200000107289,
+          "raw_render_repeats_ms": [
+            510.7999999821186,
+            513.0999999940395,
+            515.8000000119209,
+            515.4000000059605,
+            515.0999999940395
+          ],
+          "scene_hash": "sha256:de22c07fa2ccbb035abb90b27d5b368a4d4173b99468780ace1396aa63cdb07c"
         },
         "map": {
+          "all_completion_signals": [
+            "starplot-product-promise",
+            "starplot-product-promise",
+            "starplot-product-promise",
+            "starplot-product-promise",
+            "starplot-product-promise"
+          ],
           "arrow_payload_bytes": 20536,
-          "complete_render_median_ms": 516.2999999970198,
-          "complete_render_p95_ms": 537.4000000059605,
+          "complete_render_median_ms": 530.0999999940395,
+          "complete_render_p95_ms": 574.0000000178813,
+          "raw_render_repeats_ms": [
+            526.5999999940395,
+            530.0999999940395,
+            524.6000000238419,
+            543.5999999940395,
+            581.6000000238419
+          ],
           "scene_hash": "sha256:9ad5875c7851f6ffd2008e6582e6e229180e6c193ddb631d7135cf9cfa025f3d"
         },
         "optic": {
+          "all_completion_signals": [
+            "starplot-product-promise",
+            "starplot-product-promise",
+            "starplot-product-promise",
+            "starplot-product-promise",
+            "starplot-product-promise"
+          ],
           "arrow_payload_bytes": 5968,
-          "complete_render_median_ms": 459.29999999701977,
-          "complete_render_p95_ms": 545.5399999946355,
+          "complete_render_median_ms": 443.7000000178814,
+          "complete_render_p95_ms": 447.1199999988079,
+          "raw_render_repeats_ms": [
+            440.69999998807907,
+            443.7000000178814,
+            438.5,
+            445.59999999403954,
+            447.5
+          ],
           "scene_hash": "sha256:88a1effbd6d9f08c2d80ca5da0630858814014fb1f88956fc69e5a4f76f94dea"
         },
         "zenith": {
+          "all_completion_signals": [
+            "starplot-product-promise",
+            "starplot-product-promise",
+            "starplot-product-promise",
+            "starplot-product-promise",
+            "starplot-product-promise"
+          ],
           "arrow_payload_bytes": 3056,
-          "complete_render_median_ms": 369.0,
-          "complete_render_p95_ms": 375.7000000059605,
+          "complete_render_median_ms": 349.80000001192093,
+          "complete_render_p95_ms": 360.98000000715257,
+          "raw_render_repeats_ms": [
+            349.80000001192093,
+            363.30000001192093,
+            345.30000001192093,
+            351.69999998807907,
+            348.5
+          ],
           "scene_hash": "sha256:e611b19f09c3ff10e9002fdc0a887988cc722b11360fe5ba5e58fd0752b6f8d5"
         }
       },
@@ -576,68 +512,68 @@
     "plot_types": {
       "horizon": {
         "plot_kind": "horizon",
-        "plotly_render_seconds": 0.01918745400325861,
+        "plotly_render_seconds": 0.02740101102972403,
         "recorded_command_count": 5,
         "recorded_command_kinds": [
           "scatter",
           "text"
         ],
         "rendered_primitive_count": 6,
-        "scene_compile_seconds": 0.006718827004078776,
+        "scene_compile_seconds": 0.009557473007589579,
         "scene_layer_count": 5
       },
       "map": {
         "plot_kind": "map",
-        "plotly_render_seconds": 0.12282837300153915,
+        "plotly_render_seconds": 0.15408120397478342,
         "recorded_command_count": 9,
         "recorded_command_kinds": [
           "scatter",
           "text"
         ],
         "rendered_primitive_count": 10,
-        "scene_compile_seconds": 0.012821355994674377,
+        "scene_compile_seconds": 0.01939615496667102,
         "scene_layer_count": 9
       },
       "optic": {
         "plot_kind": "optic",
-        "plotly_render_seconds": 0.0384341220051283,
+        "plotly_render_seconds": 0.07844998501241207,
         "recorded_command_count": 2,
         "recorded_command_kinds": [
           "info_table",
           "polygon"
         ],
         "rendered_primitive_count": 17,
-        "scene_compile_seconds": 0.01939824500004761,
+        "scene_compile_seconds": 0.0293729139957577,
         "scene_layer_count": 2
       },
       "zenith": {
         "plot_kind": "zenith",
-        "plotly_render_seconds": 0.016433690005214885,
+        "plotly_render_seconds": 0.025987325003370643,
         "recorded_command_count": 1,
         "recorded_command_kinds": [
           "line"
         ],
         "rendered_primitive_count": 2,
-        "scene_compile_seconds": 0.002829161996487528,
+        "scene_compile_seconds": 0.005151297023985535,
         "scene_layer_count": 1
       }
     },
     "semantics": "One small, real recording/SceneCompiler/PlotlySceneAdapter sample for each supported interactive plot family, paired with external-Arrow browser diagnostics; this is coverage evidence, not a cross-family performance gate."
   },
   "plotly_construction": {
-    "median_seconds": 0.15764234500238672,
-    "p95_seconds": 0.173870099009946
+    "median_seconds": 0.19001039100112393,
+    "p95_seconds": 0.21705127541208638
   },
   "point_count": 974153,
   "provenance": {
     "source": {
-      "fingerprint": "sha256:1ebc16929226f1c12db78ee597544e7c688d9f44a657b790e3b9880a11375779",
+      "fingerprint": "sha256:410e78ffef94cdb8d74bfd6632317ba83516b2477a8d97619497c025e7eaeae4",
       "fingerprint_scope": [
         "benchmarks/interactive_scene_pipeline.py",
         "pyproject.toml",
         "src/starplot/** (tracked files)"
       ],
-      "git_revision": "a37b246535d6facd1b6f516e58911b7306c00a44",
+      "git_revision": "b6e4679c2cd63c9ac3ab7a659463950a93e9cc66",
       "tracked_dirty": false
     },
     "workload": {
@@ -652,97 +588,97 @@
     {
       "arrow_payload_bytes": 13011688,
       "external_html_bytes": 1760,
-      "legacy_renderer_preparation_seconds": 10.013559040002292,
-      "legacy_renderer_total_seconds": 10.171201385004679,
+      "legacy_renderer_preparation_seconds": 14.457800394971855,
+      "legacy_renderer_total_seconds": 14.65402317600092,
       "payload_bytes": 31173033,
-      "peak_rss_mb": 478.81640625,
-      "plotly_construction_seconds": 0.15764234500238672,
+      "peak_rss_mb": 457.359375,
+      "plotly_construction_seconds": 0.1962227810290642,
       "point_count": 974153,
       "viewport_warm_ms": [
-        9.489187999861315,
-        8.134635994792916,
-        8.365955989575014,
-        8.199468997190706,
-        8.146328007569537
+        11.460088018793613,
+        11.244781024288386,
+        11.331560963299125,
+        11.820642976090312,
+        11.800175008829683
       ]
     },
     {
       "arrow_payload_bytes": 13011688,
       "external_html_bytes": 1760,
-      "legacy_renderer_preparation_seconds": 10.039307668994297,
-      "legacy_renderer_total_seconds": 10.188224598998204,
+      "legacy_renderer_preparation_seconds": 14.388217622006778,
+      "legacy_renderer_total_seconds": 14.570644496008754,
       "payload_bytes": 31173033,
-      "peak_rss_mb": 459.953125,
-      "plotly_construction_seconds": 0.1489169300039066,
+      "peak_rss_mb": 446.21875,
+      "plotly_construction_seconds": 0.1824268740019761,
       "point_count": 974153,
       "viewport_warm_ms": [
-        9.979505994124338,
-        8.212643006118014,
-        8.08491199859418,
-        8.134711999446154,
-        8.297115986351855
+        11.354729009326547,
+        11.247004033066332,
+        10.952159995213151,
+        10.955321020446718,
+        11.129371996503323
       ]
     },
     {
       "arrow_payload_bytes": 13011688,
       "external_html_bytes": 1760,
-      "legacy_renderer_preparation_seconds": 10.452293769994867,
-      "legacy_renderer_total_seconds": 10.629282834008336,
+      "legacy_renderer_preparation_seconds": 14.561747986997943,
+      "legacy_renderer_total_seconds": 14.784006386005785,
       "payload_bytes": 31173033,
-      "peak_rss_mb": 491.5546875,
-      "plotly_construction_seconds": 0.17698906401346903,
+      "peak_rss_mb": 454.1171875,
+      "plotly_construction_seconds": 0.22225839900784194,
       "point_count": 974153,
       "viewport_warm_ms": [
-        8.201472999644466,
-        8.198840994737111,
-        8.187780011212453,
-        8.15449700166937,
-        8.106313995085657
+        11.235395970288664,
+        11.061410012189299,
+        11.02062501013279,
+        11.15103397751227,
+        11.057081050239503
       ]
     },
     {
       "arrow_payload_bytes": 13011688,
       "external_html_bytes": 1760,
-      "legacy_renderer_preparation_seconds": 10.390065259998664,
-      "legacy_renderer_total_seconds": 10.551459498994518,
+      "legacy_renderer_preparation_seconds": 14.923855357978027,
+      "legacy_renderer_total_seconds": 15.113865748979151,
       "payload_bytes": 31173033,
-      "peak_rss_mb": 500.08984375,
-      "plotly_construction_seconds": 0.1613942389958538,
+      "peak_rss_mb": 468.140625,
+      "plotly_construction_seconds": 0.19001039100112393,
       "point_count": 974153,
       "viewport_warm_ms": [
-        10.002834998886101,
-        8.211400010623038,
-        8.264792995760217,
-        8.14788299612701,
-        8.083193999482319
+        11.4018150488846,
+        11.255242978222668,
+        10.95101097598672,
+        11.206398019567132,
+        11.361267999745905
       ]
     },
     {
       "arrow_payload_bytes": 13011688,
       "external_html_bytes": 1760,
-      "legacy_renderer_preparation_seconds": 10.007879754004534,
-      "legacy_renderer_total_seconds": 10.153052186011337,
+      "legacy_renderer_preparation_seconds": 14.492894106020685,
+      "legacy_renderer_total_seconds": 14.661735004978254,
       "payload_bytes": 31173033,
-      "peak_rss_mb": 448.21484375,
-      "plotly_construction_seconds": 0.1451724320068024,
+      "peak_rss_mb": 441.8828125,
+      "plotly_construction_seconds": 0.16884089895756915,
       "point_count": 974153,
       "viewport_warm_ms": [
-        8.343713998328894,
-        8.103778003714979,
-        8.059840998612344,
-        8.039863998419605,
-        8.113937001326121
+        12.685914000030607,
+        12.095879996195436,
+        11.86104299267754,
+        11.956256988923997,
+        13.045436004176736
       ]
     }
   ],
   "scene_compile": {
-    "median_seconds": 10.039307668994297,
-    "p95_seconds": 10.439848067995626,
+    "median_seconds": 14.492894106020685,
+    "p95_seconds": 14.851433883782011,
     "semantics": "Native SceneCompiler.compile timing."
   },
   "schema_version": 2,
   "viewport_warm": {
-    "median_ms": 8.187780011212453,
-    "p95_ms": 9.881442395271732
+    "median_ms": 11.255242978222668,
+    "p95_ms": 12.567907199263571
   }
 }
