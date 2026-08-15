@@ -529,11 +529,11 @@ test("scatter policy keeps small custom markers SVG and stars or large layers We
   assert.equal(runtime.traceTypeForLayer(large), "scattergl");
 });
 
-test("ellipse scatter marker uses a rotated 2:1 SVG path instead of a circle", async () => {
+test("ellipse scatter marker retains its semantic shape while using Plotly's valid circle", async () => {
   const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
   const scene = { styles: [], palettes: [{ id: "p", colors: ["#fff"] }] };
   const galaxy = layer("galaxy", "scatter", 1, { palette_id: "p", symbol: "ellipse" });
-  galaxy.row_count = 2;
+  galaxy.row_count = 1001;
   const table = Arrow.tableFromArrays({
     x: new Float64Array([1, 2]), y: new Float64Array([3, 4]),
     size: new Float32Array([4, 4]), color_index: new Uint8Array([0, 0]),
@@ -541,8 +541,52 @@ test("ellipse scatter marker uses a rotated 2:1 SVG path instead of a circle", a
   });
   const trace = runtime.layerToPlotlyTrace(galaxy, table, scene);
   assert.equal(trace.type, "scatter");
-  assert.ok(trace.marker.symbol.startsWith("M "));
-  assert.ok(trace.marker.symbol.endsWith("Z"));
+  assert.equal(trace.marker.symbol, "circle");
+  assert.equal(trace.meta.starplot_marker_symbol, "ellipse");
+  const [renderTrace] = runtime.layerToPlotlyTraces(galaxy, table, scene);
+  assert.equal(renderTrace.type, "scatter");
+  assert.equal(renderTrace.meta.starplot_marker_symbol, "ellipse");
+});
+
+test("ellipse SVG transforms target only semantic ellipse marker paths", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const point = (transform) => {
+    const attributes = new Map([["transform", transform]]);
+    return {
+      getAttribute(name) { return attributes.get(name) || null; },
+      setAttribute(name, value) { attributes.set(name, value); },
+    };
+  };
+  const ordinaryPoint = point("translate(10,20)");
+  const ellipsePoint = point("translate(30,40)");
+  const trace = (index, paths) => ({
+    __data__: [{ trace: { index } }],
+    querySelectorAll(selector) {
+      assert.equal(selector, "path.point");
+      return paths;
+    },
+  });
+  const target = {
+    _fullData: [
+      { meta: { starplot_marker_symbol: "circle" } },
+      { meta: { starplot_marker_symbol: "ellipse" } },
+    ],
+    querySelectorAll(selector) {
+      assert.equal(selector, "g.trace");
+      return [trace(0, [ordinaryPoint]), trace(1, [ellipsePoint])];
+    },
+  };
+
+  runtime._applyEllipseMarkerTransforms(target);
+  runtime._applyEllipseMarkerTransforms(target);
+
+  assert.equal(ordinaryPoint.getAttribute("transform"), "translate(10,20)");
+  assert.equal(ordinaryPoint.getAttribute("vector-effect"), null);
+  assert.equal(
+    ellipsePoint.getAttribute("transform"),
+    "translate(30,40) rotate(15) scale(1 0.5)",
+  );
+  assert.equal(ellipsePoint.getAttribute("vector-effect"), "non-scaling-stroke");
 });
 
 test("star_8 scatter marker preserves starburst semantics", async () => {

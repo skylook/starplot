@@ -32,31 +32,10 @@
     // Plotly has no native eight-ray glyph; retain starburst semantics with
     // the same supported filled-star approximation as the Python adapter.
     star_8: "star",
-    // Matplotlib's ellipse marker is a 2:1 ellipse rotated 15°. Plotly custom
-    // SVG path markers are centered at the origin with r=10 equal to half the
-    // marker size; this path is the same 100-point ellipse scaled to that grid.
-    ellipse: (
-      "M 9.6593,2.5882 L 9.5577,2.8893 L 9.4177,3.1788 L 9.2398,3.4554 L 9.0247,3.7182 " +
-      "L 8.7732,3.9660 L 8.4864,4.1978 L 8.1654,4.4127 L 7.8116,4.6098 L 7.4262,4.7884 " +
-      "L 7.0110,4.9477 L 6.5676,5.0871 L 6.0977,5.2060 L 5.6033,5.3039 L 5.0863,5.3805 " +
-      "L 4.5488,5.4354 L 3.9930,5.4684 L 3.4211,5.4794 L 2.8355,5.4684 L 2.2384,5.4353 " +
-      "L 1.6323,5.3803 L 1.0196,5.3037 L 0.4029,5.2057 L -0.2155,5.0867 L -0.8330,4.9473 " +
-      "L -1.4472,4.7880 L -2.0555,4.6093 L -2.6556,4.4121 L -3.2449,4.1972 L -3.8212,3.9653 " +
-      "L -4.3822,3.7175 L -4.9254,3.4547 L -5.4489,3.1780 L -5.9503,2.8885 L -6.4279,2.5874 " +
-      "L -6.8795,2.2758 L -7.3035,1.9551 L -7.6980,1.6265 L -8.0616,1.2914 L -8.3926,0.9510 " +
-      "L -8.6899,0.6069 L -8.9522,0.2602 L -9.1785,-0.0874 L -9.3678,-0.4347 L -9.5193,-0.7803 " +
-      "L -9.6326,-1.1227 L -9.7070,-1.4606 L -9.7424,-1.7926 L -9.7385,-2.1174 L -9.6955,-2.4337 " +
-      "L -9.6133,-2.7401 L -9.4925,-3.0356 L -9.3335,-3.3188 L -9.1368,-3.5886 L -8.9034,-3.8440 " +
-      "L -8.6341,-4.0839 L -8.3301,-4.3074 L -7.9925,-4.5135 L -7.6227,-4.7015 L -7.2223,-4.8705 " +
-      "L -6.7927,-5.0199 L -6.3358,-5.1491 L -5.8534,-5.2576 L -5.3475,-5.3449 L -4.8199,-5.4107 " +
-      "L -4.2730,-5.4547 L -3.7089,-5.4767 L -3.1299,-5.4766 L -2.5382,-5.4546 L -1.9363,-5.4105 " +
-      "L -1.3266,-5.3447 L -0.7116,-5.2573 L -0.0937,-5.1488 L 0.5245,-5.0196 L 1.1407,-4.8701 " +
-      "L 1.7522,-4.7010 L 2.3567,-4.5130 L 2.9517,-4.3068 L 3.5349,-4.0833 L 4.1038,-3.8433 " +
-      "L 4.6561,-3.5879 L 5.1898,-3.3180 L 5.7025,-3.0348 L 6.1922,-2.7393 L 6.6571,-2.4328 " +
-      "L 7.0951,-2.1165 L 7.5045,-1.7917 L 7.8838,-1.4597 L 8.2312,-1.1218 L 8.5456,-0.7793 " +
-      "L 8.8255,-0.4338 L 9.0699,-0.0865 L 9.2778,0.2612 L 9.4483,0.6078 L 9.5808,0.9520 " +
-      "L 9.6747,1.2923 L 9.7296,1.6274 L 9.7454,1.9560 L 9.7219,2.2767 L 9.6593,2.5882 Z"
-    ),
+    // Plotly's public marker schema accepts named symbols, not SVG paths. The
+    // rendered SVG circle is reshaped after Plotly draws it; see
+    // _applyEllipseMarkerTransforms.
+    ellipse: "circle",
     circle_crosshair: "circle-cross",
     circle_line: "circle",
     circle_dotted_edge: "circle",
@@ -165,8 +144,9 @@
     };
   }
 
-  function traceTypeForLayer(layer, forceSvgTracePlane = false) {
+  function traceTypeForLayer(layer, forceSvgTracePlane = false, forceSvgMarker = false) {
     if (forceSvgTracePlane && ["scatter", "line_collection"].includes(layer.kind)) return "scatter";
+    if (forceSvgMarker && layer.kind === "scatter") return "scatter";
     if (layer.kind === "scatter") {
       return (
         layer.group_id === "stars" || Number(layer.row_count || 0) > 1000
@@ -314,6 +294,7 @@
     const useWebgl = traceTypeForLayer(
       { ...layer, row_count: layer.row_count ?? table.numRows },
       forceSvgTracePlane,
+      style.symbol === "ellipse",
     ) === "scattergl";
     const markerSize = new Float32Array(size.length);
     const markerOpacity = useWebgl ? new Float32Array(opacity.length) : opacity;
@@ -360,6 +341,7 @@
       name: traceName(layer, style),
       legendgroup: layer.group_id,
       showlegend: Boolean(traceName(layer, style)),
+      meta: { starplot_marker_symbol: style.symbol || "circle" },
     };
     if (hoverAllowed
         && layer.hover_fields && layer.hover_fields.length) {
@@ -387,6 +369,7 @@
     const useWebgl = traceTypeForLayer(
       { ...layer, row_count: layer.row_count ?? table.numRows },
       forceSvgTracePlane,
+      style.symbol === "ellipse",
     ) === "scattergl";
     const hoverAllowed = layer.interactive
       && rowCount <= MAX_INTERACTIVE_HOVER_POINTS;
@@ -494,6 +477,7 @@
         // A layer represents one legend item even when it is rendered by
         // several GPU batches.
         showlegend: index === 0 && Boolean(name),
+        meta: { starplot_marker_symbol: style.symbol || "circle" },
       };
       markerSourceByTrace.set(result, {
         size: bucket.sourceSize, opacity: bucket.sourceOpacity, webgl: true,
@@ -1073,15 +1057,18 @@
     return false;
   }
 
-  function needsSvgZorderPlane(slots) {
-    const glLayers = slots.filter((layer) => traceTypeForLayer(layer, false) === "scattergl");
+  function needsSvgZorderPlane(slots, svgOnlyLayerIds = new Set()) {
+    const traceType = (layer) => traceTypeForLayer(
+      layer, false, svgOnlyLayerIds.has(layer.id),
+    );
+    const glLayers = slots.filter((layer) => traceType(layer) === "scattergl");
     if (!glLayers.length) return false;
     // Plotly puts WebGL canvases on a separate paint plane.  A chart mixing
     // them with ordinary SVG geometry can hide SVG layers regardless of Scene
     // zorder (for example an optic-FOV circle below stars).  For charts small
     // enough for SVG, preserve the canonical one-plane ordering instead.
     const hasSvgGeometry = slots.some((layer) => ["scatter", "line", "polygon"].includes(layer.kind)
-      && traceTypeForLayer(layer, false) !== "scattergl");
+      && traceType(layer) !== "scattergl");
     const largestGlLayer = Math.max(...glLayers.map((layer) => Number(layer.row_count || 0)));
     return hasSvgGeometry && largestGlLayer <= MAX_SVG_ZORDER_POINTS;
   }
@@ -1169,6 +1156,24 @@
       node.style.stroke = stroke.color;
       node.style.strokeWidth = `${stroke.width * scaleRatio}px`;
       node.style.paintOrder = "stroke fill";
+    });
+  }
+
+  function _applyEllipseMarkerTransforms(target) {
+    if (!target || typeof target.querySelectorAll !== "function") return;
+    const fullData = target._fullData || [];
+    target.querySelectorAll("g.trace").forEach((traceNode) => {
+      const traceIndex = traceNode.__data__ && traceNode.__data__[0]
+        && traceNode.__data__[0].trace && traceNode.__data__[0].trace.index;
+      const trace = fullData[traceIndex];
+      if (!trace || !trace.meta || trace.meta.starplot_marker_symbol !== "ellipse") return;
+      traceNode.querySelectorAll("path.point").forEach((point) => {
+        const transform = point.getAttribute("transform");
+        if (!transform) return;
+        const baseTransform = transform.replace(/ rotate\(15\) scale\(1 0\.5\)$/, "");
+        point.setAttribute("transform", `${baseTransform} rotate(15) scale(1 0.5)`);
+        point.setAttribute("vector-effect", "non-scaling-stroke");
+      });
     });
   }
 
@@ -1304,6 +1309,7 @@
         timer = null;
         // Re-measure and re-correct after Plotly's responsive resize settles.
         await _applyScaleCorrection(target, state, Plotly);
+        _applyEllipseMarkerTransforms(target);
         _applyAnnotationStrokes(target, state);
       }, 150);
     };
@@ -1351,7 +1357,11 @@
     assertNotAborted(settings.signal);
     const tableCache = new Map(loaded.filter((item) => item.table).map((item) => [item.layer.id, item.table]));
     const requiredFailure = loaded.find((item) => item.required);
-    const mixedSvgZorderPlane = needsSvgZorderPlane(slots);
+    const ellipseLayerIds = new Set(loaded.filter((item) => item.table
+      && item.layer.kind === "scatter"
+      && styleFor(item.layer, scene).symbol === "ellipse")
+      .map((item) => item.layer.id));
+    const mixedSvgZorderPlane = needsSvgZorderPlane(slots, ellipseLayerIds);
     const forceSvgTracePlane = mixedSvgZorderPlane || slots.some((layer) =>
       layer.kind === "polygon" && layer.coordinate_space === "data"
       && tableCache.has(layer.id) && polygonTableHasHoles(tableCache.get(layer.id)));
@@ -1363,7 +1373,11 @@
       if (!item.table) continue;
       const layerTraces = layerToPlotlyTraces(
         item.layer, item.table, scene,
-        { ...metrics, forceSvgTracePlane, shownLegendNames },
+        {
+          ...metrics,
+          forceSvgTracePlane,
+          shownLegendNames,
+        },
       );
       traces.set(item.layer.id, layerTraces);
       const effects = layoutEffects.get(layerTraces[0]);
@@ -1411,6 +1425,7 @@
     // the actual axes domain and restyle when the correction is significant.
     // This also runs on window resize (see _applyScaleCorrection).
     await _applyScaleCorrection(target, correctionState, Plotly);
+    _applyEllipseMarkerTransforms(target);
     // Debounced resize re-correction.  Plotly's responsive:true only resizes
     // the canvas; it does not recompute font/marker/stroke scales.
     _ensureResizeHandler(target, correctionState, Plotly);
@@ -1435,5 +1450,6 @@
     _polygonShapeIndices,
     _applyScaleCorrection,
     _applyAnnotationStrokes,
+    _applyEllipseMarkerTransforms,
   });
 })(typeof window !== "undefined" ? window : globalThis);
