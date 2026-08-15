@@ -1279,6 +1279,14 @@ class _PlotlyRenderContext:
     def _add_interactive_features(self) -> None:
         magnitude_scale = self.style_info.get("magnitude_scale")
         if self.fig.layout.showlegend and magnitude_scale:
+            legend_title_font = dict(
+                color=self.style_info.get("legend_font_color", "#ffffff"),
+                size=max(
+                    8,
+                    self.style_info.get("legend_title_font_size", 11)
+                    * self._font_pixel_scale(),
+                ),
+            )
             for index, (label, size) in enumerate(
                 zip(magnitude_scale.get("labels", ()), magnitude_scale.get("sizes", ()))
             ):
@@ -1303,8 +1311,13 @@ class _PlotlyRenderContext:
                         ),
                         name=_html_escape(label),
                         legendgroup="star-magnitude-scale",
-                        legendgrouptitle_text=(
-                            _html_escape(magnitude_scale.get("title", "Star Magnitude"))
+                        legendgrouptitle=(
+                            dict(
+                                text=_html_escape(
+                                    magnitude_scale.get("title", "Star Magnitude")
+                                ),
+                                font=legend_title_font,
+                            )
                             if index == 0
                             else None
                         ),

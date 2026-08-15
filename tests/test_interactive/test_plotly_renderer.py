@@ -380,8 +380,10 @@ def test_renderer_uses_explicit_matplotlib_legend_and_magnitude_scale():
     style_info = {
         **STYLE_INFO,
         "legend_labels": ["Star", "Nebula"],
+        "legend_title": "Legend",
         "legend_background_color": "#f1f6fe",
         "legend_font_color": "#000000",
+        "legend_title_font_size": 14,
         "magnitude_scale": {
             "title": "Star Magnitude",
             "labels": ["0", "1"],
@@ -413,7 +415,10 @@ def test_renderer_uses_explicit_matplotlib_legend_and_magnitude_scale():
     assert legend_entries == ["Star", "Nebula", "0", "1"]
     assert fig.layout.legend.bgcolor == "#f1f6fe"
     assert fig.layout.legend.font.color == "#000000"
+    assert fig.layout.legend.title.text == "Legend"
     assert fig.data[-2].legendgrouptitle.text == "Star Magnitude"
+    assert fig.data[-2].legendgrouptitle.font.color == "#000000"
+    assert fig.data[-2].legendgrouptitle.font.size == fig.layout.legend.title.font.size
 
 
 def test_renderer_gradient_no_traces_without_proj_info():
