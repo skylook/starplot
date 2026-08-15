@@ -867,6 +867,11 @@ def test_radial_gradient_uses_source_radius_squared_and_reversal():
     renderer = renderer_with_circle_clip()
     figure = renderer.render([radial_gradient_command()])
     heatmap = next(trace for trace in figure.data if trace.type == "heatmap")
+    # Plotly's heatmap renderer does not reliably interpolate nested typed
+    # arrays.  Keep the 2-D grid as ordinary rows so radial color stops remain
+    # smooth instead of collapsing into hard bands.
+    assert isinstance(heatmap.z, tuple)
+    assert isinstance(heatmap.z[0], tuple)
     z = np.array(heatmap.z)
     # The data remains radius^2; reversal is encoded in the colorscale,
     # matching Matplotlib's reversed LinearSegmentedColormap.

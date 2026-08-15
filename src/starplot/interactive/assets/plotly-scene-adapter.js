@@ -29,9 +29,8 @@
     circle_dot: "circle-dot",
     comet: "star-diamond",
     star_4: "star-square",
-    // Plotly's native star glyphs are much more prominent than Matplotlib's
-    // rendered eight-point symbol at chart scale.
-    star_8: "circle",
+    // Keep this native Plotly symbol aligned with the Python adapter.
+    star_8: "asterisk",
     // Matplotlib's ellipse marker is a 2:1 ellipse rotated 15°. Plotly custom
     // SVG path markers are centered at the origin with r=10 equal to half the
     // marker size; this path is the same 100-point ellipse scaled to that grid.
@@ -727,7 +726,10 @@
     for (let index = 0; index < rows; index += 1) y[index] = yMin + (yMax - yMin) * index / Math.max(1, rows - 1);
     const z = new Array(rows);
     for (let row = 0; row < rows; row += 1) {
-      z[row] = new Float32Array(columns);
+      // Plotly heatmaps expect an ordinary two-dimensional array. Nested
+      // typed rows render, but their colorscale interpolation can collapse
+      // into visible hard bands (most obvious on radial optic gradients).
+      z[row] = new Array(columns);
       for (let col = 0; col < columns; col += 1) {
         let value;
         let valid = true;

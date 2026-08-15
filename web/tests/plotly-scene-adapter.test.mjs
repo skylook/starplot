@@ -545,6 +545,21 @@ test("ellipse scatter marker uses a rotated 2:1 SVG path instead of a circle", a
   assert.ok(trace.marker.symbol.endsWith("Z"));
 });
 
+test("star_8 scatter marker uses the shared native starburst", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const scene = { styles: [], palettes: [{ id: "p", colors: ["#fff"] }] };
+  const stars = layer("stars", "scatter", 1, { palette_id: "p", symbol: "star_8" });
+  stars.row_count = 2;
+  const table = Arrow.tableFromArrays({
+    x: new Float64Array([1, 2]), y: new Float64Array([3, 4]),
+    size: new Float32Array([4, 4]), color_index: new Uint8Array([0, 0]),
+    opacity: new Float32Array([1, 1]),
+  });
+
+  const trace = runtime.layerToPlotlyTrace(stars, table, scene);
+  assert.equal(trace.marker.symbol, "asterisk");
+});
+
 test("gradients honor clip identities, directions, and fail closed for unsupported modes", async () => {
   const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
   const scene = {
@@ -582,6 +597,7 @@ test("gradient sampling honors radial center and radius plus Galactic Mollweide 
   const radial = runtime.layerToPlotlyTrace(radialLayer, tables.gradient(), scene);
   assert.equal(radial.x.length, 512);
   assert.equal(radial.y.length, 512);
+  assert.ok(Array.isArray(radial.z[0]), "Plotly heatmaps require ordinary 2-D rows for smooth interpolation");
   let min = { value: Infinity, row: -1, col: -1 };
   for (let row = 0; row < radial.z.length; row += 1) {
     for (let col = 0; col < radial.z[row].length; col += 1) {

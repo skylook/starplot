@@ -1174,7 +1174,7 @@ class _PlotlyRenderContext:
             go.Heatmap(
                 x=x,
                 y=y,
-                z=z,
+                z=z.tolist(),
                 colorscale=stops,
                 showscale=False,
                 hoverinfo="skip",

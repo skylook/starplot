@@ -675,6 +675,29 @@ def test_ellipse_marker_has_larger_extent_than_circle():
     )
 
 
+def test_star_8_marker_uses_shared_native_starburst():
+    """Python and browser adapters must not reduce the eight-ray marker to a circle."""
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+    from starplot.interactive.style_converter import MARKER_SYMBOL_MAP
+
+    command = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": [0.0],
+            "y": [0.0],
+            "sizes": [9.0],
+            "colors": ["#ffffff"],
+            "alphas": [1.0],
+        },
+        style={"symbol": "star_8"},
+        gid="stars",
+        clip_id=None,
+    )
+
+    assert MARKER_SYMBOL_MAP["star_8"] == "asterisk"
+    assert PlotlySceneAdapter().render(_compile(command)).data[0].marker.symbol == "asterisk"
+
+
 def test_relative_identity_coordinates_stay_float32_typed_arrays():
     from starplot.interactive.plotly_adapter import PlotlySceneAdapter
 
