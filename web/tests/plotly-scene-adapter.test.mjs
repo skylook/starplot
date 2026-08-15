@@ -851,6 +851,7 @@ function scaleCorrectionScene(opts = {}) {
     targetAxesWidth = sourceAxesWidth,
     dpi = 100,
     markerSize = 10,
+    markerEdgeWidth = 1,
     lineWidth = 2,
     fontSize = 12,
     strokeColor = "#000",
@@ -876,7 +877,9 @@ function scaleCorrectionScene(opts = {}) {
     vertex_index: new Uint32Array([0, 1, 2]),
     x: new Float64Array([0, 1, 0]), y: new Float64Array([0, 0, 1]),
   });
-  const scatterLayer = layer("stars", "scatter", 0, { palette_id: "p", symbol: "circle" });
+  const scatterLayer = layer("stars", "scatter", 0, {
+    palette_id: "p", symbol: "circle", edge_color: "#fff", edge_width: markerEdgeWidth,
+  });
   scatterLayer.row_count = 2;
   const lineLayer = layer("grid", "line", 1, { width: lineWidth, color: "#888" });
   const textLayer = layer("labels", "text", 2, {
@@ -1027,7 +1030,10 @@ test("scale correction is idempotent and updates subpixel marker opacity with si
   const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
   const markerSize = new Float32Array([0.5]);
   const markerOpacity = new Float32Array([0.125]);
-  const trace = { type: "scattergl", marker: { size: markerSize, opacity: markerOpacity } };
+  const trace = {
+    type: "scattergl",
+    marker: { size: markerSize, opacity: markerOpacity, line: { width: 1 } },
+  };
   const annotation = { font: { size: 20 }, xshift: 4, yshift: 6 };
   const layout = { annotations: [annotation], shapes: [] };
   const state = {
@@ -1060,6 +1066,10 @@ test("scale correction is idempotent and updates subpixel marker opacity with si
   assert.equal(markerCalls.length, 1, "an unchanged axes size must not be corrected twice");
   assert.ok(markerCalls[0].update["marker.opacity"], "subpixel opacity must follow marker size");
   assert.ok(markerCalls[0].update["marker.opacity"][0][0] < markerOpacity[0]);
+  assert.deepEqual(
+    markerCalls[0].update["marker.line.width"], [0.8],
+    "marker edge width must follow the corrected axes scale",
+  );
   const annotationCalls = calls.relayout.filter((update) => update.annotations);
   assert.equal(annotationCalls.length, 1, "annotation correction must be idempotent");
 });
@@ -1409,7 +1419,10 @@ test("scale correction is skipped when container is already square (no restyle)"
 test("marker sizes are correctly rescaled by the corrected width scale", async () => {
   const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"]);
   const markerSize = 20;
-  const { source } = scaleCorrectionScene({ sourceAxesWidth: 3600, markerSize });
+  const markerEdgeWidth = 1.5;
+  const { source } = scaleCorrectionScene({
+    sourceAxesWidth: 3600, markerSize, markerEdgeWidth,
+  });
   const { Plotly, calls } = mockPlotly({
     layoutWidth: 1280, layoutHeight: 800,
     // Deliberately differ from the 780px pre-render estimate so this test
@@ -1440,4 +1453,9 @@ test("marker sizes are correctly rescaled by the corrected width scale", async (
   const expectedRaw = markerSize * correctedScale;
   const expected = Math.max(expectedRaw, 1);
   assert.ok(Math.abs(sizes[0] - expected) < 0.01, `marker ${sizes[0]} should match ${expected}`);
+  const correctedFontPixelScale = (100 / 72) * correctedScale;
+  assert.equal(
+    markerRestyle.update["marker.line.width"][0],
+    markerEdgeWidth * correctedFontPixelScale,
+  );
 });

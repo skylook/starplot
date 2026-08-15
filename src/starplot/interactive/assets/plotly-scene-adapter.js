@@ -1270,6 +1270,11 @@
           trace.line && typeof trace.line.width === "number"
             ? Number(trace.line.width)
             : null),
+        markerLineWidths: traceList.map((trace) =>
+          trace.marker && trace.marker.line
+            && typeof trace.marker.line.width === "number"
+            ? Number(trace.marker.line.width)
+            : null),
         polygonShapeWidths: (state.polygonShapeIndices || []).map((index) => {
           const shape = layout.shapes[index];
           return shape && shape.line && typeof shape.line.width === "number"
@@ -1321,6 +1326,23 @@
       if (opacityUpdate.some(Boolean)) {
         update["marker.opacity"] = opacityUpdate.map((value, index) =>
           value || traceList[scatterIndices[index]].marker.opacity);
+      }
+      const markerLineWidths = state.scaleBaseline.markerLineWidths
+        || traceList.map((trace) =>
+          trace.marker && trace.marker.line
+            && typeof trace.marker.line.width === "number"
+            ? Number(trace.marker.line.width)
+            : null);
+      state.scaleBaseline.markerLineWidths = markerLineWidths;
+      if (scatterIndices.some((index) => markerLineWidths[index] != null)) {
+        update["marker.line.width"] = scatterIndices.map((index) => {
+          const width = markerLineWidths[index];
+          if (width == null) return 0;
+          return Math.max(
+            0,
+            width / metrics.strokePixelScale * correctedFontPixelScale,
+          );
+        });
       }
       await Plotly.restyle(target, update, scatterIndices);
     }
@@ -1504,6 +1526,11 @@
         lineWidths: plotlyTraces.map((trace) =>
           trace.line && typeof trace.line.width === "number"
             ? Number(trace.line.width)
+            : null),
+        markerLineWidths: plotlyTraces.map((trace) =>
+          trace.marker && trace.marker.line
+            && typeof trace.marker.line.width === "number"
+            ? Number(trace.marker.line.width)
             : null),
         polygonShapeWidths: polygonShapeIndices.map((index) => {
           const shape = layout.shapes[index];
