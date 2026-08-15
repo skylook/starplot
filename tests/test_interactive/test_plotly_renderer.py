@@ -527,7 +527,8 @@ def test_renderer_scattergl_preserves_subpixel_area():
     fig = make_renderer().render([cmd])
 
     assert list(fig.data[0].marker.size) == [1.0, 1.0]
-    assert fig.data[0].marker.line.width == 0
+    assert fig.data[0].marker.line.color == "#ffffff"
+    assert fig.data[0].marker.line.width > 0
     assert all(float(opacity) < 0.5 for opacity in fig.data[0].marker.opacity)
 
 

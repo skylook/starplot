@@ -73,7 +73,9 @@ test("dense finite-palette ScatterGL data uses bounded scalar-colour batches", a
     size: new Float32Array(rowCount).fill(1), color_index: colorIndex,
     opacity: new Float32Array(rowCount).fill(0.5),
   });
-  const current = layer("dense-stars", "scatter", 1, { palette_id: "palette", symbol: "circle" });
+  const current = layer("dense-stars", "scatter", 1, {
+    palette_id: "palette", symbol: "circle", edge_color: "#abc", edge_width: 0.75,
+  });
   current.group_id = "stars";
   current.row_count = rowCount;
   const traces = runtime.layerToPlotlyTraces(current, table, {
@@ -83,6 +85,8 @@ test("dense finite-palette ScatterGL data uses bounded scalar-colour batches", a
   assert.deepEqual(Array.from(traces, (trace) => trace.marker.color), ["#fff", "#f80"]);
   assert.ok(traces.every((trace) => trace.type === "scattergl"));
   assert.ok(traces.every((trace) => !Object.hasOwn(trace.marker, "colorscale")));
+  assert.ok(traces.every((trace) => trace.marker.line.color === "#abc"));
+  assert.ok(traces.every((trace) => trace.marker.line.width === 0.75));
   assert.equal(traces.reduce((total, trace) => total + trace.x.length, 0), rowCount);
   assert.ok(traces.every((trace) => trace.meta.starplot_layer_id === "dense-stars"));
 });
@@ -520,7 +524,8 @@ test("scatter policy keeps small custom markers SVG and stars or large layers We
   const stars = { ...custom, id: "stars", group_id: "stars" };
   const webgl = runtime.layerToPlotlyTrace(stars, table, scene);
   assert.equal(webgl.type, "scattergl");
-  assert.equal(webgl.marker.line.width, 0);
+  assert.equal(webgl.marker.line.color, "#abcdef");
+  assert.equal(webgl.marker.line.width, 1.25);
 
   const large = { ...custom, id: "large", row_count: 1001 };
   assert.equal(runtime.layerToPlotlyTrace(large, table, scene).type, "scattergl");

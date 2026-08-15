@@ -589,10 +589,7 @@ class _PlotlyRenderContext:
                 plotly_size,
                 _PLOTLY_MIN_MARKER_DIAMETER,
             ).astype(np.float32, copy=False)
-        if use_webgl:
-            edge_width = 0.0
-        else:
-            edge_width = (layer.style.get("edge_width", 0) or 0) * self._stroke_pixel_scale()
+        edge_width = (layer.style.get("edge_width", 0) or 0) * self._stroke_pixel_scale()
         marker = dict(
             size=marker_size,
             color=color,

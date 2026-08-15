@@ -328,7 +328,7 @@
         symbol: MARKER_SYMBOL[style.symbol || "circle"] || style.symbol || "circle",
         line: {
           color: plotlyColor(style.edge_color, "rgba(0,0,0,0)"),
-          width: useWebgl ? 0 : edgeWidth,
+          width: edgeWidth,
         },
         ...(transparent ? {} : {
           colorscale: discreteColorscale(palette),
@@ -462,7 +462,7 @@
         symbol: MARKER_SYMBOL[style.symbol || "circle"] || style.symbol || "circle",
         line: {
           color: plotlyColor(style.edge_color, "rgba(0,0,0,0)"),
-          width: 0,
+          width: edgeWidth,
         },
       };
       const result = {
