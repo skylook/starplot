@@ -1350,9 +1350,18 @@ class RecordingMixin:
     # Method 7: Celestial equator
     # ------------------------------------------------------------------
 
-    def celestial_equator(self, style=None, label=None, collision_handler=None):
+    def celestial_equator(
+        self, style=None, label=None, num_labels=1, collision_handler=None
+    ):
         lines_before = len(self.ax.lines)
-        super().celestial_equator(style=style, label=label, collision_handler=collision_handler)
+        equator_kwargs = {
+            "style": style,
+            "num_labels": num_labels,
+            "collision_handler": collision_handler,
+        }
+        if label is not None:
+            equator_kwargs["label"] = label
+        super().celestial_equator(**equator_kwargs)
         resolved_style = style or self.style.celestial_equator
         self._record_rendered_line_artists(
             lines_before, resolved_style.line,
@@ -1413,7 +1422,7 @@ class RecordingMixin:
             from starplot.plots.map import MapPlot
             from starplot.plots.zenith import ZenithPlot
             from starplot.data.translations import translate
-            from starplot import geod
+            from starplot import geometry
 
             resolved_style = style or self.style.horizon
 
@@ -1490,12 +1499,13 @@ class RecordingMixin:
                 zenith = observer.from_altaz(alt_degrees=90, az_degrees=0)
                 ra, dec, _ = zenith.radec()
 
-                points = geod.ellipse(
+                polygon = geometry.ellipse(
                     center=(ra.hours * 15, dec.degrees),
                     height_degrees=180,
                     width_degrees=180,
                     num_pts=100,
                 )
+                points = list(zip(*polygon.exterior.coords.xy))
                 projected = [self._to_final_data(ra, dec, source_space="radec") for ra, dec in points]
                 xs = [p[0] for p in projected if math.isfinite(p[0]) and math.isfinite(p[1])]
                 ys = [p[1] for p in projected if math.isfinite(p[0]) and math.isfinite(p[1])]

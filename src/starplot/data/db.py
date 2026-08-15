@@ -1,3 +1,5 @@
+from functools import cache
+
 from ibis import duckdb
 
 from starplot.config import settings
@@ -11,10 +13,11 @@ NAME_TABLES = {
 }
 
 
-def connect():
+@cache
+def _connect(extensions_path):
     connection = duckdb.connect()
-    path = settings.data_path / "duckdb-extensions"
-    connection.raw_sql(f"SET extension_directory = '{str(path)}';")
+    connection.raw_sql(f"SET extension_directory = '{str(extensions_path)}';")
+    connection.raw_sql("INSTALL spatial;")
     connection.load_extension("spatial")
 
     missing_name_tables = set(NAME_TABLES.keys()) - set(connection.list_tables())
@@ -23,3 +26,8 @@ def connect():
         connection.read_parquet(NAME_TABLES[table_name], table_name=table_name)
 
     return connection
+
+
+def connect():
+    path = settings.data_path / "duckdb-extensions"
+    return _connect(extensions_path=path)
