@@ -1957,7 +1957,7 @@ class RecordingMixin:
                 f"Optic - {self.optic.label}",
             ]
             values = [
-                f"{self.pos_alt.degrees:.0f}\N{DEGREE SIGN} / {self.pos_az.degrees:.0f}\N{DEGREE SIGN} ({azimuth_to_string(self.pos_az.degrees)})",
+                f"{self.pos_alt:.0f}\N{DEGREE SIGN} / {self.pos_az:.0f}\N{DEGREE SIGN} ({azimuth_to_string(self.pos_az)})",
                 f"{(self.ra / 15):.2f}h / {self.dec:.2f}\N{DEGREE SIGN}",
                 f"{self.observer.lat:.2f}\N{DEGREE SIGN}, {self.observer.lon:.2f}\N{DEGREE SIGN}",
                 dt_str,

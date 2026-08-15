@@ -170,6 +170,28 @@ def make_camera_plot():
     )
 
 
+def test_optic_info_records_the_public_footer_contract():
+    plot = make_optic_plot()
+
+    plot.info()
+
+    footer = next(
+        command
+        for command in plot._recorder.commands
+        if command.gid == "optic-info-table"
+    )
+    assert footer.kind == "info_table"
+    assert footer.data["columns"] == [
+        "Target (Alt/Az)",
+        "Target (RA/DEC)",
+        "Observer Lat, Lon",
+        "Observer Date/Time",
+        "Optic - Refractor",
+    ]
+    assert len(footer.data["values"]) == 5
+    assert footer.data["widths"] == [0.15, 0.15, 0.2, 0.2, 0.3]
+
+
 @pytest.mark.parametrize("plot_factory, expected_kind", [
     (make_map_plot, "rect"),
     (make_horizon_plot, "rect"),
