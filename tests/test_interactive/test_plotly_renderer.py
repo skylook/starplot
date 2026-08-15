@@ -528,8 +528,30 @@ def test_renderer_scattergl_preserves_subpixel_area():
 
     assert list(fig.data[0].marker.size) == [1.0, 1.0]
     assert fig.data[0].marker.line.color == "#ffffff"
-    assert fig.data[0].marker.line.width > 0
+    assert fig.data[0].marker.line.width == 0
     assert all(float(opacity) < 0.5 for opacity in fig.data[0].marker.opacity)
+
+
+def test_renderer_dense_scattergl_preserves_recorded_marker_edge():
+    row_count = 1001
+    cmd = DrawingCommand(
+        kind="scatter",
+        data={
+            "x": np.arange(row_count, dtype=np.float64),
+            "y": np.arange(row_count, dtype=np.float64),
+            "sizes": np.full(row_count, 0.02),
+            "colors": np.full(row_count, "#ffffff"),
+            "alphas": 0.5,
+        },
+        style={"edge_color": "#abcdef", "edge_width": 2.0},
+        gid="stars",
+    )
+
+    fig = make_renderer().render([cmd])
+
+    assert fig.data[0].type == "scattergl"
+    assert fig.data[0].marker.line.color == "#abcdef"
+    assert fig.data[0].marker.line.width > 0
 
 
 def test_marker_size_calibration_can_retain_subpixel_diameter():

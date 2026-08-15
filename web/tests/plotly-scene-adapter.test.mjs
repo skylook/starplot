@@ -525,7 +525,7 @@ test("scatter policy keeps small custom markers SVG and stars or large layers We
   const webgl = runtime.layerToPlotlyTrace(stars, table, scene);
   assert.equal(webgl.type, "scattergl");
   assert.equal(webgl.marker.line.color, "#abcdef");
-  assert.equal(webgl.marker.line.width, 1.25);
+  assert.equal(webgl.marker.line.width, 0);
 
   const large = { ...custom, id: "large", row_count: 1001 };
   assert.equal(runtime.layerToPlotlyTrace(large, table, scene).type, "scattergl");
@@ -852,6 +852,7 @@ function scaleCorrectionScene(opts = {}) {
     dpi = 100,
     markerSize = 10,
     markerEdgeWidth = 1,
+    scatterRowCount = 2,
     lineWidth = 2,
     fontSize = 12,
     strokeColor = "#000",
@@ -859,9 +860,11 @@ function scaleCorrectionScene(opts = {}) {
     polygonEdgeWidth = 1.0,
   } = opts;
   const scatterTable = Arrow.tableFromArrays({
-    x: new Float64Array([1, 2]), y: new Float64Array([3, 4]),
-    size: new Float32Array([markerSize, markerSize]),
-    color_index: new Uint8Array([0, 0]), opacity: new Float32Array([1, 1]),
+    x: new Float64Array(scatterRowCount).fill(1),
+    y: new Float64Array(scatterRowCount).fill(3),
+    size: new Float32Array(scatterRowCount).fill(markerSize),
+    color_index: new Uint8Array(scatterRowCount),
+    opacity: new Float32Array(scatterRowCount).fill(1),
   });
   const lineTable = Arrow.tableFromArrays({
     path_id: new Uint32Array([0, 0]), vertex_index: new Uint32Array([0, 1]),
@@ -880,7 +883,7 @@ function scaleCorrectionScene(opts = {}) {
   const scatterLayer = layer("stars", "scatter", 0, {
     palette_id: "p", symbol: "circle", edge_color: "#fff", edge_width: markerEdgeWidth,
   });
-  scatterLayer.row_count = 2;
+  scatterLayer.row_count = scatterRowCount;
   const lineLayer = layer("grid", "line", 1, { width: lineWidth, color: "#888" });
   const textLayer = layer("labels", "text", 2, {
     font_size: fontSize, font_color: "#fff", stroke_color: strokeColor, stroke_width: strokeWidth,
@@ -1421,7 +1424,7 @@ test("marker sizes are correctly rescaled by the corrected width scale", async (
   const markerSize = 20;
   const markerEdgeWidth = 1.5;
   const { source } = scaleCorrectionScene({
-    sourceAxesWidth: 3600, markerSize, markerEdgeWidth,
+    sourceAxesWidth: 3600, markerSize, markerEdgeWidth, scatterRowCount: 1001,
   });
   const { Plotly, calls } = mockPlotly({
     layoutWidth: 1280, layoutHeight: 800,

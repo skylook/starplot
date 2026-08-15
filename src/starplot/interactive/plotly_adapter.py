@@ -47,6 +47,7 @@ _MAX_INTERACTIVE_HOVER_POINTS = 100_000
 _PLOTLY_MIN_MARKER_DIAMETER = np.float32(1.5)
 _SCATTERGL_MIN_MARKER_DIAMETER = np.float32(1.0)
 _SCATTERGL_SUBPIXEL_COVERAGE_SCALE = np.float32(2.0)
+_SCATTERGL_EDGE_MIN_ROWS = 1001
 _MAX_SVG_ZORDER_POINTS = 100_000
 _MATPLOTLIB_NONE_COLORS = frozenset({"none", "None", "NONE", ""})
 _KNOWN_LEGEND_GROUPS = frozenset(
@@ -589,7 +590,12 @@ class _PlotlyRenderContext:
                 plotly_size,
                 _PLOTLY_MIN_MARKER_DIAMETER,
             ).astype(np.float32, copy=False)
-        edge_width = (layer.style.get("edge_width", 0) or 0) * self._stroke_pixel_scale()
+        edge_width = 0.0
+        if not use_webgl or layer.data.row_count >= _SCATTERGL_EDGE_MIN_ROWS:
+            edge_width = (
+                (layer.style.get("edge_width", 0) or 0)
+                * self._stroke_pixel_scale()
+            )
         marker = dict(
             size=marker_size,
             color=color,

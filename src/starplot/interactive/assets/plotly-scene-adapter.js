@@ -92,6 +92,7 @@
   // per point; this changes neither Scene nor Arrow data.
   const MIN_DENSE_PALETTE_BATCH_ROWS = 100000;
   const MAX_DENSE_PALETTE_BATCHES = 64;
+  const MIN_SCATTERGL_EDGE_ROWS = 1001;
   const layoutEffects = new WeakMap();
   const markerSourceByTrace = new WeakMap();
   const textStrokeByAnnotation = new WeakMap();
@@ -312,7 +313,9 @@
         markerOpacity[index] = opacity[index] * coverage;
       }
     }
-    const edgeWidth = Math.max(0, Number(style.edge_width || 0) * strokeScale);
+    const edgeWidth = useWebgl && Number(layer.row_count ?? table.numRows) < MIN_SCATTERGL_EDGE_ROWS
+      ? 0
+      : Math.max(0, Number(style.edge_width || 0) * strokeScale);
     const transparent = String(style.fill || "").toLowerCase() === "none";
     const hoverAllowed = layer.interactive
       && Number(layer.row_count ?? table.numRows) <= MAX_INTERACTIVE_HOVER_POINTS;
