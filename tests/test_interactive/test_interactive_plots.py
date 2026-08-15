@@ -90,6 +90,24 @@ def test_constellations_records_line_collection():
     assert total_lines > 0
 
 
+def test_line_accepts_public_nested_style_override():
+    """RecordingMixin must preserve MapPlot.line's optional style contract."""
+    from shapely import LineString
+
+    p = _make_map_plot()
+    p.line(
+        geometry=LineString([(70, 0), (80, 10)]),
+        style__line=p.style.constellation_borders,
+    )
+
+    line_commands = [
+        command for command in p._recorder.commands
+        if command.kind == "line_collection"
+    ]
+    assert len(line_commands) == 1
+    assert line_commands[0].style["line_style"] == "--"
+
+
 def test_to_plotly_returns_figure():
     from ibis import _ as ibis_col
     p = _make_map_plot()

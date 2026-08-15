@@ -777,7 +777,7 @@ class RecordingMixin:
     # Method 4: Generic line segments (ecliptic, celestial equator, etc.)
     # ------------------------------------------------------------------
 
-    def line(self, style, coordinates=None, geometry=None, **kwargs):
+    def line(self, style=None, coordinates=None, geometry=None, **kwargs):
         lines_before = len(self.ax.lines)
         super().line(style=style, coordinates=coordinates, geometry=geometry, **kwargs)
         try:
