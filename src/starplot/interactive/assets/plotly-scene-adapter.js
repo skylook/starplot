@@ -726,10 +726,7 @@
     for (let index = 0; index < rows; index += 1) y[index] = yMin + (yMax - yMin) * index / Math.max(1, rows - 1);
     const z = new Array(rows);
     for (let row = 0; row < rows; row += 1) {
-      // Plotly heatmaps expect an ordinary two-dimensional array. Nested
-      // typed rows render, but their colorscale interpolation can collapse
-      // into visible hard bands (most obvious on radial optic gradients).
-      z[row] = new Array(columns);
+      z[row] = new Float32Array(columns);
       for (let col = 0; col < columns; col += 1) {
         let value;
         let valid = true;

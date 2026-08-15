@@ -196,6 +196,25 @@ def test_gradient_compiler_preserves_validated_resolved_geometry():
     assert layer.style["radius"] == 4.0
 
 
+def test_radial_gradient_does_not_append_a_terminal_stop_before_reversal():
+    command = DrawingCommand(
+        kind="gradient",
+        data={
+            "direction": "radial",
+            "color_stops": [(0.0, "#7abfff"), (0.9, "#568feb"), (0.9, "#3f7ee3")],
+        },
+        clip_id=None,
+    )
+
+    layer = SceneCompiler().compile_command(command, 0)
+
+    assert layer.style["color_stops"] == (
+        (0.0, "#7abfff"),
+        (0.9, "#568feb"),
+        (0.9, "#3f7ee3"),
+    )
+
+
 @pytest.mark.parametrize(
     ("data", "message"),
     [

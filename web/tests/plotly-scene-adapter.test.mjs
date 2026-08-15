@@ -597,7 +597,6 @@ test("gradient sampling honors radial center and radius plus Galactic Mollweide 
   const radial = runtime.layerToPlotlyTrace(radialLayer, tables.gradient(), scene);
   assert.equal(radial.x.length, 512);
   assert.equal(radial.y.length, 512);
-  assert.ok(Array.isArray(radial.z[0]), "Plotly heatmaps require ordinary 2-D rows for smooth interpolation");
   let min = { value: Infinity, row: -1, col: -1 };
   for (let row = 0; row < radial.z.length; row += 1) {
     for (let col = 0; col < radial.z[row].length; col += 1) {

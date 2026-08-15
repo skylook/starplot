@@ -704,7 +704,11 @@ class SceneCompiler:
         stops.sort(key=lambda stop: stop[0])
         if stops and stops[0][0] > 0:
             stops.insert(0, (0.0, stops[0][1]))
-        if stops and stops[-1][0] < 1:
+        # Radial rendering halves the authored positions and promotes its last
+        # stop to 1 before reversing the colormap, exactly like Matplotlib.
+        # Appending an endpoint here duplicates the final color and turns the
+        # center half of the reversed gradient into a hard, flat disk.
+        if direction != "radial" and stops and stops[-1][0] < 1:
             stops.append((1.0, stops[-1][1]))
         style["color_stops"] = tuple(stops)
 
