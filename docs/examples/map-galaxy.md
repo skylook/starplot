@@ -10,5 +10,3 @@ title: Galaxy Plot
 ```python
 --8<-- "examples/map_galaxy.py"
 ```
-
-

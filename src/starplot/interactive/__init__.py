@@ -1,0 +1,119 @@
+"""starplot.interactive — Plotly interactive backend for starplot.
+
+Install the optional dependencies::
+
+    pip install starplot[interactive]
+
+Basic usage::
+
+    from starplot.interactive import InteractiveMapPlot, InteractiveZenithPlot
+
+    # InteractiveMapPlot is a drop-in replacement for MapPlot
+    p = InteractiveMapPlot(projection=Miller(), ra_min=60, ra_max=120,
+                           dec_min=-10, dec_max=30)
+    p.stars(where=[_.magnitude < 8])
+    p.constellations()
+    p.export("chart.png")           # static matplotlib PNG (unchanged)
+    p.export_html("chart.html")     # interactive Plotly HTML
+    fig = p.to_plotly()             # plotly.graph_objects.Figure
+"""
+
+from starplot.interactive.plots import (
+    InteractiveMapPlot,
+    InteractiveZenithPlot,
+    InteractiveHorizonPlot,
+    InteractiveOpticPlot,
+)
+from starplot.interactive.commands import DrawingCommand
+from starplot.interactive.recorder import DrawingRecorder
+from starplot.interactive.scene import (
+    ColumnarData,
+    FullResolutionPolicy,
+    InteractionPolicy,
+    LodPolicy,
+    MagnitudeLodPolicy,
+    SceneCapabilities,
+    SceneKind,
+    SceneLayer,
+    ScenePackage,
+    ViewportRequest,
+    readonly_array,
+)
+from starplot.interactive.recording_mixin import RecordingMixin
+from starplot.interactive.plotly_renderer import PlotlyRenderer
+from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+from starplot.interactive.scene_manifest import (
+    CapabilitiesModel,
+    DataSourceModel,
+    LayerManifestModel,
+    SceneManifestModel,
+    build_scene_manifest,
+    canonical_manifest_bytes,
+    parse_scene_manifest,
+    scene_content_hash,
+)
+from starplot.interactive.arrow_transport import (
+    decode_layer_stream,
+    encode_layer_stream,
+    encode_table_stream,
+    layer_content_hash,
+    layer_to_table,
+)
+from starplot.interactive.web_export import (
+    DataMode,
+    ExportResult,
+    LibraryMode,
+    export_scene_html,
+)
+from starplot.interactive.scene_provider import (
+    CatalogDetailProvider,
+    LayerRequest,
+    SceneProvider,
+    SceneResponse,
+)
+from starplot.interactive.scene_validation import LoaderLimits
+
+__all__ = [
+    "InteractiveMapPlot",
+    "InteractiveZenithPlot",
+    "InteractiveHorizonPlot",
+    "InteractiveOpticPlot",
+    "DrawingCommand",
+    "DrawingRecorder",
+    "readonly_array",
+    "ColumnarData",
+    "ViewportRequest",
+    "LodPolicy",
+    "FullResolutionPolicy",
+    "MagnitudeLodPolicy",
+    "InteractionPolicy",
+    "SceneCapabilities",
+    "SceneKind",
+    "SceneLayer",
+    "ScenePackage",
+    "RecordingMixin",
+    "PlotlyRenderer",
+    "PlotlySceneAdapter",
+    "CapabilitiesModel",
+    "DataSourceModel",
+    "LayerManifestModel",
+    "SceneManifestModel",
+    "build_scene_manifest",
+    "canonical_manifest_bytes",
+    "parse_scene_manifest",
+    "scene_content_hash",
+    "decode_layer_stream",
+    "encode_layer_stream",
+    "encode_table_stream",
+    "layer_content_hash",
+    "layer_to_table",
+    "DataMode",
+    "LibraryMode",
+    "ExportResult",
+    "export_scene_html",
+    "CatalogDetailProvider",
+    "LayerRequest",
+    "SceneResponse",
+    "SceneProvider",
+    "LoaderLimits",
+]

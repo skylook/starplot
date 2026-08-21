@@ -76,7 +76,7 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
         self.ax: Axes = None
         """
         The underlying [Matplotlib axes](https://matplotlib.org/stable/api/_as_gen/matplotlib.axes.Axes.html#matplotlib.axes.Axes) that everything is plotted on.
-        
+
         **Important**: Most Starplot plotting functions also specify a transform based on the plot's projection when plotting things on the Matplotlib Axes instance, so use this property at your own risk!
         """
 
@@ -254,6 +254,33 @@ class BasePlot(DebugPlotterMixin, TextPlotterMixin, ABC):
 
         """
         self.logger.debug("Exporting...")
+        # ``bbox_inches='tight'`` changes both the exported canvas dimensions
+        # and the axes' normalized location within it.  Retain that final
+        # geometry so an Interactive*Plot exporting HTML immediately after a
+        # PNG can reproduce the same full canvas rather than only its axes.
+        self.fig.canvas.draw()
+        renderer = self.fig.canvas.get_renderer()
+        tight_bbox = self.fig.get_tightbbox(renderer)
+        axes_bbox = self.ax.get_window_extent(renderer).transformed(
+            self.fig.dpi_scale_trans.inverted()
+        )
+        pad_inches = padding * self.scale
+        self._last_export_geometry = {
+            "tight_bbox_inches": (
+                float(tight_bbox.x0),
+                float(tight_bbox.y0),
+                float(tight_bbox.width),
+                float(tight_bbox.height),
+            ),
+            "axes_bbox_inches": (
+                float(axes_bbox.x0),
+                float(axes_bbox.y0),
+                float(axes_bbox.width),
+                float(axes_bbox.height),
+            ),
+            "padding_inches": float(pad_inches),
+            "dpi": float(DPI),
+        }
         self.fig.savefig(
             filename,
             bbox_inches="tight",

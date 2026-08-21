@@ -1,0 +1,24 @@
+Starplot Plotly.js custom bundle provenance
+===========================================
+
+Source package: plotly.js@3.3.1 from the npm registry
+Source npm shasum: 213176ea82dc08f5ec69de3c3d184cfdbd29044a
+Source tarball SHA-256: a13c95bc90dc2e86b70662055835769dad5b6276a559f7a8ab2e0876d2a75204
+Build dependency lock: tools/plotly_bundle_locks/plotly.js-3.3.1-package-lock.json
+Build dependency lock SHA-256: 7e5041848e294512639ddf8554ea1c535108e0a53f52d26dc40d0cdcbadd212a
+Build Node.js version: v26.5.0
+Build npm version: 11.17.0
+Build normalization: inline CSS identifiers hash package-relative source paths
+Build command: npm run custom-bundle -- --out=starplot --traces=scatter,scattergl,heatmap,table
+Build kind: official non-strict custom bundle
+Included traces: scatter,scattergl,heatmap,table
+Output filename: plotly-starplot-3.3.1.min.js
+Output bytes: 1533024
+Output SHA-256: ffc45171d0db9da906171c160931c6ee12363845fbbdd3173d2035778f5b3e3f
+Output SHA-384 SRI: sha384-Dk6xkxDQEMR0kNe/bO4Epbe/coov2nDjEHkPo/YmgverhnkYWtgNkazNEuz7WKZq
+
+The bundle is generated, not hand-edited. The default build script invocation
+only verifies this tracked output without npm or network access. Rebuild only
+with ``--rebuild`` from the exact source, lock, and toolchain versions above;
+review the trace list and update all hashes together.
+Plotly.js is distributed under the MIT license in PLOTLY_LICENSE.txt.

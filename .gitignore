@@ -99,6 +99,11 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Debug and temporary files
+debug/
+comparison_side_by_side.png
+star_chart_basic_html_screenshot.png
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
@@ -171,3 +176,22 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+.worktrees/
+
+# IDE / agent tooling
+.claude/
+.omc/
+
+# Temporary generated chart files
+/*.png
+/*.html
+*.scene/
+star_chart_basic.html
+star_chart_basic.png
+star_chart_detail.html
+star_chart_detail.png
+
+# Comparison outputs
+comparison_outputs/
+.omx/
+comparison-exports.json

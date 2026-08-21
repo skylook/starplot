@@ -1,3 +1,5 @@
+import os
+
 from PIL import Image, ImageFilter
 
 from starplot import MapPlot, Mollweide, _
@@ -28,7 +30,9 @@ p.stars(
 )
 p.export("map_milky_way_stars.png", padding=0.1, transparent=True)
 
-# apply a median filter to increase contrast
-with Image.open("map_milky_way_stars.png") as img:
-    filtered = img.filter(ImageFilter.MedianFilter(size=5))
-    filtered.save("map_milky_way_stars.png")
+# Keep the published example's contrast pass, but compare the raw Matplotlib
+# render with the raw interactive render in the visual-parity harness.
+if "STARPLOT_COMPARISON_TRANSPORTS" not in os.environ:
+    with Image.open("map_milky_way_stars.png") as img:
+        filtered = img.filter(ImageFilter.MedianFilter(size=5))
+        filtered.save("map_milky_way_stars.png")

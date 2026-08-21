@@ -70,7 +70,7 @@ class ArrowPlotterMixin:
             target_x, target_y = ax_coords[1]
 
             # angle to rotate head
-            angle_radians = np.atan2(target_y - y, target_x - x)
+            angle_radians = np.arctan2(target_y - y, target_x - x)
             angle_degrees = np.degrees(angle_radians)
 
             line_x = [

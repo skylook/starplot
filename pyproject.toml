@@ -39,6 +39,10 @@ dependencies = [
     "astropy-healpix >= 1.1.2"
 ]
 
+[project.optional-dependencies]
+interactive = ["plotly>=6.0", "kaleido>=0.2"]
+visual-parity = ["playwright>=1.50", "scipy>=1.9.0"]
+
 [project.urls]
 Home = "https://starplot.dev"
 Documentation = "https://starplot.dev"
@@ -50,6 +54,10 @@ starplot = "starplot.cli:main"
 [tool.flit.sdist]
 include = [
     "src/starplot/data/library/*.parquet",
+    "src/starplot/interactive/assets/*.js",
+    "src/starplot/interactive/assets/*.md",
+    "src/starplot/interactive/assets/vendor/*.js",
+    "src/starplot/interactive/assets/vendor/*.txt",
 ]
 
 [tool.pytest.ini_options]
