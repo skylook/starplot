@@ -226,6 +226,58 @@ class TestProvenanceSnapshot:
 class TestAtomicPublish:
     """Tests for the staging/atomic publish logic."""
 
+    def test_atomic_publish_rejects_symlink_final_without_touching_target(
+        self, monkeypatch, tmp_path
+    ):
+        output = tmp_path / "comparison_outputs"
+        output.mkdir()
+        monkeypatch.setattr(gen, "OUTPUT", output)
+        staging_root = output / ".staging"
+        staging_root.mkdir()
+        staging = staging_root / "example-abc"
+        staging.mkdir()
+        (staging / "new.txt").write_text("new")
+        external = tmp_path / "external"
+        external.mkdir()
+        (external / "keep.txt").write_text("keep")
+        final = output / "example"
+        final.symlink_to(external, target_is_directory=True)
+        backup = staging_root / "example-abc-backup"
+
+        with pytest.raises(ValueError, match="symlink"):
+            gen._atomic_publish(staging, final, backup)
+
+        assert final.is_symlink()
+        assert (external / "keep.txt").read_text() == "keep"
+        assert (staging / "new.txt").read_text() == "new"
+        assert not backup.exists()
+
+    def test_atomic_publish_rejects_symlink_backup_without_touching_target(
+        self, monkeypatch, tmp_path
+    ):
+        output = tmp_path / "comparison_outputs"
+        output.mkdir()
+        monkeypatch.setattr(gen, "OUTPUT", output)
+        staging_root = output / ".staging"
+        staging_root.mkdir()
+        staging = staging_root / "example-abc"
+        staging.mkdir()
+        (staging / "new.txt").write_text("new")
+        victim = staging_root / "other-staging"
+        victim.mkdir()
+        (victim / "keep.txt").write_text("keep")
+        final = output / "example"
+        backup = staging_root / "example-abc-backup"
+        backup.symlink_to(victim, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="symlink"):
+            gen._atomic_publish(staging, final, backup)
+
+        assert backup.is_symlink()
+        assert (victim / "keep.txt").read_text() == "keep"
+        assert (staging / "new.txt").read_text() == "new"
+        assert not final.exists()
+
     def test_atomic_publish_moves_staging_to_new_final(self, monkeypatch, tmp_path):
         output = tmp_path / "comparison_outputs"
         output.mkdir()

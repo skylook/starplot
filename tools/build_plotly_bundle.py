@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Reproduce the Starplot custom Plotly.js bundle from a pinned npm release.
 
-By default, the script is read-only and verifies the tracked bundle using its
-provenance record.  ``--rebuild`` is required to download the pinned source,
-run the recorded custom-bundle command, and atomically replace the output only
-after its recorded hashes match.
+By default, the script verifies the tracked bundle offline. ``--rebuild``
+requires an explicit temporary work directory and never replaces the tracked
+vendor bundle.
 """
 
 from __future__ import annotations
@@ -83,9 +82,15 @@ def bundle_contract(provenance_path: Path = DEFAULT_PROVENANCE) -> BundleContrac
     if not source:
         raise ValueError("Source package must be 'plotly.js@<version> from the npm registry'")
     version = source.group(1)
+    if version != "3.3.1":
+        raise ValueError("Source package must be plotly.js@3.3.1")
     traces = tuple(trace.strip() for trace in provenance["included_traces"].split(","))
     if not traces or any(not trace for trace in traces) or len(set(traces)) != len(traces):
         raise ValueError("Included traces must be a non-empty comma-separated list without duplicates")
+    if traces != DEFAULT_TRACES:
+        raise ValueError("Included traces must be scatter,scattergl,heatmap,table")
+    if provenance["build_kind"] != "official non-strict custom bundle":
+        raise ValueError("Build kind must be official non-strict custom bundle")
 
     command = re.fullmatch(
         r"npm run custom-bundle -- --out(?:=| )([^ ]+) --traces(?:=| )([^ ]+)",
@@ -94,6 +99,8 @@ def bundle_contract(provenance_path: Path = DEFAULT_PROVENANCE) -> BundleContrac
     if not command:
         raise ValueError("Build command is not a canonical custom-bundle command")
     out_name, command_traces = command.groups()
+    if out_name != DEFAULT_OUT_NAME:
+        raise ValueError("Build command must use --out=starplot")
     if tuple(command_traces.split(",")) != traces:
         raise ValueError("Build command traces do not match Included traces")
 
@@ -334,6 +341,10 @@ def build_custom_bundle(
 
 def publish_bundle(bundle_path: Path, output_path: Path, provenance: dict[str, str]) -> None:
     """Verify a same-filesystem temporary copy, then atomically publish it."""
+    if output_path.resolve() == (
+        DEFAULT_PROVENANCE.parent / bundle_contract().output_filename
+    ).resolve():
+        raise ValueError("refusing to overwrite the tracked vendor bundle")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         dir=output_path.parent,
@@ -351,7 +362,16 @@ def publish_bundle(bundle_path: Path, output_path: Path, provenance: dict[str, s
 
 
 def verify_output_bundle(output_path: Path, provenance: dict[str, str]) -> None:
-    """Fail unless the built bundle matches the recorded hashes."""
+    """Fail unless the bundle matches its recorded size, banner, and hashes."""
+    source = re.fullmatch(
+        r"plotly\.js@([^ ]+) from the npm registry", provenance["source_package"]
+    )
+    if not source:
+        raise ValueError("invalid source package in provenance")
+    expected_banner = f"plotly.js (starplot - minified) v{source.group(1)}".encode()
+    with output_path.open("rb") as file:
+        if expected_banner not in file.read(256):
+            raise ValueError(f"bundle version banner mismatch: expected {expected_banner.decode()}")
     expected_sha256 = provenance["output_sha256"].lower()
     expected_sri = provenance["output_sri"]
     expected_bytes = provenance.get("output_bytes")
@@ -373,6 +393,20 @@ def verify_output_bundle(output_path: Path, provenance: dict[str, str]) -> None:
         raise ValueError(
             f"bundle SRI mismatch: expected {expected_sri}, got {actual_sri}"
         )
+
+
+def verify_existing_bundle(provenance_path: Path = DEFAULT_PROVENANCE) -> Path:
+    """Verify the checked-in bundle and its Plotly MIT license without npm/network."""
+    contract = bundle_contract(provenance_path)
+    bundle = provenance_path.parent / contract.output_filename
+    verify_output_bundle(bundle, contract.provenance)
+    license_path = provenance_path.parent / "PLOTLY_LICENSE.txt"
+    if not license_path.is_file():
+        raise ValueError(f"missing Plotly license: {license_path}")
+    license_text = license_path.read_text(encoding="utf-8")
+    if not license_text.startswith("MIT License\n") or "Plotly Technologies Inc." not in license_text:
+        raise ValueError(f"PLOTLY_LICENSE.txt does not identify Plotly's MIT license: {license_path}")
+    return bundle
 
 
 def build_bundle(
@@ -397,9 +431,9 @@ def build_bundle(
         raise ValueError("out_name must match the provenance Build command")
     if traces is not None and tuple(traces) != contract.traces:
         raise ValueError("traces must match the provenance Included traces")
-    expected_output = provenance_path.parent / contract.output_filename
-    if output_path != expected_output:
-        raise ValueError(f"output_path must be the provenance output: {expected_output}")
+    tracked_output = DEFAULT_PROVENANCE.parent / bundle_contract().output_filename
+    if output_path.resolve() == tracked_output.resolve():
+        raise ValueError("refusing to overwrite the tracked vendor bundle")
     npm_path = _npm_path(npm)
     lock_path = validate_build_environment(contract, npm=npm_path)
 
@@ -450,11 +484,13 @@ def _versioned_bundle_name(version: str, out_name: str = DEFAULT_OUT_NAME) -> st
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--rebuild",
         action="store_true",
-        help="download and rebuild the bundle after validating the pinned toolchain",
+        help="download and rebuild into --work-dir after validating the pinned toolchain",
     )
+    mode.add_argument("--verify-existing", action="store_true", help="verify the existing bundle offline (default)")
     parser.add_argument(
         "--provenance",
         type=Path,
@@ -466,26 +502,48 @@ def main(argv: list[str] | None = None) -> int:
         help="path to npm executable (default: from PATH)",
     )
     parser.add_argument(
-        "--keep-source",
+        "--work-dir",
         type=Path,
-        help="keep downloaded source and build artifacts in this directory",
+        help="temporary rebuild directory under /private/tmp; never the repository",
     )
     args = parser.parse_args(argv)
 
     contract = bundle_contract(args.provenance)
     output = args.provenance.parent / contract.output_filename
     if not args.rebuild:
-        verify_output_bundle(output, contract.provenance)
+        if args.work_dir is not None:
+            parser.error("--work-dir requires --rebuild")
+        verify_existing_bundle(args.provenance)
         print(f"Verified existing bundle: {output}")
         return 0
+
+    if args.work_dir is None:
+        parser.error("--rebuild requires --work-dir")
+    work_dir = args.work_dir.resolve()
+    if not work_dir.is_relative_to(Path("/private/tmp")) or work_dir == Path("/private/tmp"):
+        parser.error("--work-dir must be a directory below /private/tmp")
+    output = work_dir / contract.output_filename
 
     build_bundle(
         output_path=output,
         provenance_path=args.provenance,
         npm=args.npm,
-        keep_source=args.keep_source,
+        keep_source=work_dir,
     )
-    print(f"Rebuilt and verified bundle: {output}")
+    tracked_output = args.provenance.parent / contract.output_filename
+    print(f"Rebuilt and verified temporary bundle: {output}")
+    if output.is_file():
+        if tracked_output.is_file():
+            tracked_hash = _sha256(tracked_output)
+            same = output.stat().st_size == tracked_output.stat().st_size and _sha256(output) == tracked_hash
+            print(
+                "Temporary output is byte-for-byte identical to tracked bundle"
+                if same else "Temporary output differs from tracked bundle"
+            )
+            print(f"Tracked bundle: {tracked_output} ({tracked_output.stat().st_size} bytes, SHA-256 {tracked_hash})")
+        else:
+            print(f"Tracked bundle is missing: {tracked_output}")
+    print("Tracked vendor bundle was not changed")
     return 0
 
 

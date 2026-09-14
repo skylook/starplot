@@ -51,7 +51,18 @@ def _make_tarball(content: bytes, filename: str = "plotly.js-3.3.1.tgz") -> tupl
 
 
 def _bundle_content() -> bytes:
-    return b"/* starplot custom plotly bundle */"
+    return (
+        b"/**\n* plotly.js (starplot - minified) v3.3.1\n"
+        b"* Licensed under the MIT license\n*/\n"
+        b"/* starplot custom plotly bundle */"
+    )
+
+
+def _write_license(directory: Path) -> None:
+    (directory / "PLOTLY_LICENSE.txt").write_text(
+        "MIT License\n\nCopyright (c) Plotly Technologies Inc.\n",
+        encoding="utf-8",
+    )
 
 
 def _bundle_hashes(content: bytes) -> tuple[str, str]:
@@ -139,7 +150,7 @@ def test_bundle_provenance_parser():
     assert parsed["output_sri"] == sri
 
 
-def test_bundle_contract_is_derived_from_and_validated_against_provenance(tmp_path):
+def test_bundle_contract_rejects_unpinned_trace_order(tmp_path):
     bundle = _bundle_content()
     tarball, *_ = _make_tarball(bundle)
     provenance_path = tmp_path / "PLOTLY_CUSTOM_BUNDLE.txt"
@@ -147,22 +158,35 @@ def test_bundle_contract_is_derived_from_and_validated_against_provenance(tmp_pa
         provenance_path, tarball, bundle, "heatmap,scatter,scattergl,table"
     )
 
-    contract = build.bundle_contract(provenance_path)
+    with pytest.raises(ValueError, match="Included traces"):
+        build.bundle_contract(provenance_path)
 
-    assert contract.version == "3.3.1"
-    assert contract.out_name == "starplot"
-    assert contract.traces == ("heatmap", "scatter", "scattergl", "table")
-    assert contract.output_filename == "plotly-starplot-3.3.1.min.js"
+
+def test_bundle_contract_rejects_unpinned_version(tmp_path):
+    bundle = _bundle_content()
+    tarball, *_ = _make_tarball(bundle)
+    provenance_path = tmp_path / "PLOTLY_CUSTOM_BUNDLE.txt"
+    _write_provenance(
+        provenance_path, tarball, bundle, "scatter,scattergl,heatmap,table"
+    )
+    provenance_path.write_text(
+        provenance_path.read_text(encoding="utf-8").replace("3.3.1", "3.3.2"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="plotly.js@3.3.1"):
+        build.bundle_contract(provenance_path)
 
 
 def test_bundle_contract_rejects_a_build_command_that_disagrees_with_traces(tmp_path):
     bundle = _bundle_content()
     tarball, *_ = _make_tarball(bundle)
     provenance_path = tmp_path / "PLOTLY_CUSTOM_BUNDLE.txt"
-    _write_provenance(provenance_path, tarball, bundle, "heatmap,scatter")
+    _write_provenance(provenance_path, tarball, bundle, "scatter,scattergl,heatmap,table")
     provenance_path.write_text(
         provenance_path.read_text(encoding="utf-8").replace(
-            "--traces heatmap,scatter", "--traces scatter,heatmap"
+            "--traces scatter,scattergl,heatmap,table",
+            "--traces heatmap,scatter,scattergl,table",
         ),
         encoding="utf-8",
     )
@@ -316,6 +340,7 @@ def test_main_without_rebuild_verifies_existing_bundle_without_npm(monkeypatch, 
     _write_provenance(provenance_path, tarball, bundle, "scatter,scattergl,heatmap,table")
     output = tmp_path / "plotly-starplot-3.3.1.min.js"
     output.write_bytes(bundle)
+    _write_license(tmp_path)
     monkeypatch.setattr(build, "_npm_path", lambda *_: pytest.fail("npm called"))
 
     assert build.main(["--provenance", str(provenance_path)]) == 0
@@ -328,17 +353,21 @@ def test_main_requires_explicit_rebuild_before_calling_builder(monkeypatch, tmp_
     _write_provenance(provenance_path, tarball, bundle, "scatter,scattergl,heatmap,table")
     output = tmp_path / "plotly-starplot-3.3.1.min.js"
     output.write_bytes(bundle)
+    _write_license(tmp_path)
     rebuilt: list[dict] = []
     monkeypatch.setattr(build, "build_bundle", lambda **kwargs: rebuilt.append(kwargs))
 
     build.main(["--provenance", str(provenance_path)])
     assert rebuilt == []
 
-    build.main(["--provenance", str(provenance_path), "--rebuild"])
+    build.main([
+        "--provenance", str(provenance_path), "--rebuild",
+        "--work-dir", "/private/tmp/starplot-plotly-test-rebuild",
+    ])
     assert len(rebuilt) == 1
 
 
-def test_main_cli_rebuild_derives_the_output_path_from_provenance(monkeypatch, tmp_path):
+def test_main_cli_rebuild_derives_filename_but_uses_temporary_output(monkeypatch, tmp_path):
     bundle = _bundle_content()
     tarball, *_ = _make_tarball(bundle)
     provenance_path = tmp_path / "PLOTLY_CUSTOM_BUNDLE.txt"
@@ -356,9 +385,13 @@ def test_main_cli_rebuild_derives_the_output_path_from_provenance(monkeypatch, t
         "--provenance",
         str(provenance_path),
         "--rebuild",
+        "--work-dir",
+        "/private/tmp/starplot-plotly-test-output",
     ])
 
-    assert built[0]["output_path"] == tmp_path / "plotly-starplot-3.3.1.min.js"
+    assert built[0]["output_path"] == Path(
+        "/private/tmp/starplot-plotly-test-output/plotly-starplot-3.3.1.min.js"
+    )
 
 
 def test_main_cli_rejects_unrecorded_trace_overrides(tmp_path):

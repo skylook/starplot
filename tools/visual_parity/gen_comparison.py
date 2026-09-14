@@ -736,9 +736,11 @@ def _is_under(path: Path, parent: Path) -> bool:
 
 def _atomic_publish(staging: Path, final: Path, backup: Path) -> None:
     """Atomically publish ``staging`` to ``final`` using a same-filesystem backup."""
+    if final.is_symlink() or backup.is_symlink():
+        raise ValueError("publish destination and backup must not be symlinks")
     staging = staging.resolve()
-    final = final.resolve()
-    backup = backup.resolve()
+    final = final.parent.resolve() / final.name
+    backup = backup.parent.resolve() / backup.name
     staging_root = (OUTPUT / ".staging").resolve()
     if not _is_under(staging, staging_root):
         raise ValueError(f"staging path is not under {staging_root}: {staging}")
