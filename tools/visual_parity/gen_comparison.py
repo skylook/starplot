@@ -481,6 +481,15 @@ def _snapshot_provenance(root: Path = ROOT, name: str | None = None) -> dict[str
     }
 
 
+def _normalize_browser_screenshot(path: Path) -> None:
+    """Store screenshots as opaque RGB PNGs for transport-stable comparisons."""
+    from PIL import Image
+
+    with Image.open(path) as screenshot:
+        normalized = crops.composite_on_color(screenshot, (255, 255, 255))
+        normalized.save(path, format="PNG")
+
+
 def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, height: int, transports: tuple[str, ...], html_files: dict[str, str]) -> dict[str, dict]:
     try:
         from playwright.sync_api import sync_playwright
@@ -534,7 +543,9 @@ def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, heig
                         };
                     }""")
                     reports[name] = report
-                    page.screenshot(path=str(folder / f"{name}.png"), full_page=False)
+                    screenshot_path = folder / f"{name}.png"
+                    page.screenshot(path=str(screenshot_path), full_page=False)
+                    _normalize_browser_screenshot(screenshot_path)
                     print(f"  browser {name}: captured", flush=True)
                 finally:
                     context.close()

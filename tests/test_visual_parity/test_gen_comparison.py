@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from PIL import Image
 
 pytest.importorskip("starplot")
 from starplot.interactive.scene import (
@@ -322,7 +323,6 @@ class TestAtomicPublish:
         assert not backup.exists()
         assert (final / "file.txt").read_text() == "new"
         assert not (final / "old.txt").exists()
-
     def test_atomic_publish_restores_backup_on_publish_failure(self, monkeypatch, tmp_path):
         original_replace = os.replace
 
@@ -373,6 +373,17 @@ class TestAtomicPublish:
 
         gen._safe_remove_staging(outside, staging_root=staging_root)
         assert outside.exists()
+
+
+def test_normalize_browser_screenshot_writes_deterministic_rgb_png(tmp_path):
+    screenshot = tmp_path / "browser.png"
+    Image.new("RGBA", (2, 1), (10, 20, 30, 128)).save(screenshot)
+
+    gen._normalize_browser_screenshot(screenshot)
+
+    with Image.open(screenshot) as normalized:
+        assert normalized.mode == "RGB"
+        assert normalized.getpixel((0, 0)) == (132, 137, 142)
 
 
 def test_snapshot_pngs_lists_only_png_files(tmp_path):
