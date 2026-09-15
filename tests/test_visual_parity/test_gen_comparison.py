@@ -414,6 +414,40 @@ def test_capture_browser_screenshot_discards_first_browser_capture(tmp_path):
         assert captured.getpixel((0, 0)) == (0, 255, 0)
 
 
+def test_warm_browser_render_loads_and_closes_a_disposable_context():
+    events = []
+
+    class FakePage:
+        def goto(self, url, *, wait_until, timeout):
+            events.append(("goto", url, wait_until, timeout))
+
+        def wait_for_function(self, predicate, *, timeout):
+            events.append(("wait", predicate, timeout))
+
+    class FakeContext:
+        def new_page(self):
+            events.append("page")
+            return FakePage()
+
+        def close(self):
+            events.append("close")
+
+    class FakeBrowser:
+        def new_context(self, **options):
+            events.append(("context", options))
+            return FakeContext()
+
+    gen._warm_browser_render(FakeBrowser(), "http://example.test/chart.html", 800, 600)
+
+    assert events[0] == (
+        "context",
+        {"viewport": {"width": 800, "height": 600}, "device_scale_factor": 1},
+    )
+    assert events[1] == "page"
+    assert events[2] == ("goto", "http://example.test/chart.html", "load", 300_000)
+    assert events[-1] == "close"
+
+
 def test_snapshot_pngs_lists_only_png_files(tmp_path):
     (tmp_path / "a.png").write_text("")
     (tmp_path / "b.png").write_text("")

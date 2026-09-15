@@ -501,6 +501,23 @@ def _capture_browser_screenshot(page, path: Path) -> None:
     _normalize_browser_screenshot(path)
 
 
+def _warm_browser_render(browser, url: str, width: int, height: int) -> None:
+    """Render one disposable page so evidence contexts share a warm browser."""
+    context = browser.new_context(
+        viewport={"width": width, "height": height},
+        device_scale_factor=1,
+    )
+    try:
+        page = context.new_page()
+        page.goto(url, wait_until="load", timeout=300_000)
+        page.wait_for_function(
+            "() => document.body.dataset.starplotRendered === 'true' || document.body.dataset.starplotError",
+            timeout=300_000,
+        )
+    finally:
+        context.close()
+
+
 def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, height: int, transports: tuple[str, ...], html_files: dict[str, str]) -> dict[str, dict]:
     try:
         from playwright.sync_api import sync_playwright
@@ -514,6 +531,13 @@ def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, heig
     with sync_playwright() as playwright:
         browser = _launch_browser(playwright)
         try:
+            first_transport = transports[0]
+            _warm_browser_render(
+                browser,
+                f"{server.origin}/{html_files[first_transport]}",
+                width,
+                height,
+            )
             for name in transports:
                 page_errors: list[str] = []
                 context = browser.new_context(
