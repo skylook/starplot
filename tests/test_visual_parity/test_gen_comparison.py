@@ -424,6 +424,9 @@ def test_warm_browser_render_loads_and_closes_a_disposable_context():
         def wait_for_function(self, predicate, *, timeout):
             events.append(("wait", predicate, timeout))
 
+        def screenshot(self, *, full_page):
+            events.append(("screenshot", full_page))
+
     class FakeContext:
         def new_page(self):
             events.append("page")
@@ -445,6 +448,7 @@ def test_warm_browser_render_loads_and_closes_a_disposable_context():
     )
     assert events[1] == "page"
     assert events[2] == ("goto", "http://example.test/chart.html", "load", 300_000)
+    assert ("screenshot", False) in events
     assert events[-1] == "close"
 
 

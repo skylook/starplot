@@ -514,6 +514,7 @@ def _warm_browser_render(browser, url: str, width: int, height: int) -> None:
             "() => document.body.dataset.starplotRendered === 'true' || document.body.dataset.starplotError",
             timeout=300_000,
         )
+        page.screenshot(full_page=False)
     finally:
         context.close()
 
