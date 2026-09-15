@@ -386,6 +386,34 @@ def test_normalize_browser_screenshot_writes_deterministic_rgb_png(tmp_path):
         assert normalized.getpixel((0, 0)) == (132, 137, 142)
 
 
+def test_capture_browser_screenshot_discards_first_browser_capture(tmp_path):
+    screenshot = tmp_path / "browser.png"
+
+    class FakePage:
+        def __init__(self):
+            self.calls = 0
+            self.evaluated = []
+
+        def screenshot(self, *, path=None, full_page=False):
+            assert full_page is False
+            self.calls += 1
+            content = (255, 0, 0) if self.calls == 1 else (0, 255, 0)
+            if path is not None:
+                Image.new("RGB", (1, 1), content).save(path)
+            return b"warmup" if path is None else None
+
+        def evaluate(self, script):
+            self.evaluated.append(script)
+
+    page = FakePage()
+    gen._capture_browser_screenshot(page, screenshot)
+
+    assert page.calls == 2
+    assert len(page.evaluated) == 1
+    with Image.open(screenshot) as captured:
+        assert captured.getpixel((0, 0)) == (0, 255, 0)
+
+
 def test_snapshot_pngs_lists_only_png_files(tmp_path):
     (tmp_path / "a.png").write_text("")
     (tmp_path / "b.png").write_text("")

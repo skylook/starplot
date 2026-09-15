@@ -490,6 +490,17 @@ def _normalize_browser_screenshot(path: Path) -> None:
         normalized.save(path, format="PNG")
 
 
+def _capture_browser_screenshot(page, path: Path) -> None:
+    """Warm the browser capture path, wait for paint, then store one stable PNG."""
+    page.screenshot(full_page=False)
+    page.evaluate(
+        """() => document.fonts.ready.then(() => new Promise(resolve =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve))))"""
+    )
+    page.screenshot(path=str(path), full_page=False)
+    _normalize_browser_screenshot(path)
+
+
 def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, height: int, transports: tuple[str, ...], html_files: dict[str, str]) -> dict[str, dict]:
     try:
         from playwright.sync_api import sync_playwright
@@ -544,8 +555,7 @@ def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, heig
                     }""")
                     reports[name] = report
                     screenshot_path = folder / f"{name}.png"
-                    page.screenshot(path=str(screenshot_path), full_page=False)
-                    _normalize_browser_screenshot(screenshot_path)
+                    _capture_browser_screenshot(page, screenshot_path)
                     print(f"  browser {name}: captured", flush=True)
                 finally:
                     context.close()
