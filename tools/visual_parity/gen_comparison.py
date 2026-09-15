@@ -501,8 +501,8 @@ def _capture_browser_screenshot(page, path: Path) -> None:
     _normalize_browser_screenshot(path)
 
 
-def _warm_browser_render(browser, url: str, width: int, height: int) -> None:
-    """Render one disposable page so evidence contexts share a warm browser."""
+def _warm_browser_render(browser, url: str, width: int, height: int):
+    """Keep one disposable rendered context open while evidence is captured."""
     context = browser.new_context(
         viewport={"width": width, "height": height},
         device_scale_factor=1,
@@ -515,8 +515,10 @@ def _warm_browser_render(browser, url: str, width: int, height: int) -> None:
             timeout=300_000,
         )
         page.screenshot(full_page=False)
-    finally:
+    except Exception:
         context.close()
+        raise
+    return context
 
 
 def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, height: int, transports: tuple[str, ...], html_files: dict[str, str]) -> dict[str, dict]:
@@ -531,9 +533,10 @@ def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, heig
     reports: dict[str, dict] = {}
     with sync_playwright() as playwright:
         browser = _launch_browser(playwright)
+        warm_context = None
         try:
             first_transport = transports[0]
-            _warm_browser_render(
+            warm_context = _warm_browser_render(
                 browser,
                 f"{server.origin}/{html_files[first_transport]}",
                 width,
@@ -585,6 +588,8 @@ def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, heig
                 finally:
                     context.close()
         finally:
+            if warm_context is not None:
+                warm_context.close()
             browser.close()
     return reports
 

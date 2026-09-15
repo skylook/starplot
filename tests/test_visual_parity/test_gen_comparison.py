@@ -440,7 +440,9 @@ def test_warm_browser_render_loads_and_closes_a_disposable_context():
             events.append(("context", options))
             return FakeContext()
 
-    gen._warm_browser_render(FakeBrowser(), "http://example.test/chart.html", 800, 600)
+    context = gen._warm_browser_render(
+        FakeBrowser(), "http://example.test/chart.html", 800, 600
+    )
 
     assert events[0] == (
         "context",
@@ -449,6 +451,9 @@ def test_warm_browser_render_loads_and_closes_a_disposable_context():
     assert events[1] == "page"
     assert events[2] == ("goto", "http://example.test/chart.html", "load", 300_000)
     assert ("screenshot", False) in events
+    assert events[-1] == ("screenshot", False)
+
+    context.close()
     assert events[-1] == "close"
 
 
