@@ -1198,6 +1198,14 @@ def _clip_polygons(polygons, clip: ClipGeometry, *, repair_final_artist: bool = 
     clip_shape = _clip_shape(clip)
     result = []
     for rings in polygons:
+        if repair_final_artist and all(
+            clip_shape.covers(LineString([*ring, ring[0]])) for ring in rings
+        ):
+            # A fully visible Matplotlib Path may self-intersect and depend on
+            # its original fill winding. Geometry repair changes that drawing.
+            # No clipping is needed, so keep the artist's path and order.
+            result.append(rings)
+            continue
         polygon = Polygon(rings[0], holes=rings[1:])
         if repair_final_artist and not polygon.is_valid:
             polygon = shapely.make_valid(polygon)

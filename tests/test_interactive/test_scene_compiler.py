@@ -675,6 +675,22 @@ def test_axes_polygon_clip_is_transformed_from_final_data_coordinates():
     assert np.max(y) == pytest.approx(0.75)
 
 
+def test_unclipped_final_artist_keeps_self_intersecting_fill_path():
+    points = ((2.0, -1.0), (4.0, 1.0), (2.0, 1.0), (4.0, -1.0))
+    command = DrawingCommand(
+        kind="polygon",
+        data={"points": points, "final_artist": True},
+        clip_id="plot",
+    )
+
+    scene = SceneCompiler().compile([command], PROJECTION, STYLE, 1200, 800, False)
+    layer = scene.layers[0]
+    x = layer.coordinate_encoding["x"].decode(layer.data.columns["x"])
+    y = layer.coordinate_encoding["y"].decode(layer.data.columns["y"])
+
+    assert np.column_stack((x, y)) == pytest.approx(np.asarray(points))
+
+
 def test_none_recording_clip_is_ignored_at_scene_boundary():
     command = DrawingCommand(
         kind="line",
