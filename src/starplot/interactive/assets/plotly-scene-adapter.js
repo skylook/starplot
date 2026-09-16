@@ -1048,9 +1048,18 @@
     const margin = footerOffset && !hasRecordedViewportMargin
       ? { l: sideMargin, r: sideMargin, t: 30, b: 10, autoexpand: false }
       : (viewport.margin || { l: 10, r: 10, t: 10, b: 10, autoexpand: false });
-    const yDomain = footerOffset && !hasRecordedViewportMargin
+    let yDomain = footerOffset && !hasRecordedViewportMargin
       ? [footerOffset, 1]
       : undefined;
+    const titleTops = scene.layers
+      .filter((layer) => layer.group_id === "title")
+      .map((layer) => Number(styleFor(layer, scene).axes_domain_top))
+      .filter((top) => Number.isFinite(top) && top > 0 && top <= 1);
+    if (titleTops.length) {
+      const bottom = yDomain ? yDomain[0] : 0;
+      const top = Math.min(yDomain ? yDomain[1] : 1, ...titleTops);
+      if (top > bottom) yDomain = [bottom, top];
+    }
     const sourceAxesWidth = Number(viewport.source_axes_width || viewport.reference_width || 1);
     const compiledTargetAxesWidth = Number(viewport.target_axes_width || sourceAxesWidth);
     let targetAxesWidth = compiledTargetAxesWidth;

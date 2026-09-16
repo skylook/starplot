@@ -718,6 +718,25 @@ test("info table widths and viewport layout remain exact in initial Plotly reser
   assert.equal(effects.annotations.length, 2);
 });
 
+test("title layer reserves the recorded axes domain before browser render", async () => {
+  const calls = [];
+  const Plotly = { async react(...args) { calls.push(args); }, async restyle() {}, async relayout() {} };
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
+  const title = layer("title", "text", 10, { axes_domain_top: 0.88, xref: "paper", yref: "paper" });
+  title.group_id = "title";
+  title.coordinate_space = "paper";
+  const source = {
+    async loadManifest() {
+      return { viewport: { margin: { l: 20, r: 20, t: 20, b: 20 } }, styles: [], palettes: [], clips: [], layers: [title] };
+    },
+    async *loadLayer() { for (const batch of tables.text().batches) yield batch; },
+  };
+
+  await runtime.renderScene("chart", source, { Plotly });
+
+  assert.deepEqual(Array.from(calls[0][2].yaxis.domain), [0, 0.88]);
+});
+
 test("browser legend preserves recorded styling and magnitude scale", async () => {
   const calls = [];
   const Plotly = {
