@@ -104,6 +104,16 @@ _BROWSER_TIMEOUT_MS = 300_000
 # Cold measurements must be taken from a fresh browser context.  A minimum of
 # three cold samples gives a representative first-load distribution.
 _BROWSER_COLD_SAMPLES = 3
+_ALLOWED_UNTRACKED_REVIEW_DOCS = frozenset(
+    {
+        "INTERACTIVE_BACKEND_FINAL_REVIEW_HANDOFF.md",
+        "INTERACTIVE_BACKEND_REVIEW.md",
+        "REVIEW_PROMPT.md",
+        "VISUAL_REVIEW_HANDOFF.md",
+        "WEAK_AGENT_VISUAL_PARITY_HANDOFF.md",
+        "parity-review.md",
+    }
+)
 _SCENE_COMPILE_SEMANTICS = "Native SceneCompiler.compile timing."
 _PLOT_TYPE_COVERAGE_SEMANTICS = (
     "One small, real recording/SceneCompiler/PlotlySceneAdapter sample for each "
@@ -408,9 +418,9 @@ def _tracked_worktree_dirty() -> bool:
             continue
         path = line[3:].split(" -> ")[-1]
         if line.startswith("?? "):
-            if path.startswith("src/starplot/"):
-                return True
-            continue
+            if path in _ALLOWED_UNTRACKED_REVIEW_DOCS:
+                continue
+            return True
         if path.startswith("benchmarks/baselines/") and path.endswith(".json"):
             continue
         return True
@@ -803,9 +813,14 @@ def _require_nonempty_browser_repeats(
     mapping: dict,
     key: str,
     label: str,
+    *,
+    exact_count: int | None = None,
 ) -> list[float]:
     values = mapping.get(key)
-    if not isinstance(values, list) or not values:
+    if exact_count is not None:
+        if not isinstance(values, list) or len(values) != exact_count:
+            raise ValueError(f"{label} must contain exactly {exact_count} repeats")
+    elif not isinstance(values, list) or not values:
         raise ValueError(f"{label} must contain at least one repeat")
     return [
         _require_nonnegative_number({"value": value}, "value", label)
@@ -838,7 +853,10 @@ def _validate_browser_series(
         )
 
     raw_cold = _require_nonempty_browser_repeats(
-        series, "raw_cold_repeats_ms", f"{label}.raw_cold_repeats_ms"
+        series,
+        "raw_cold_repeats_ms",
+        f"{label}.raw_cold_repeats_ms",
+        exact_count=_BROWSER_COLD_SAMPLES,
     )
     raw_warm = _require_nonempty_browser_repeats(
         series, "raw_warm_repeats_ms", f"{label}.raw_warm_repeats_ms"
@@ -1400,8 +1418,8 @@ def compare_results(before: dict, after: dict) -> list[str]:
         PERFORMANCE_GATES["browser_complete_render_p95_ms_max"],
     )
     maximum_gate(
-        "browser_cold_start",
-        "browser.cold_start_ms",
+        "browser_cold_start_p95",
+        "browser.cold_start_p95_ms",
         PERFORMANCE_GATES["browser_cold_start_ms_max"],
     )
     ratio_gate(

@@ -73,6 +73,16 @@ _RUNTIME_PACKAGES = (
     "playwright",
 )
 
+_ALLOWED_UNTRACKED_REVIEW_DOCS = frozenset(
+    {
+        "INTERACTIVE_BACKEND_FINAL_REVIEW_HANDOFF.md",
+        "INTERACTIVE_BACKEND_REVIEW.md",
+        "REVIEW_PROMPT.md",
+        "VISUAL_REVIEW_HANDOFF.md",
+        "WEAK_AGENT_VISUAL_PARITY_HANDOFF.md",
+        "parity-review.md",
+    }
+)
 
 def _validate_name(name: str) -> None:
     if not name or not _EXAMPLE_NAME_RE.fullmatch(name):
@@ -91,14 +101,18 @@ def _git_stdout(root: Path, *args: str) -> str:
 
 
 def _tracked_dirty(root: Path = ROOT) -> bool:
-    """Return whether the tracked tree has uncommitted changes.
-
-    Untracked and ignored files are ignored so that documentation work in
-    progress does not block visual evidence generation.
-    """
-    return bool(
-        _git_stdout(root, "status", "--porcelain", "--untracked-files=no").strip()
+    """Return whether anything except the declared review docs is dirty."""
+    status = _git_stdout(
+        root, "status", "--porcelain=v1", "--untracked-files=all"
     )
+    for line in status.splitlines():
+        if not line:
+            continue
+        path = line[3:].split(" -> ")[-1]
+        if line.startswith("?? ") and path in _ALLOWED_UNTRACKED_REVIEW_DOCS:
+            continue
+        return True
+    return False
 
 
 def _tracked_visual_code_entries(root: Path = ROOT) -> list[tuple[str, bytes]]:

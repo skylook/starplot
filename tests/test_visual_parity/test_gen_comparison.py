@@ -87,7 +87,7 @@ def _fake_git_stdout(fake_root: Path, dirty: bool = False):
         assert root == fake_root
         if args == ("rev-parse", "HEAD"):
             return "a" * 40 + "\n"
-        if args == ("status", "--porcelain", "--untracked-files=no"):
+        if args == ("status", "--porcelain=v1", "--untracked-files=all"):
             return " M src/starplot/interactive/__init__.py\n" if dirty else ""
         if args[:2] == ("ls-files", "--"):
             return _ls_files_response(root)
@@ -196,8 +196,8 @@ class TestProvenanceSnapshot:
             calls.append(args)
             if args == ("rev-parse", "HEAD"):
                 return "a" * 40 + "\n"
-            if args == ("status", "--porcelain", "--untracked-files=no"):
-                return ""
+            if args == ("status", "--porcelain=v1", "--untracked-files=all"):
+                return "?? INTERACTIVE_BACKEND_FINAL_REVIEW_HANDOFF.md\n"
             if args[:2] == ("ls-files", "--"):
                 return _ls_files_response(root)
             raise AssertionError(args)
@@ -208,7 +208,23 @@ class TestProvenanceSnapshot:
 
         assert prov["tracked_dirty"] is False
         status_calls = [c for c in calls if c and c[0] == "status"]
-        assert all("--untracked-files=no" in c for c in status_calls)
+        assert all("--untracked-files=all" in c for c in status_calls)
+
+    def test_untracked_pythonpath_hook_triggers_dirty(self, monkeypatch, fake_root):
+        def fake_git_stdout(root, *args):
+            if args == ("rev-parse", "HEAD"):
+                return "a" * 40 + "\n"
+            if args == ("status", "--porcelain=v1", "--untracked-files=all"):
+                return "?? src/sitecustomize.py\n"
+            if args[:2] == ("ls-files", "--"):
+                return _ls_files_response(root)
+            raise AssertionError(args)
+
+        monkeypatch.setattr(gen, "_git_stdout", fake_git_stdout)
+
+        prov = gen._snapshot_provenance(fake_root, "horizon_double_cluster")
+
+        assert prov["tracked_dirty"] is True
 
     def test_tracked_dirty_detects_modified_tracked_file(self, monkeypatch, fake_root):
         monkeypatch.setattr(gen, "_git_stdout", _fake_git_stdout(fake_root, dirty=True))
