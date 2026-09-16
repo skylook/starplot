@@ -1004,6 +1004,9 @@ class _PlotlyRenderContext:
             x = self._paper_x(x)
         if yref == "paper":
             y = self._paper_y(y, layer)
+            title_top = style.get("axes_domain_top")
+            if layer.group_id == "title" and self.viewport.get("margin") and title_top:
+                y /= float(title_top)
         point_scale = self._font_pixel_scale()
         xshift = style.get("xshift", float(layer.data["x_offset"][0]) * point_scale)
         yshift = style.get("yshift", float(layer.data["y_offset"][0]) * point_scale)

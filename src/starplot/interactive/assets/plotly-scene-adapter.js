@@ -646,9 +646,13 @@
       const horizontal = variant.ha || style.ha || "center";
       const vertical = variant.va || style.va || "center";
       const weight = String(variant.font_weight || style.font_weight || "normal").toLowerCase();
+      const titleTop = Number(style.axes_domain_top);
+      const titleY = layer.group_id === "title" && (scene.viewport || {}).margin
+        && yref === "paper" && Number.isFinite(titleTop) && titleTop > 0
+        ? y[index] / titleTop : y[index];
       annotations.push({
         x: x[index], y: (yref === "paper" && (layer.group_id === "horizon-bottom" || layer.group_id === "horizon-label" || style.footer)
-          ? y[index] + Number(settings.footerOffset || 0) : y[index]), text: weight === "bold" ? `<b>${text[index]}</b>` : text[index],
+          ? titleY + Number(settings.footerOffset || 0) : titleY), text: weight === "bold" ? `<b>${text[index]}</b>` : text[index],
         showarrow: false, xref, yref,
         xanchor: ["left", "right", "center"].includes(horizontal) ? horizontal : "center",
         yanchor: ({ center: "middle", baseline: "bottom", bottom: "bottom", top: "top" })[vertical] || "middle",
@@ -1055,7 +1059,7 @@
       .filter((layer) => layer.group_id === "title")
       .map((layer) => Number(styleFor(layer, scene).axes_domain_top))
       .filter((top) => Number.isFinite(top) && top > 0 && top <= 1);
-    if (titleTops.length) {
+    if (titleTops.length && !hasRecordedViewportMargin) {
       const bottom = yDomain ? yDomain[0] : 0;
       const top = Math.min(yDomain ? yDomain[1] : 1, ...titleTops);
       if (top > bottom) yDomain = [bottom, top];

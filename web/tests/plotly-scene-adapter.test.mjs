@@ -718,7 +718,7 @@ test("info table widths and viewport layout remain exact in initial Plotly reser
   assert.equal(effects.annotations.length, 2);
 });
 
-test("title layer reserves the recorded axes domain before browser render", async () => {
+test("recorded top margin positions title above an unshrunk plot", async () => {
   const calls = [];
   const Plotly = { async react(...args) { calls.push(args); }, async restyle() {}, async relayout() {} };
   const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
@@ -729,12 +729,19 @@ test("title layer reserves the recorded axes domain before browser render", asyn
     async loadManifest() {
       return { viewport: { margin: { l: 20, r: 20, t: 20, b: 20 } }, styles: [], palettes: [], clips: [], layers: [title] };
     },
-    async *loadLayer() { for (const batch of tables.text().batches) yield batch; },
+    async *loadLayer() {
+      yield Arrow.tableFromArrays({
+        x: new Float64Array([0.5]), y: new Float64Array([1]), text: ["Title"],
+        x_offset: new Float32Array([0]), y_offset: new Float32Array([0]),
+        rotation: new Float32Array([0]), style_id: new Uint16Array([0]),
+      }).batches[0];
+    },
   };
 
   await runtime.renderScene("chart", source, { Plotly });
 
-  assert.deepEqual(Array.from(calls[0][2].yaxis.domain), [0, 0.88]);
+  assert.equal(calls[0][2].yaxis.domain, undefined);
+  assert.ok(Math.abs(calls[0][2].annotations[0].y - 1 / 0.88) < 1e-6);
 });
 
 test("browser legend preserves recorded styling and magnitude scale", async () => {

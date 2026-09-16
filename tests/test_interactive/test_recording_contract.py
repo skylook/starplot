@@ -389,6 +389,25 @@ def test_reference_lines_record_final_matplotlib_dash_and_width():
     )
 
 
+def test_reference_line_labels_record_surviving_axes_text():
+    plot = make_zenith_plot()
+
+    plot.ecliptic()
+    plot.celestial_equator()
+
+    for gid, label in (
+        ("ecliptic-label", "ECLIPTIC"),
+        ("celestial-equator-label", "CELESTIAL EQUATOR"),
+    ):
+        artist = next(text for text in plot.ax.texts if text.get_text() == label)
+        command = next(cmd for cmd in plot._recorder.commands if cmd.gid == gid)
+        assert command.space is CoordinateSpace.AXES
+        assert command.data["text"] == artist.get_text()
+        assert command.data["x"] == pytest.approx(artist.get_position()[0])
+        assert command.data["y"] == pytest.approx(artist.get_position()[1])
+        assert command.style["rotation"] == pytest.approx(artist.get_rotation())
+
+
 def test_arrow_retains_its_matplotlib_background_clip_contract():
     plot = make_map_plot()
 
