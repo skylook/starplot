@@ -943,6 +943,10 @@
         size: scaledLegendFont(viewport.legend_title_font_size, 11),
       },
     };
+    if (viewport.magnitude_scale) {
+      legend.tracegroupgap = Math.round(52 * fontPixelScale);
+      legend.itemwidth = Math.max(30, Math.round(85 * fontPixelScale));
+    }
     if (legendTitle) {
       legend.title = {
         text: legendTitle,
@@ -1000,7 +1004,7 @@
           line: { color: scale.edge_color || "#000000", width: 0 },
         },
         name: escapePlotlyText(scale.labels[index]),
-        legendgroup: "star-magnitude-scale",
+        legendgroup: `star-magnitude-scale-${index}`,
         legendgrouptitle: index === 0 ? { text: title } : undefined,
         legendrank: 2000 + index,
         showlegend: true,
@@ -1527,6 +1531,11 @@
         traces.get(layer.id) || [placeholder(layer, forceSvgTracePlane)]),
       ...magnitudeScaleTraces(scene, metrics),
     ];
+    const legendLabels = scene.viewport.legend_labels || [];
+    for (const trace of plotlyTraces) {
+      const index = legendLabels.indexOf(trace.name);
+      if (index >= 0) trace.legendrank = 100 + index;
+    }
     const polygonShapeIndices = _polygonShapeIndices(layout, orderedEffects);
     const correctionState = {
       scene, slots, traces, plotlyTraces, layout, metrics,

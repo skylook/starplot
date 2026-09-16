@@ -793,6 +793,8 @@ test("browser legend preserves recorded styling and magnitude scale", async () =
   assert.equal(layout.legend.title.text, "Legend &lt;unsafe&gt;");
   assert.equal(layout.legend.title.font.size, 12);
   assert.equal(layout.legend.grouptitlefont.size, 12);
+  assert.equal(layout.legend.tracegroupgap, 26);
+  assert.equal(layout.legend.itemwidth, 43);
   assert.deepEqual(Array.from(traces, (trace) => trace.name), ["0", "&lt;one&gt;"]);
   assert.deepEqual(Array.from(traces[0].marker.size), [5]);
   assert.equal(
@@ -800,6 +802,28 @@ test("browser legend preserves recorded styling and magnitude scale", async () =
     "Magnitude &lt;unsafe&gt;",
   );
   assert.ok(traces.every((trace) => trace.meta.starplot_ui === "magnitude-scale"));
+  assert.notEqual(traces[0].legendgroup, traces[1].legendgroup);
+});
+
+test("legend ranks follow recorded Matplotlib order, not scene zorder", async () => {
+  const calls = [];
+  const Plotly = { async react(...args) { calls.push(args); }, async restyle() {}, async relayout() {} };
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
+  const open = layer("open", "scatter", 1, { legend_label: "Open Cluster", symbol: "circle" });
+  const star = layer("star", "scatter", 2, { legend_label: "Star", symbol: "circle" });
+  const source = {
+    async loadManifest() {
+      return { viewport: { show_legend: true, legend_labels: ["Star", "Open Cluster"] },
+        styles: [], palettes: [], clips: [], layers: [open, star] };
+    },
+    async *loadLayer() { for (const batch of tables.scatter().batches) yield batch; },
+  };
+
+  await runtime.renderScene("chart", source, { Plotly });
+
+  const traces = calls[0][1];
+  assert.ok(traces.find((trace) => trace.name === "Star").legendrank
+    < traces.find((trace) => trace.name === "Open Cluster").legendrank);
 });
 
 test("layout-only layers keep one trace slot and emit valid annotations and footer shapes", async () => {

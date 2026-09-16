@@ -370,6 +370,25 @@ def test_recorded_top_margin_places_plotly_title_above_full_height_axes():
     assert figure.layout.annotations[0].y == pytest.approx(1 / 0.88)
 
 
+def test_magnitude_legend_keeps_separate_rows_and_recorded_spacing():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    magnitude = {"title": "Star Magnitude", "labels": ["0", "1"],
+                 "sizes": [20, 10]}
+    scene = ScenePackage(
+        (), {}, {**STYLE, "magnitude_scale": magnitude},
+        {"reference_width": 500, "reference_height": 500,
+         "magnitude_scale": magnitude},
+        {}, {},
+    )
+
+    figure = PlotlySceneAdapter().render(scene)
+
+    assert figure.layout.legend.tracegroupgap > 0
+    assert figure.layout.legend.itemwidth >= 30
+    assert figure.data[0].legendgroup != figure.data[1].legendgroup
+
+
 def test_scene_adapter_escapes_all_html_metacharacters_in_text_sinks():
     from starplot.interactive.plotly_adapter import PlotlySceneAdapter
 
