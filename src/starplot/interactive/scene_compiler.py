@@ -654,6 +654,14 @@ class SceneCompiler:
         self, command: DrawingCommand, context: _CompileContext, index: int
     ) -> _CompiledParts:
         polygons = _polygon_groups(command.data)
+        if command.data.get("compound_fill") and len(polygons) == 2:
+            # Matplotlib's two oppositely wound subpaths cancel where they
+            # overlap. Treating them as independent Plotly fills hides that
+            # gap (and any marker visible behind it).
+            compound = Polygon(polygons[0][0]).symmetric_difference(
+                Polygon(polygons[1][0])
+            )
+            polygons = _polygon_geometry_groups(compound)
         clip = _command_clip(command, context)
         if clip is not None:
             polygons = _clip_polygons(

@@ -457,6 +457,23 @@ def test_camera_border_records_the_final_matplotlib_patch_exactly_once():
     assert not any(c.gid == "custom-patch" for c in plot._recorder.commands)
 
 
+def test_multisubpath_custom_patch_keeps_compound_fill_contract():
+    from matplotlib.path import Path
+    from matplotlib.patches import PathPatch
+
+    plot = make_map_plot()
+    vertices = [(70, 0), (90, 0), (90, 10), (70, 10),
+                (80, 0), (80, 10), (100, 10), (100, 0)]
+    codes = [Path.MOVETO, Path.LINETO, Path.LINETO, Path.LINETO] * 2
+    plot.ax.add_patch(PathPatch(Path(vertices, codes), facecolor="lightblue"))
+
+    plot._record_untracked_path_patches()
+
+    command = next(c for c in plot._recorder.commands if c.gid == "custom-patch")
+    assert command.data["compound_fill"] is True
+    assert len(command.data["rings"]) == 2
+
+
 def test_zenith_horizon_uses_axes_circle_and_fixed_cardinal_positions():
     """ZenithPlot must not fall through to its MapPlot superclass branch."""
     plot = make_zenith_plot()
