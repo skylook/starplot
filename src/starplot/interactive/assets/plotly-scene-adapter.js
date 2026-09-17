@@ -944,8 +944,10 @@
       },
     };
     if (viewport.magnitude_scale) {
-      legend.tracegroupgap = Math.round(52 * fontPixelScale);
-      legend.itemwidth = Math.max(30, Math.round(85 * fontPixelScale));
+      legend.tracegroupgap = Math.round(66 * fontPixelScale);
+      legend.itemwidth = Math.max(30, Math.round(165 * fontPixelScale));
+      legend.x = 1.026;
+      legend.xanchor = "left";
     }
     if (legendTitle) {
       legend.title = {
@@ -1260,6 +1262,31 @@
     });
   }
 
+  function _applyLegendSymbolScale(target, scene) {
+    if (!scene.viewport.magnitude_scale || !target || typeof target.querySelectorAll !== "function") return;
+    const traces = new Map((target._fullData || []).filter((trace) => trace.showlegend)
+      .map((trace) => [String(trace.name), trace]));
+    target.querySelectorAll("g.legend g.traces").forEach((row) => {
+      const label = row.querySelector("text.legendtext");
+      const name = label && label.getAttribute("data-unformatted");
+      const trace = traces.get(name);
+      if (!trace || !trace.marker) return;
+      const rawSize = Array.isArray(trace.marker.size) || ArrayBuffer.isView(trace.marker.size)
+        ? Number(trace.marker.size[0]) : Number(trace.marker.size);
+      if (!(rawSize > 0)) return;
+      const desired = Math.min(80, rawSize * (trace.meta && trace.meta.starplot_ui === "magnitude-scale" ? 0.5 : 1));
+      row.querySelectorAll("path.scatterpts").forEach((symbol) => {
+        const box = symbol.getBBox();
+        if (!(box.width > 0)) return;
+        const base = symbol.dataset.starplotBaseTransform || symbol.getAttribute("transform") || "";
+        symbol.dataset.starplotBaseTransform = base;
+        const factor = desired / box.width;
+        symbol.setAttribute("transform", `${base} scale(${factor})`);
+        symbol.setAttribute("vector-effect", "non-scaling-stroke");
+      });
+    });
+  }
+
   async function _applyScaleCorrection(target, state, Plotly) {
     const { scene, slots, traces, layout, metrics } = state;
     const fullLayout = target._fullLayout;
@@ -1446,6 +1473,7 @@
         if (!context) return;
         await _applyScaleCorrection(target, context.state, context.Plotly);
         _applyEllipseMarkerTransforms(target);
+        _applyLegendSymbolScale(target, context.state.scene);
         _applyAnnotationStrokes(target, context.state);
       }, 150);
     };
@@ -1582,6 +1610,7 @@
     // This also runs on window resize (see _applyScaleCorrection).
     await _applyScaleCorrection(target, correctionState, Plotly);
     _applyEllipseMarkerTransforms(target);
+    _applyLegendSymbolScale(target, scene);
     // Debounced resize re-correction.  Plotly's responsive:true only resizes
     // the canvas; it does not recompute font/marker/stroke scales.
     _ensureResizeHandler(target, correctionState, Plotly);
@@ -1607,6 +1636,7 @@
     _applyScaleCorrection,
     _applyAnnotationStrokes,
     _applyEllipseMarkerTransforms,
+    _applyLegendSymbolScale,
     magnitudeScaleTraces,
   });
 })(typeof window !== "undefined" ? window : globalThis);

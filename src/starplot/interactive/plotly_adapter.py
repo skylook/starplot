@@ -354,8 +354,10 @@ class _PlotlyRenderContext:
             )
         if self.viewport.get("magnitude_scale"):
             font_scale = self._font_pixel_scale()
-            legend["tracegroupgap"] = round(52 * font_scale)
-            legend["itemwidth"] = max(30, round(85 * font_scale))
+            legend["tracegroupgap"] = round(66 * font_scale)
+            legend["itemwidth"] = max(30, round(165 * font_scale))
+            legend["x"] = 1.026
+            legend["xanchor"] = "left"
 
         self.fig.update_layout(
             plot_bgcolor=background,

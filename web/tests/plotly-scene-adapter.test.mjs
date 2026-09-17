@@ -793,8 +793,9 @@ test("browser legend preserves recorded styling and magnitude scale", async () =
   assert.equal(layout.legend.title.text, "Legend &lt;unsafe&gt;");
   assert.equal(layout.legend.title.font.size, 12);
   assert.equal(layout.legend.grouptitlefont.size, 12);
-  assert.equal(layout.legend.tracegroupgap, 26);
-  assert.equal(layout.legend.itemwidth, 43);
+  assert.equal(layout.legend.tracegroupgap, 33);
+  assert.equal(layout.legend.itemwidth, 83);
+  assert.equal(layout.legend.x, 1.026);
   assert.deepEqual(Array.from(traces, (trace) => trace.name), ["0", "&lt;one&gt;"]);
   assert.deepEqual(Array.from(traces[0].marker.size), [5]);
   assert.equal(
@@ -824,6 +825,33 @@ test("legend ranks follow recorded Matplotlib order, not scene zorder", async ()
   const traces = calls[0][1];
   assert.ok(traces.find((trace) => trace.name === "Star").legendrank
     < traces.find((trace) => trace.name === "Open Cluster").legendrank);
+});
+
+test("legend symbols restore recorded size without compounding on resize", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const attributes = new Map([["transform", "translate(64,0)"]]);
+  const symbol = {
+    dataset: {},
+    getBBox() { return { width: 16 }; },
+    getAttribute(name) { return attributes.get(name); },
+    setAttribute(name, value) { attributes.set(name, value); },
+  };
+  const row = {
+    querySelector() { return { getAttribute() { return "0"; } }; },
+    querySelectorAll() { return [symbol]; },
+  };
+  const target = {
+    _fullData: [{ name: "0", showlegend: true, marker: { size: [120] },
+      meta: { starplot_ui: "magnitude-scale" } }],
+    querySelectorAll() { return [row]; },
+  };
+  const scene = { viewport: { magnitude_scale: { sizes: [120] } } };
+
+  runtime._applyLegendSymbolScale(target, scene);
+  assert.equal(attributes.get("transform"), "translate(64,0) scale(3.75)");
+  assert.equal(attributes.get("vector-effect"), "non-scaling-stroke");
+  runtime._applyLegendSymbolScale(target, scene);
+  assert.equal(attributes.get("transform"), "translate(64,0) scale(3.75)");
 });
 
 test("layout-only layers keep one trace slot and emit valid annotations and footer shapes", async () => {
