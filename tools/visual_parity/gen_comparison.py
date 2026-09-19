@@ -50,6 +50,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "comparison_outputs"
 ALL_TRANSPORTS = ("inline", "external", "provider")
 _EXAMPLE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_TRANSPORT_BORDER_MAX_CHANNEL_DELTA = 2
 
 _VISUAL_CODE_FINGERPRINT_SCOPE = (
     "src/starplot/interactive",
@@ -608,6 +609,60 @@ def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, heig
     return reports
 
 
+def _image_diff_stats(left: np.ndarray, right: np.ndarray) -> dict:
+    """Return precise RGB diff metrics, including whether noise is border-only."""
+    if left.shape != right.shape:
+        raise ValueError(f"array shape mismatch {left.shape} vs {right.shape}")
+    delta = np.abs(left.astype(np.int16) - right.astype(np.int16))
+    different = np.any(delta != 0, axis=2)
+    different_pixels = int(np.count_nonzero(different))
+    bbox = None
+    border_only = True
+    if different_pixels:
+        ys, xs = np.where(different)
+        bbox = (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max()))
+        interior = different.copy()
+        interior[[0, -1], :] = False
+        interior[:, [0, -1]] = False
+        border_only = not bool(np.any(interior))
+    return {
+        "mean": float(delta.mean()),
+        "different_pixels": different_pixels,
+        "different_pixel_percent": float(different.mean() * 100),
+        "max_channel_delta": int(delta.max(initial=0)),
+        "bbox": bbox,
+        "border_only": border_only,
+    }
+
+
+def _assert_transport_screenshot_consistency(
+    left_name: str, right_name: str, stats: dict
+) -> None:
+    """Allow only bounded one-pixel viewport-edge capture noise."""
+    if stats["different_pixels"] == 0:
+        return
+    if stats["max_channel_delta"] > _TRANSPORT_BORDER_MAX_CHANNEL_DELTA:
+        raise AssertionError(
+            f"{left_name} vs {right_name}: max channel delta "
+            f"{stats['max_channel_delta']} exceeds "
+            f"{_TRANSPORT_BORDER_MAX_CHANNEL_DELTA}"
+        )
+    if not stats["border_only"]:
+        raise AssertionError(
+            f"{left_name} vs {right_name}: interior pixels differ; {stats}"
+        )
+
+
+def _format_image_diff(stats: dict) -> str:
+    bbox = "none" if stats["bbox"] is None else ",".join(map(str, stats["bbox"]))
+    return (
+        f"mean={stats['mean']:.6f}; pixels={stats['different_pixels']} "
+        f"({stats['different_pixel_percent']:.5f}%); "
+        f"max={stats['max_channel_delta']}; bbox={bbox}; "
+        f"border_only={str(stats['border_only']).lower()}"
+    )
+
+
 def _write_diff(folder: Path, name: str, transports: tuple[str, ...], exports: dict) -> None:
     from contextlib import ExitStack
     from PIL import Image
@@ -616,12 +671,12 @@ def _write_diff(folder: Path, name: str, transports: tuple[str, ...], exports: d
         # Composite onto white to match the background used by crops.diff_stats.
         left_rgb = crops.composite_on_color(left, (255, 255, 255))
         right_rgb = crops.composite_on_color(right, (255, 255, 255))
-        left_array = np.asarray(left_rgb, dtype=np.float32)
-        right_array = np.asarray(right_rgb, dtype=np.float32)
+        left_array = np.asarray(left_rgb)
+        right_array = np.asarray(right_rgb)
         if left_array.shape != right_array.shape:
-            return f"size mismatch {left.size} vs {right.size}"
-        delta = np.abs(left_array - right_array)
-        return f"mean={delta.mean():.2f}; nonzero={np.count_nonzero(delta) / delta.size * 100:.2f}%"
+            return f"size mismatch {left.size} vs {right.size}", None
+        stats = _image_diff_stats(left_array, right_array)
+        return _format_image_diff(stats), stats
 
     # Prefer the Plotly static snapshot when kaleido produced one; otherwise fall
     # back to the matplotlib export from the Interactive*Plot class.
@@ -640,19 +695,25 @@ def _write_diff(folder: Path, name: str, transports: tuple[str, ...], exports: d
             for transport in transports
         }
 
-        rows.append(("orig vs interactive", compare(original, interactive.resize(original.size, Image.Resampling.LANCZOS))))
+        rows.append(("orig vs interactive", compare(original, interactive.resize(original.size, Image.Resampling.LANCZOS))[0]))
         if plotly_path:
-            rows.append(("orig vs interactive_matplotlib", compare(original, static_interactive.resize(original.size, Image.Resampling.LANCZOS))))
+            rows.append(("orig vs interactive_matplotlib", compare(original, static_interactive.resize(original.size, Image.Resampling.LANCZOS))[0]))
         for transport_name, image in browser_images.items():
             orig_for_browser = original.resize(image.size, Image.Resampling.LANCZOS)
-            rows.append((f"orig vs {transport_name}", compare(orig_for_browser, image)))
+            rows.append((f"orig vs {transport_name}", compare(orig_for_browser, image)[0]))
         for transport_name, image in browser_images.items():
-            rows.append((f"interactive vs {transport_name}", compare(interactive.resize(image.size, Image.Resampling.LANCZOS), image)))
+            rows.append((f"interactive vs {transport_name}", compare(interactive.resize(image.size, Image.Resampling.LANCZOS), image)[0]))
         if plotly_path:
-            rows.append(("interactive_matplotlib vs interactive", compare(static_interactive.resize(interactive.size, Image.Resampling.LANCZOS), interactive)))
+            rows.append(("interactive_matplotlib vs interactive", compare(static_interactive.resize(interactive.size, Image.Resampling.LANCZOS), interactive)[0]))
         for index, left_name in enumerate(transports):
             for right_name in transports[index + 1:]:
-                rows.append((f"{left_name} vs {right_name}", compare(browser_images[left_name], browser_images[right_name])))
+                result, stats = compare(browser_images[left_name], browser_images[right_name])
+                if stats is None:
+                    raise AssertionError(
+                        f"{left_name} vs {right_name}: transport screenshot {result}"
+                    )
+                _assert_transport_screenshot_consistency(left_name, right_name, stats)
+                rows.append((f"{left_name} vs {right_name}", f"{result}; gate=PASS"))
     (folder / "diff.md").write_text(
         "\n".join([f"# {name} transport diff", "", "| pair | diagnostic |", "|---|---|"] + [f"| {label} | {result} |" for label, result in rows]) + "\n",
         encoding="utf-8",

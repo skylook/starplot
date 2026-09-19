@@ -402,6 +402,42 @@ def test_normalize_browser_screenshot_writes_deterministic_rgb_png(tmp_path):
         assert normalized.getpixel((0, 0)) == (132, 137, 142)
 
 
+def test_transport_screenshot_diff_reports_small_border_noise_precisely():
+    left = np.zeros((4, 5, 3), dtype=np.uint8)
+    right = left.copy()
+    right[-1, :, :] = 2
+
+    stats = gen._image_diff_stats(left, right)
+
+    assert stats == {
+        "mean": 0.5,
+        "different_pixels": 5,
+        "different_pixel_percent": 25.0,
+        "max_channel_delta": 2,
+        "bbox": (0, 3, 4, 3),
+        "border_only": True,
+    }
+    gen._assert_transport_screenshot_consistency("inline", "external", stats)
+
+
+def test_transport_screenshot_gate_rejects_interior_or_large_differences():
+    interior = np.zeros((4, 5, 3), dtype=np.uint8)
+    interior[1, 2, :] = 1
+    interior_stats = gen._image_diff_stats(np.zeros_like(interior), interior)
+    with pytest.raises(AssertionError, match="interior pixels differ"):
+        gen._assert_transport_screenshot_consistency(
+            "inline", "external", interior_stats
+        )
+
+    border = np.zeros((4, 5, 3), dtype=np.uint8)
+    border[0, 0, :] = 3
+    border_stats = gen._image_diff_stats(np.zeros_like(border), border)
+    with pytest.raises(AssertionError, match="max channel delta 3 exceeds 2"):
+        gen._assert_transport_screenshot_consistency(
+            "inline", "provider", border_stats
+        )
+
+
 def test_capture_browser_screenshot_discards_first_browser_capture(tmp_path):
     screenshot = tmp_path / "browser.png"
 
