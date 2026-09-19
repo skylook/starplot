@@ -869,7 +869,7 @@
     // Normalize legend visibility so it matches the Python adapter: a named
     // trace appears once and only if its name is in the allowed label list.
     const viewport = scene.viewport || {};
-    const legendLabels = viewport.legend_labels || [];
+    const legendLabels = (viewport.legend_labels || []).map(escapePlotlyText);
     const shown = settings.shownLegendNames;
     const allowLegend = Boolean(viewport.show_legend || viewport.showlegend);
     for (const trace of traces) {
@@ -1559,7 +1559,7 @@
         traces.get(layer.id) || [placeholder(layer, forceSvgTracePlane)]),
       ...magnitudeScaleTraces(scene, metrics),
     ];
-    const legendLabels = scene.viewport.legend_labels || [];
+    const legendLabels = (scene.viewport.legend_labels || []).map(escapePlotlyText);
     for (const trace of plotlyTraces) {
       const index = legendLabels.indexOf(trace.name);
       if (index >= 0) trace.legendrank = 100 + index;

@@ -810,11 +810,11 @@ test("legend ranks follow recorded Matplotlib order, not scene zorder", async ()
   const calls = [];
   const Plotly = { async react(...args) { calls.push(args); }, async restyle() {}, async relayout() {} };
   const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
-  const open = layer("open", "scatter", 1, { legend_label: "Open Cluster", symbol: "circle" });
-  const star = layer("star", "scatter", 2, { legend_label: "Star", symbol: "circle" });
+  const open = layer("open", "scatter", 1, { legend_label: "Open <Cluster>", symbol: "circle" });
+  const star = layer("star", "scatter", 2, { legend_label: "Star & Planet", symbol: "circle" });
   const source = {
     async loadManifest() {
-      return { viewport: { show_legend: true, legend_labels: ["Star", "Open Cluster"] },
+      return { viewport: { show_legend: true, legend_labels: ["Star & Planet", "Open <Cluster>"] },
         styles: [], palettes: [], clips: [], layers: [open, star] };
     },
     async *loadLayer() { for (const batch of tables.scatter().batches) yield batch; },
@@ -823,8 +823,11 @@ test("legend ranks follow recorded Matplotlib order, not scene zorder", async ()
   await runtime.renderScene("chart", source, { Plotly });
 
   const traces = calls[0][1];
-  assert.ok(traces.find((trace) => trace.name === "Star").legendrank
-    < traces.find((trace) => trace.name === "Open Cluster").legendrank);
+  const starTrace = traces.find((trace) => trace.name === "Star &amp; Planet");
+  const openTrace = traces.find((trace) => trace.name === "Open &lt;Cluster&gt;");
+  assert.equal(starTrace.showlegend, true);
+  assert.equal(openTrace.showlegend, true);
+  assert.ok(starTrace.legendrank < openTrace.legendrank);
 });
 
 test("legend symbols restore recorded size without compounding on resize", async () => {

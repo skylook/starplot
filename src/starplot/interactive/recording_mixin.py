@@ -488,7 +488,7 @@ class RecordingMixin:
                 alpha = patch.get_alpha()
                 fc = patch.get_facecolor()
                 compound_fill = False
-                if fill and len(rings) == 2:
+                if fill and len(rings) >= 2:
                     signed_areas = []
                     for ring in rings:
                         points = np.asarray(ring)
@@ -496,7 +496,10 @@ class RecordingMixin:
                             points[:, 0] * np.roll(points[:, 1], -1)
                             - np.roll(points[:, 0], -1) * points[:, 1]
                         )))
-                    compound_fill = signed_areas[0] * signed_areas[1] < 0
+                    compound_fill = (
+                        any(area > 0 for area in signed_areas)
+                        and any(area < 0 for area in signed_areas)
+                    )
                 # Remove embedded alpha from the color strings; Plotly applies
                 # the separate `alpha` style as trace/shape opacity, and we
                 # don't want to multiply them.

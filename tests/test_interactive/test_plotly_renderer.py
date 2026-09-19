@@ -421,6 +421,26 @@ def test_renderer_uses_explicit_matplotlib_legend_and_magnitude_scale():
     assert fig.data[-2].legendgrouptitle.font.size == fig.layout.legend.title.font.size
 
 
+def test_renderer_ranks_escaped_legend_labels_in_recorded_order():
+    labels = ["Star & Planet", "Open <Cluster>"]
+    commands = [
+        DrawingCommand(
+            kind="scatter",
+            data={"x": [index], "y": [index], "sizes": [10], "colors": ["#fff"], "alphas": [1.0]},
+            style={"legend_label": label},
+            metadata=[{}],
+            gid=f"legend-{index}",
+        )
+        for index, label in enumerate(reversed(labels))
+    ]
+
+    fig = PlotlyRenderer(PROJ_INFO, {**STYLE_INFO, "legend_labels": labels}).render(commands)
+    shown = [trace for trace in fig.data if trace.showlegend]
+
+    assert [trace.name for trace in shown] == ["Open &lt;Cluster&gt;", "Star &amp; Planet"]
+    assert shown[1].legendrank < shown[0].legendrank
+
+
 def test_renderer_gradient_no_traces_without_proj_info():
     """Gradient without projected axis bounds should not add traces."""
     cmd = DrawingCommand(

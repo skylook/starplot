@@ -474,6 +474,25 @@ def test_multisubpath_custom_patch_keeps_compound_fill_contract():
     assert len(command.data["rings"]) == 2
 
 
+def test_multisubpath_custom_patch_keeps_multiple_holes():
+    from matplotlib.path import Path
+    from matplotlib.patches import PathPatch
+
+    plot = make_map_plot()
+    outer = [(70, 0), (100, 0), (100, 20), (70, 20)]
+    hole_a = [(75, 5), (75, 9), (79, 9), (79, 5)]
+    hole_b = [(90, 5), (90, 9), (94, 9), (94, 5)]
+    vertices = [*outer, *hole_a, *hole_b]
+    codes = [Path.MOVETO, Path.LINETO, Path.LINETO, Path.LINETO] * 3
+    plot.ax.add_patch(PathPatch(Path(vertices, codes), facecolor="lightblue"))
+
+    plot._record_untracked_path_patches()
+
+    command = next(c for c in plot._recorder.commands if c.gid == "custom-patch")
+    assert command.data["compound_fill"] is True
+    assert len(command.data["rings"]) == 3
+
+
 def test_zenith_horizon_uses_axes_circle_and_fixed_cardinal_positions():
     """ZenithPlot must not fall through to its MapPlot superclass branch."""
     plot = make_zenith_plot()

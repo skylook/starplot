@@ -219,7 +219,10 @@ class _PlotlyRenderContext:
         for layer in self.scene.layers:
             self._add_layer(layer)
         self._add_interactive_features()
-        legend_labels = self.viewport.get("legend_labels", ())
+        legend_labels = [
+            _html_escape(label)
+            for label in self.viewport.get("legend_labels", ())
+        ]
         for trace in self.fig.data:
             if trace.name in legend_labels:
                 trace.legendrank = 100 + legend_labels.index(trace.name)
