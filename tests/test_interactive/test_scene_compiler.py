@@ -675,6 +675,79 @@ def test_axes_polygon_clip_is_transformed_from_final_data_coordinates():
     assert np.max(y) == pytest.approx(0.75)
 
 
+def test_unclipped_final_artist_keeps_self_intersecting_fill_path():
+    points = ((2.0, -1.0), (4.0, 1.0), (2.0, 1.0), (4.0, -1.0))
+    command = DrawingCommand(
+        kind="polygon",
+        data={"points": points, "final_artist": True},
+        clip_id="plot",
+    )
+
+    scene = SceneCompiler().compile([command], PROJECTION, STYLE, 1200, 800, False)
+    layer = scene.layers[0]
+    x = layer.coordinate_encoding["x"].decode(layer.data.columns["x"])
+    y = layer.coordinate_encoding["y"].decode(layer.data.columns["y"])
+
+    assert np.column_stack((x, y)) == pytest.approx(np.asarray(points))
+
+
+def test_opposite_winding_compound_fill_excludes_overlap():
+    left = ((1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0))
+    right_reversed = ((2.0, 1.0), (2.0, 3.0), (4.0, 3.0), (4.0, 1.0))
+    command = DrawingCommand(
+        kind="polygon",
+        data={"points": left, "rings": (left, right_reversed),
+              "compound_fill": True, "final_artist": True},
+        clip_id="plot",
+    )
+
+    scene = SceneCompiler().compile([command], PROJECTION, STYLE, 1200, 800, False)
+    layer = scene.layers[0]
+    x = layer.coordinate_encoding["x"].decode(layer.data.columns["x"])
+    y = layer.coordinate_encoding["y"].decode(layer.data.columns["y"])
+    polygon_ids = layer.data.columns["polygon_id"]
+    area = sum(
+        shapely.geometry.Polygon(np.column_stack((x[polygon_ids == polygon_id],
+                                                  y[polygon_ids == polygon_id]))).area
+        for polygon_id in np.unique(polygon_ids)
+    )
+
+    assert area == pytest.approx(4.0)
+
+
+def test_compound_fill_preserves_two_oppositely_wound_holes():
+    outer = ((0.0, -5.0), (10.0, -5.0), (10.0, 5.0), (0.0, 5.0))
+    hole_a = ((2.0, -3.0), (2.0, -1.0), (4.0, -1.0), (4.0, -3.0))
+    hole_b = ((6.0, -3.0), (6.0, -1.0), (8.0, -1.0), (8.0, -3.0))
+    command = DrawingCommand(
+        kind="polygon",
+        data={
+            "points": outer,
+            "rings": (outer, hole_a, hole_b),
+            "compound_fill": True,
+            "final_artist": True,
+        },
+        clip_id="plot",
+    )
+
+    scene = SceneCompiler().compile([command], PROJECTION, STYLE, 1200, 800, False)
+    layer = scene.layers[0]
+    x = layer.coordinate_encoding["x"].decode(layer.data.columns["x"])
+    y = layer.coordinate_encoding["y"].decode(layer.data.columns["y"])
+    polygon_ids = layer.data.columns["polygon_id"]
+    ring_ids = layer.data.columns["ring_id"]
+    polygons = []
+    for polygon_id in np.unique(polygon_ids):
+        mask = polygon_ids == polygon_id
+        rings = [
+            np.column_stack((x[mask & (ring_ids == ring_id)], y[mask & (ring_ids == ring_id)]))
+            for ring_id in np.unique(ring_ids[mask])
+        ]
+        polygons.append(shapely.geometry.Polygon(rings[0], holes=rings[1:]))
+
+    assert sum(polygon.area for polygon in polygons) == pytest.approx(92.0)
+
+
 def test_none_recording_clip_is_ignored_at_scene_boundary():
     command = DrawingCommand(
         kind="line",

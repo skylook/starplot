@@ -718,6 +718,32 @@ test("info table widths and viewport layout remain exact in initial Plotly reser
   assert.equal(effects.annotations.length, 2);
 });
 
+test("recorded top margin positions title above an unshrunk plot", async () => {
+  const calls = [];
+  const Plotly = { async react(...args) { calls.push(args); }, async restyle() {}, async relayout() {} };
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
+  const title = layer("title", "text", 10, { axes_domain_top: 0.88, xref: "paper", yref: "paper" });
+  title.group_id = "title";
+  title.coordinate_space = "paper";
+  const source = {
+    async loadManifest() {
+      return { viewport: { margin: { l: 20, r: 20, t: 20, b: 20 } }, styles: [], palettes: [], clips: [], layers: [title] };
+    },
+    async *loadLayer() {
+      yield Arrow.tableFromArrays({
+        x: new Float64Array([0.5]), y: new Float64Array([1]), text: ["Title"],
+        x_offset: new Float32Array([0]), y_offset: new Float32Array([0]),
+        rotation: new Float32Array([0]), style_id: new Uint16Array([0]),
+      }).batches[0];
+    },
+  };
+
+  await runtime.renderScene("chart", source, { Plotly });
+
+  assert.equal(calls[0][2].yaxis.domain, undefined);
+  assert.ok(Math.abs(calls[0][2].annotations[0].y - 1 / 0.88) < 1e-6);
+});
+
 test("browser legend preserves recorded styling and magnitude scale", async () => {
   const calls = [];
   const Plotly = {
@@ -767,6 +793,9 @@ test("browser legend preserves recorded styling and magnitude scale", async () =
   assert.equal(layout.legend.title.text, "Legend &lt;unsafe&gt;");
   assert.equal(layout.legend.title.font.size, 12);
   assert.equal(layout.legend.grouptitlefont.size, 12);
+  assert.equal(layout.legend.tracegroupgap, 33);
+  assert.equal(layout.legend.itemwidth, 83);
+  assert.equal(layout.legend.x, 1.026);
   assert.deepEqual(Array.from(traces, (trace) => trace.name), ["0", "&lt;one&gt;"]);
   assert.deepEqual(Array.from(traces[0].marker.size), [5]);
   assert.equal(
@@ -774,6 +803,58 @@ test("browser legend preserves recorded styling and magnitude scale", async () =
     "Magnitude &lt;unsafe&gt;",
   );
   assert.ok(traces.every((trace) => trace.meta.starplot_ui === "magnitude-scale"));
+  assert.notEqual(traces[0].legendgroup, traces[1].legendgroup);
+});
+
+test("legend ranks follow recorded Matplotlib order, not scene zorder", async () => {
+  const calls = [];
+  const Plotly = { async react(...args) { calls.push(args); }, async restyle() {}, async relayout() {} };
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"], { Plotly });
+  const open = layer("open", "scatter", 1, { legend_label: "Open <Cluster>", symbol: "circle" });
+  const star = layer("star", "scatter", 2, { legend_label: "Star & Planet", symbol: "circle" });
+  const source = {
+    async loadManifest() {
+      return { viewport: { show_legend: true, legend_labels: ["Star & Planet", "Open <Cluster>"] },
+        styles: [], palettes: [], clips: [], layers: [open, star] };
+    },
+    async *loadLayer() { for (const batch of tables.scatter().batches) yield batch; },
+  };
+
+  await runtime.renderScene("chart", source, { Plotly });
+
+  const traces = calls[0][1];
+  const starTrace = traces.find((trace) => trace.name === "Star &amp; Planet");
+  const openTrace = traces.find((trace) => trace.name === "Open &lt;Cluster&gt;");
+  assert.equal(starTrace.showlegend, true);
+  assert.equal(openTrace.showlegend, true);
+  assert.ok(starTrace.legendrank < openTrace.legendrank);
+});
+
+test("legend symbols restore recorded size without compounding on resize", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const attributes = new Map([["transform", "translate(64,0)"]]);
+  const symbol = {
+    dataset: {},
+    getBBox() { return { width: 16 }; },
+    getAttribute(name) { return attributes.get(name); },
+    setAttribute(name, value) { attributes.set(name, value); },
+  };
+  const row = {
+    querySelector() { return { getAttribute() { return "0"; } }; },
+    querySelectorAll() { return [symbol]; },
+  };
+  const target = {
+    _fullData: [{ name: "0", showlegend: true, marker: { size: [120] },
+      meta: { starplot_ui: "magnitude-scale" } }],
+    querySelectorAll() { return [row]; },
+  };
+  const scene = { viewport: { magnitude_scale: { sizes: [120] } } };
+
+  runtime._applyLegendSymbolScale(target, scene);
+  assert.equal(attributes.get("transform"), "translate(64,0) scale(3.75)");
+  assert.equal(attributes.get("vector-effect"), "non-scaling-stroke");
+  runtime._applyLegendSymbolScale(target, scene);
+  assert.equal(attributes.get("transform"), "translate(64,0) scale(3.75)");
 });
 
 test("layout-only layers keep one trace slot and emit valid annotations and footer shapes", async () => {

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from PIL import Image
 
 pytest.importorskip("starplot")
 from starplot.interactive.scene import (
@@ -86,7 +87,7 @@ def _fake_git_stdout(fake_root: Path, dirty: bool = False):
         assert root == fake_root
         if args == ("rev-parse", "HEAD"):
             return "a" * 40 + "\n"
-        if args == ("status", "--porcelain", "--untracked-files=no"):
+        if args == ("status", "--porcelain=v1", "--untracked-files=all"):
             return " M src/starplot/interactive/__init__.py\n" if dirty else ""
         if args[:2] == ("ls-files", "--"):
             return _ls_files_response(root)
@@ -195,8 +196,8 @@ class TestProvenanceSnapshot:
             calls.append(args)
             if args == ("rev-parse", "HEAD"):
                 return "a" * 40 + "\n"
-            if args == ("status", "--porcelain", "--untracked-files=no"):
-                return ""
+            if args == ("status", "--porcelain=v1", "--untracked-files=all"):
+                return "?? INTERACTIVE_BACKEND_FINAL_REVIEW_HANDOFF.md\n"
             if args[:2] == ("ls-files", "--"):
                 return _ls_files_response(root)
             raise AssertionError(args)
@@ -207,7 +208,23 @@ class TestProvenanceSnapshot:
 
         assert prov["tracked_dirty"] is False
         status_calls = [c for c in calls if c and c[0] == "status"]
-        assert all("--untracked-files=no" in c for c in status_calls)
+        assert all("--untracked-files=all" in c for c in status_calls)
+
+    def test_untracked_pythonpath_hook_triggers_dirty(self, monkeypatch, fake_root):
+        def fake_git_stdout(root, *args):
+            if args == ("rev-parse", "HEAD"):
+                return "a" * 40 + "\n"
+            if args == ("status", "--porcelain=v1", "--untracked-files=all"):
+                return "?? src/sitecustomize.py\n"
+            if args[:2] == ("ls-files", "--"):
+                return _ls_files_response(root)
+            raise AssertionError(args)
+
+        monkeypatch.setattr(gen, "_git_stdout", fake_git_stdout)
+
+        prov = gen._snapshot_provenance(fake_root, "horizon_double_cluster")
+
+        assert prov["tracked_dirty"] is True
 
     def test_tracked_dirty_detects_modified_tracked_file(self, monkeypatch, fake_root):
         monkeypatch.setattr(gen, "_git_stdout", _fake_git_stdout(fake_root, dirty=True))
@@ -225,6 +242,58 @@ class TestProvenanceSnapshot:
 
 class TestAtomicPublish:
     """Tests for the staging/atomic publish logic."""
+
+    def test_atomic_publish_rejects_symlink_final_without_touching_target(
+        self, monkeypatch, tmp_path
+    ):
+        output = tmp_path / "comparison_outputs"
+        output.mkdir()
+        monkeypatch.setattr(gen, "OUTPUT", output)
+        staging_root = output / ".staging"
+        staging_root.mkdir()
+        staging = staging_root / "example-abc"
+        staging.mkdir()
+        (staging / "new.txt").write_text("new")
+        external = tmp_path / "external"
+        external.mkdir()
+        (external / "keep.txt").write_text("keep")
+        final = output / "example"
+        final.symlink_to(external, target_is_directory=True)
+        backup = staging_root / "example-abc-backup"
+
+        with pytest.raises(ValueError, match="symlink"):
+            gen._atomic_publish(staging, final, backup)
+
+        assert final.is_symlink()
+        assert (external / "keep.txt").read_text() == "keep"
+        assert (staging / "new.txt").read_text() == "new"
+        assert not backup.exists()
+
+    def test_atomic_publish_rejects_symlink_backup_without_touching_target(
+        self, monkeypatch, tmp_path
+    ):
+        output = tmp_path / "comparison_outputs"
+        output.mkdir()
+        monkeypatch.setattr(gen, "OUTPUT", output)
+        staging_root = output / ".staging"
+        staging_root.mkdir()
+        staging = staging_root / "example-abc"
+        staging.mkdir()
+        (staging / "new.txt").write_text("new")
+        victim = staging_root / "other-staging"
+        victim.mkdir()
+        (victim / "keep.txt").write_text("keep")
+        final = output / "example"
+        backup = staging_root / "example-abc-backup"
+        backup.symlink_to(victim, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="symlink"):
+            gen._atomic_publish(staging, final, backup)
+
+        assert backup.is_symlink()
+        assert (victim / "keep.txt").read_text() == "keep"
+        assert (staging / "new.txt").read_text() == "new"
+        assert not final.exists()
 
     def test_atomic_publish_moves_staging_to_new_final(self, monkeypatch, tmp_path):
         output = tmp_path / "comparison_outputs"
@@ -270,7 +339,6 @@ class TestAtomicPublish:
         assert not backup.exists()
         assert (final / "file.txt").read_text() == "new"
         assert not (final / "old.txt").exists()
-
     def test_atomic_publish_restores_backup_on_publish_failure(self, monkeypatch, tmp_path):
         original_replace = os.replace
 
@@ -321,6 +389,124 @@ class TestAtomicPublish:
 
         gen._safe_remove_staging(outside, staging_root=staging_root)
         assert outside.exists()
+
+
+def test_normalize_browser_screenshot_writes_deterministic_rgb_png(tmp_path):
+    screenshot = tmp_path / "browser.png"
+    Image.new("RGBA", (2, 1), (10, 20, 30, 128)).save(screenshot)
+
+    gen._normalize_browser_screenshot(screenshot)
+
+    with Image.open(screenshot) as normalized:
+        assert normalized.mode == "RGB"
+        assert normalized.getpixel((0, 0)) == (132, 137, 142)
+
+
+def test_transport_screenshot_diff_reports_small_border_noise_precisely():
+    left = np.zeros((4, 5, 3), dtype=np.uint8)
+    right = left.copy()
+    right[-1, :, :] = 2
+
+    stats = gen._image_diff_stats(left, right)
+
+    assert stats == {
+        "mean": 0.5,
+        "different_pixels": 5,
+        "different_pixel_percent": 25.0,
+        "max_channel_delta": 2,
+        "bbox": (0, 3, 4, 3),
+        "border_only": True,
+    }
+    gen._assert_transport_screenshot_consistency("inline", "external", stats)
+
+
+def test_transport_screenshot_gate_rejects_interior_or_large_differences():
+    interior = np.zeros((4, 5, 3), dtype=np.uint8)
+    interior[1, 2, :] = 1
+    interior_stats = gen._image_diff_stats(np.zeros_like(interior), interior)
+    with pytest.raises(AssertionError, match="interior pixels differ"):
+        gen._assert_transport_screenshot_consistency(
+            "inline", "external", interior_stats
+        )
+
+    border = np.zeros((4, 5, 3), dtype=np.uint8)
+    border[0, 0, :] = 3
+    border_stats = gen._image_diff_stats(np.zeros_like(border), border)
+    with pytest.raises(AssertionError, match="max channel delta 3 exceeds 2"):
+        gen._assert_transport_screenshot_consistency(
+            "inline", "provider", border_stats
+        )
+
+
+def test_capture_browser_screenshot_discards_first_browser_capture(tmp_path):
+    screenshot = tmp_path / "browser.png"
+
+    class FakePage:
+        def __init__(self):
+            self.calls = 0
+            self.evaluated = []
+
+        def screenshot(self, *, path=None, full_page=False):
+            assert full_page is False
+            self.calls += 1
+            content = (255, 0, 0) if self.calls == 1 else (0, 255, 0)
+            if path is not None:
+                Image.new("RGB", (1, 1), content).save(path)
+            return b"warmup" if path is None else None
+
+        def evaluate(self, script):
+            self.evaluated.append(script)
+
+    page = FakePage()
+    gen._capture_browser_screenshot(page, screenshot)
+
+    assert page.calls == 2
+    assert len(page.evaluated) == 1
+    with Image.open(screenshot) as captured:
+        assert captured.getpixel((0, 0)) == (0, 255, 0)
+
+
+def test_warm_browser_render_loads_and_closes_a_disposable_context():
+    events = []
+
+    class FakePage:
+        def goto(self, url, *, wait_until, timeout):
+            events.append(("goto", url, wait_until, timeout))
+
+        def wait_for_function(self, predicate, *, timeout):
+            events.append(("wait", predicate, timeout))
+
+        def screenshot(self, *, full_page):
+            events.append(("screenshot", full_page))
+
+    class FakeContext:
+        def new_page(self):
+            events.append("page")
+            return FakePage()
+
+        def close(self):
+            events.append("close")
+
+    class FakeBrowser:
+        def new_context(self, **options):
+            events.append(("context", options))
+            return FakeContext()
+
+    context = gen._warm_browser_render(
+        FakeBrowser(), "http://example.test/chart.html", 800, 600
+    )
+
+    assert events[0] == (
+        "context",
+        {"viewport": {"width": 800, "height": 600}, "device_scale_factor": 1},
+    )
+    assert events[1] == "page"
+    assert events[2] == ("goto", "http://example.test/chart.html", "load", 300_000)
+    assert ("screenshot", False) in events
+    assert events[-1] == ("screenshot", False)
+
+    context.close()
+    assert events[-1] == "close"
 
 
 def test_snapshot_pngs_lists_only_png_files(tmp_path):

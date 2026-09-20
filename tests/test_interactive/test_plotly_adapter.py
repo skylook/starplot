@@ -340,6 +340,55 @@ def _compile(command, *, width=500, height=500):
     return SceneCompiler().compile([command], PROJECTION, STYLE, width, height, False)
 
 
+def test_recorded_top_margin_places_plotly_title_above_full_height_axes():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    title = SceneLayer(
+        id="title", kind=SceneKind.TEXT, group_id="title", zorder=10,
+        load_priority=0, space=CoordinateSpace.PAPER, clip_id=None,
+        style={
+            "axes_domain_top": 0.88, "xref": "paper", "yref": "paper",
+            "font_size": 20, "ha": "center", "va": "top",
+        },
+        data=ColumnarData.from_mapping({
+            "x": np.array([0.5]), "y": np.array([1.0]),
+            "text": np.array(["Title"]),
+            "rotation": np.array([0.0]),
+            "x_offset": np.array([0.0]), "y_offset": np.array([0.0]),
+        }),
+    )
+    scene = ScenePackage(
+        (title,), {}, STYLE,
+        {"reference_width": 500, "reference_height": 500,
+         "margin": {"l": 20, "r": 20, "t": 100, "b": 20}},
+        {}, {},
+    )
+
+    figure = PlotlySceneAdapter().render(scene)
+
+    assert figure.layout.yaxis.domain is None
+    assert figure.layout.annotations[0].y == pytest.approx(1 / 0.88)
+
+
+def test_magnitude_legend_keeps_separate_rows_and_recorded_spacing():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    magnitude = {"title": "Star Magnitude", "labels": ["0", "1"],
+                 "sizes": [20, 10]}
+    scene = ScenePackage(
+        (), {}, {**STYLE, "magnitude_scale": magnitude},
+        {"reference_width": 500, "reference_height": 500,
+         "magnitude_scale": magnitude},
+        {}, {},
+    )
+
+    figure = PlotlySceneAdapter().render(scene)
+
+    assert figure.layout.legend.tracegroupgap > 0
+    assert figure.layout.legend.itemwidth >= 30
+    assert figure.data[0].legendgroup != figure.data[1].legendgroup
+
+
 def test_scene_adapter_escapes_all_html_metacharacters_in_text_sinks():
     from starplot.interactive.plotly_adapter import PlotlySceneAdapter
 

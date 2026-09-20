@@ -219,6 +219,13 @@ class _PlotlyRenderContext:
         for layer in self.scene.layers:
             self._add_layer(layer)
         self._add_interactive_features()
+        legend_labels = [
+            _html_escape(label)
+            for label in self.viewport.get("legend_labels", ())
+        ]
+        for trace in self.fig.data:
+            if trace.name in legend_labels:
+                trace.legendrank = 100 + legend_labels.index(trace.name)
         return self.fig
 
     def _add_layer(self, layer: SceneLayer) -> None:
@@ -348,6 +355,12 @@ class _PlotlyRenderContext:
                     ),
                 ),
             )
+        if self.viewport.get("magnitude_scale"):
+            font_scale = self._font_pixel_scale()
+            legend["tracegroupgap"] = round(66 * font_scale)
+            legend["itemwidth"] = max(30, round(165 * font_scale))
+            legend["x"] = 1.026
+            legend["xanchor"] = "left"
 
         self.fig.update_layout(
             plot_bgcolor=background,
@@ -1004,6 +1017,9 @@ class _PlotlyRenderContext:
             x = self._paper_x(x)
         if yref == "paper":
             y = self._paper_y(y, layer)
+            title_top = style.get("axes_domain_top")
+            if layer.group_id == "title" and self.viewport.get("margin") and title_top:
+                y /= float(title_top)
         point_scale = self._font_pixel_scale()
         xshift = style.get("xshift", float(layer.data["x_offset"][0]) * point_scale)
         yshift = style.get("yshift", float(layer.data["y_offset"][0]) * point_scale)
@@ -1313,7 +1329,7 @@ class _PlotlyRenderContext:
                             ),
                         ),
                         name=_html_escape(label),
-                        legendgroup="star-magnitude-scale",
+                        legendgroup=f"star-magnitude-scale-{index}",
                         legendgrouptitle=(
                             dict(
                                 text=_html_escape(

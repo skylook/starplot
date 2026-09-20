@@ -50,6 +50,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "comparison_outputs"
 ALL_TRANSPORTS = ("inline", "external", "provider")
 _EXAMPLE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_TRANSPORT_BORDER_MAX_CHANNEL_DELTA = 2
 
 _VISUAL_CODE_FINGERPRINT_SCOPE = (
     "src/starplot/interactive",
@@ -73,6 +74,16 @@ _RUNTIME_PACKAGES = (
     "playwright",
 )
 
+_ALLOWED_UNTRACKED_REVIEW_DOCS = frozenset(
+    {
+        "INTERACTIVE_BACKEND_FINAL_REVIEW_HANDOFF.md",
+        "INTERACTIVE_BACKEND_REVIEW.md",
+        "REVIEW_PROMPT.md",
+        "VISUAL_REVIEW_HANDOFF.md",
+        "WEAK_AGENT_VISUAL_PARITY_HANDOFF.md",
+        "parity-review.md",
+    }
+)
 
 def _validate_name(name: str) -> None:
     if not name or not _EXAMPLE_NAME_RE.fullmatch(name):
@@ -91,14 +102,18 @@ def _git_stdout(root: Path, *args: str) -> str:
 
 
 def _tracked_dirty(root: Path = ROOT) -> bool:
-    """Return whether the tracked tree has uncommitted changes.
-
-    Untracked and ignored files are ignored so that documentation work in
-    progress does not block visual evidence generation.
-    """
-    return bool(
-        _git_stdout(root, "status", "--porcelain", "--untracked-files=no").strip()
+    """Return whether anything except the declared review docs is dirty."""
+    status = _git_stdout(
+        root, "status", "--porcelain=v1", "--untracked-files=all"
     )
+    for line in status.splitlines():
+        if not line:
+            continue
+        path = line[3:].split(" -> ")[-1]
+        if line.startswith("?? ") and path in _ALLOWED_UNTRACKED_REVIEW_DOCS:
+            continue
+        return True
+    return False
 
 
 def _tracked_visual_code_entries(root: Path = ROOT) -> list[tuple[str, bytes]]:
@@ -481,6 +496,46 @@ def _snapshot_provenance(root: Path = ROOT, name: str | None = None) -> dict[str
     }
 
 
+def _normalize_browser_screenshot(path: Path) -> None:
+    """Store screenshots as opaque RGB PNGs for transport-stable comparisons."""
+    from PIL import Image
+
+    with Image.open(path) as screenshot:
+        normalized = crops.composite_on_color(screenshot, (255, 255, 255))
+        normalized.save(path, format="PNG")
+
+
+def _capture_browser_screenshot(page, path: Path) -> None:
+    """Warm the browser capture path, wait for paint, then store one stable PNG."""
+    page.screenshot(full_page=False)
+    page.evaluate(
+        """() => document.fonts.ready.then(() => new Promise(resolve =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve))))"""
+    )
+    page.screenshot(path=str(path), full_page=False)
+    _normalize_browser_screenshot(path)
+
+
+def _warm_browser_render(browser, url: str, width: int, height: int):
+    """Keep one disposable rendered context open while evidence is captured."""
+    context = browser.new_context(
+        viewport={"width": width, "height": height},
+        device_scale_factor=1,
+    )
+    try:
+        page = context.new_page()
+        page.goto(url, wait_until="load", timeout=300_000)
+        page.wait_for_function(
+            "() => document.body.dataset.starplotRendered === 'true' || document.body.dataset.starplotError",
+            timeout=300_000,
+        )
+        page.screenshot(full_page=False)
+    except Exception:
+        context.close()
+        raise
+    return context
+
+
 def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, height: int, transports: tuple[str, ...], html_files: dict[str, str]) -> dict[str, dict]:
     try:
         from playwright.sync_api import sync_playwright
@@ -493,7 +548,15 @@ def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, heig
     reports: dict[str, dict] = {}
     with sync_playwright() as playwright:
         browser = _launch_browser(playwright)
+        warm_context = None
         try:
+            first_transport = transports[0]
+            warm_context = _warm_browser_render(
+                browser,
+                f"{server.origin}/{html_files[first_transport]}",
+                width,
+                height,
+            )
             for name in transports:
                 page_errors: list[str] = []
                 context = browser.new_context(
@@ -534,13 +597,70 @@ def _browser_screenshots(folder: Path, server: _ProviderServer, width: int, heig
                         };
                     }""")
                     reports[name] = report
-                    page.screenshot(path=str(folder / f"{name}.png"), full_page=False)
+                    screenshot_path = folder / f"{name}.png"
+                    _capture_browser_screenshot(page, screenshot_path)
                     print(f"  browser {name}: captured", flush=True)
                 finally:
                     context.close()
         finally:
+            if warm_context is not None:
+                warm_context.close()
             browser.close()
     return reports
+
+
+def _image_diff_stats(left: np.ndarray, right: np.ndarray) -> dict:
+    """Return precise RGB diff metrics, including whether noise is border-only."""
+    if left.shape != right.shape:
+        raise ValueError(f"array shape mismatch {left.shape} vs {right.shape}")
+    delta = np.abs(left.astype(np.int16) - right.astype(np.int16))
+    different = np.any(delta != 0, axis=2)
+    different_pixels = int(np.count_nonzero(different))
+    bbox = None
+    border_only = True
+    if different_pixels:
+        ys, xs = np.where(different)
+        bbox = (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max()))
+        interior = different.copy()
+        interior[[0, -1], :] = False
+        interior[:, [0, -1]] = False
+        border_only = not bool(np.any(interior))
+    return {
+        "mean": float(delta.mean()),
+        "different_pixels": different_pixels,
+        "different_pixel_percent": float(different.mean() * 100),
+        "max_channel_delta": int(delta.max(initial=0)),
+        "bbox": bbox,
+        "border_only": border_only,
+    }
+
+
+def _assert_transport_screenshot_consistency(
+    left_name: str, right_name: str, stats: dict
+) -> None:
+    """Allow only bounded one-pixel viewport-edge capture noise."""
+    if stats["different_pixels"] == 0:
+        return
+    if stats["max_channel_delta"] > _TRANSPORT_BORDER_MAX_CHANNEL_DELTA:
+        raise AssertionError(
+            f"{left_name} vs {right_name}: max channel delta "
+            f"{stats['max_channel_delta']} exceeds "
+            f"{_TRANSPORT_BORDER_MAX_CHANNEL_DELTA}"
+        )
+    if not stats["border_only"]:
+        raise AssertionError(
+            f"{left_name} vs {right_name}: interior pixels differ; {stats}"
+        )
+
+
+def _format_image_diff(stats: dict) -> str:
+    bbox = "none" if stats["bbox"] is None else ",".join(map(str, stats["bbox"]))
+    return (
+        f"mean={stats['mean']:.6f}; pixels={stats['different_pixels']} "
+        f"({stats['different_pixel_percent']:.5f}%); "
+        f"max={stats['max_channel_delta']}; bbox={bbox}; "
+        f"border_only={str(stats['border_only']).lower()}"
+    )
 
 
 def _write_diff(folder: Path, name: str, transports: tuple[str, ...], exports: dict) -> None:
@@ -551,12 +671,12 @@ def _write_diff(folder: Path, name: str, transports: tuple[str, ...], exports: d
         # Composite onto white to match the background used by crops.diff_stats.
         left_rgb = crops.composite_on_color(left, (255, 255, 255))
         right_rgb = crops.composite_on_color(right, (255, 255, 255))
-        left_array = np.asarray(left_rgb, dtype=np.float32)
-        right_array = np.asarray(right_rgb, dtype=np.float32)
+        left_array = np.asarray(left_rgb)
+        right_array = np.asarray(right_rgb)
         if left_array.shape != right_array.shape:
-            return f"size mismatch {left.size} vs {right.size}"
-        delta = np.abs(left_array - right_array)
-        return f"mean={delta.mean():.2f}; nonzero={np.count_nonzero(delta) / delta.size * 100:.2f}%"
+            return f"size mismatch {left.size} vs {right.size}", None
+        stats = _image_diff_stats(left_array, right_array)
+        return _format_image_diff(stats), stats
 
     # Prefer the Plotly static snapshot when kaleido produced one; otherwise fall
     # back to the matplotlib export from the Interactive*Plot class.
@@ -575,19 +695,25 @@ def _write_diff(folder: Path, name: str, transports: tuple[str, ...], exports: d
             for transport in transports
         }
 
-        rows.append(("orig vs interactive", compare(original, interactive.resize(original.size, Image.Resampling.LANCZOS))))
+        rows.append(("orig vs interactive", compare(original, interactive.resize(original.size, Image.Resampling.LANCZOS))[0]))
         if plotly_path:
-            rows.append(("orig vs interactive_matplotlib", compare(original, static_interactive.resize(original.size, Image.Resampling.LANCZOS))))
+            rows.append(("orig vs interactive_matplotlib", compare(original, static_interactive.resize(original.size, Image.Resampling.LANCZOS))[0]))
         for transport_name, image in browser_images.items():
             orig_for_browser = original.resize(image.size, Image.Resampling.LANCZOS)
-            rows.append((f"orig vs {transport_name}", compare(orig_for_browser, image)))
+            rows.append((f"orig vs {transport_name}", compare(orig_for_browser, image)[0]))
         for transport_name, image in browser_images.items():
-            rows.append((f"interactive vs {transport_name}", compare(interactive.resize(image.size, Image.Resampling.LANCZOS), image)))
+            rows.append((f"interactive vs {transport_name}", compare(interactive.resize(image.size, Image.Resampling.LANCZOS), image)[0]))
         if plotly_path:
-            rows.append(("interactive_matplotlib vs interactive", compare(static_interactive.resize(interactive.size, Image.Resampling.LANCZOS), interactive)))
+            rows.append(("interactive_matplotlib vs interactive", compare(static_interactive.resize(interactive.size, Image.Resampling.LANCZOS), interactive)[0]))
         for index, left_name in enumerate(transports):
             for right_name in transports[index + 1:]:
-                rows.append((f"{left_name} vs {right_name}", compare(browser_images[left_name], browser_images[right_name])))
+                result, stats = compare(browser_images[left_name], browser_images[right_name])
+                if stats is None:
+                    raise AssertionError(
+                        f"{left_name} vs {right_name}: transport screenshot {result}"
+                    )
+                _assert_transport_screenshot_consistency(left_name, right_name, stats)
+                rows.append((f"{left_name} vs {right_name}", f"{result}; gate=PASS"))
     (folder / "diff.md").write_text(
         "\n".join([f"# {name} transport diff", "", "| pair | diagnostic |", "|---|---|"] + [f"| {label} | {result} |" for label, result in rows]) + "\n",
         encoding="utf-8",
@@ -736,9 +862,11 @@ def _is_under(path: Path, parent: Path) -> bool:
 
 def _atomic_publish(staging: Path, final: Path, backup: Path) -> None:
     """Atomically publish ``staging`` to ``final`` using a same-filesystem backup."""
+    if final.is_symlink() or backup.is_symlink():
+        raise ValueError("publish destination and backup must not be symlinks")
     staging = staging.resolve()
-    final = final.resolve()
-    backup = backup.resolve()
+    final = final.parent.resolve() / final.name
+    backup = backup.parent.resolve() / backup.name
     staging_root = (OUTPUT / ".staging").resolve()
     if not _is_under(staging, staging_root):
         raise ValueError(f"staging path is not under {staging_root}: {staging}")

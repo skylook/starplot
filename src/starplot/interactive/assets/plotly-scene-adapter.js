@@ -646,9 +646,13 @@
       const horizontal = variant.ha || style.ha || "center";
       const vertical = variant.va || style.va || "center";
       const weight = String(variant.font_weight || style.font_weight || "normal").toLowerCase();
+      const titleTop = Number(style.axes_domain_top);
+      const titleY = layer.group_id === "title" && (scene.viewport || {}).margin
+        && yref === "paper" && Number.isFinite(titleTop) && titleTop > 0
+        ? y[index] / titleTop : y[index];
       annotations.push({
         x: x[index], y: (yref === "paper" && (layer.group_id === "horizon-bottom" || layer.group_id === "horizon-label" || style.footer)
-          ? y[index] + Number(settings.footerOffset || 0) : y[index]), text: weight === "bold" ? `<b>${text[index]}</b>` : text[index],
+          ? titleY + Number(settings.footerOffset || 0) : titleY), text: weight === "bold" ? `<b>${text[index]}</b>` : text[index],
         showarrow: false, xref, yref,
         xanchor: ["left", "right", "center"].includes(horizontal) ? horizontal : "center",
         yanchor: ({ center: "middle", baseline: "bottom", bottom: "bottom", top: "top" })[vertical] || "middle",
@@ -865,7 +869,7 @@
     // Normalize legend visibility so it matches the Python adapter: a named
     // trace appears once and only if its name is in the allowed label list.
     const viewport = scene.viewport || {};
-    const legendLabels = viewport.legend_labels || [];
+    const legendLabels = (viewport.legend_labels || []).map(escapePlotlyText);
     const shown = settings.shownLegendNames;
     const allowLegend = Boolean(viewport.show_legend || viewport.showlegend);
     for (const trace of traces) {
@@ -939,6 +943,12 @@
         size: scaledLegendFont(viewport.legend_title_font_size, 11),
       },
     };
+    if (viewport.magnitude_scale) {
+      legend.tracegroupgap = Math.round(66 * fontPixelScale);
+      legend.itemwidth = Math.max(30, Math.round(165 * fontPixelScale));
+      legend.x = 1.026;
+      legend.xanchor = "left";
+    }
     if (legendTitle) {
       legend.title = {
         text: legendTitle,
@@ -996,7 +1006,7 @@
           line: { color: scale.edge_color || "#000000", width: 0 },
         },
         name: escapePlotlyText(scale.labels[index]),
-        legendgroup: "star-magnitude-scale",
+        legendgroup: `star-magnitude-scale-${index}`,
         legendgrouptitle: index === 0 ? { text: title } : undefined,
         legendrank: 2000 + index,
         showlegend: true,
@@ -1048,9 +1058,18 @@
     const margin = footerOffset && !hasRecordedViewportMargin
       ? { l: sideMargin, r: sideMargin, t: 30, b: 10, autoexpand: false }
       : (viewport.margin || { l: 10, r: 10, t: 10, b: 10, autoexpand: false });
-    const yDomain = footerOffset && !hasRecordedViewportMargin
+    let yDomain = footerOffset && !hasRecordedViewportMargin
       ? [footerOffset, 1]
       : undefined;
+    const titleTops = scene.layers
+      .filter((layer) => layer.group_id === "title")
+      .map((layer) => Number(styleFor(layer, scene).axes_domain_top))
+      .filter((top) => Number.isFinite(top) && top > 0 && top <= 1);
+    if (titleTops.length && !hasRecordedViewportMargin) {
+      const bottom = yDomain ? yDomain[0] : 0;
+      const top = Math.min(yDomain ? yDomain[1] : 1, ...titleTops);
+      if (top > bottom) yDomain = [bottom, top];
+    }
     const sourceAxesWidth = Number(viewport.source_axes_width || viewport.reference_width || 1);
     const compiledTargetAxesWidth = Number(viewport.target_axes_width || sourceAxesWidth);
     let targetAxesWidth = compiledTargetAxesWidth;
@@ -1243,6 +1262,31 @@
     });
   }
 
+  function _applyLegendSymbolScale(target, scene) {
+    if (!scene.viewport.magnitude_scale || !target || typeof target.querySelectorAll !== "function") return;
+    const traces = new Map((target._fullData || []).filter((trace) => trace.showlegend)
+      .map((trace) => [String(trace.name), trace]));
+    target.querySelectorAll("g.legend g.traces").forEach((row) => {
+      const label = row.querySelector("text.legendtext");
+      const name = label && label.getAttribute("data-unformatted");
+      const trace = traces.get(name);
+      if (!trace || !trace.marker) return;
+      const rawSize = Array.isArray(trace.marker.size) || ArrayBuffer.isView(trace.marker.size)
+        ? Number(trace.marker.size[0]) : Number(trace.marker.size);
+      if (!(rawSize > 0)) return;
+      const desired = Math.min(80, rawSize * (trace.meta && trace.meta.starplot_ui === "magnitude-scale" ? 0.5 : 1));
+      row.querySelectorAll("path.scatterpts").forEach((symbol) => {
+        const box = symbol.getBBox();
+        if (!(box.width > 0)) return;
+        const base = symbol.dataset.starplotBaseTransform || symbol.getAttribute("transform") || "";
+        symbol.dataset.starplotBaseTransform = base;
+        const factor = desired / box.width;
+        symbol.setAttribute("transform", `${base} scale(${factor})`);
+        symbol.setAttribute("vector-effect", "non-scaling-stroke");
+      });
+    });
+  }
+
   async function _applyScaleCorrection(target, state, Plotly) {
     const { scene, slots, traces, layout, metrics } = state;
     const fullLayout = target._fullLayout;
@@ -1429,6 +1473,7 @@
         if (!context) return;
         await _applyScaleCorrection(target, context.state, context.Plotly);
         _applyEllipseMarkerTransforms(target);
+        _applyLegendSymbolScale(target, context.state.scene);
         _applyAnnotationStrokes(target, context.state);
       }, 150);
     };
@@ -1514,6 +1559,11 @@
         traces.get(layer.id) || [placeholder(layer, forceSvgTracePlane)]),
       ...magnitudeScaleTraces(scene, metrics),
     ];
+    const legendLabels = (scene.viewport.legend_labels || []).map(escapePlotlyText);
+    for (const trace of plotlyTraces) {
+      const index = legendLabels.indexOf(trace.name);
+      if (index >= 0) trace.legendrank = 100 + index;
+    }
     const polygonShapeIndices = _polygonShapeIndices(layout, orderedEffects);
     const correctionState = {
       scene, slots, traces, plotlyTraces, layout, metrics,
@@ -1560,6 +1610,7 @@
     // This also runs on window resize (see _applyScaleCorrection).
     await _applyScaleCorrection(target, correctionState, Plotly);
     _applyEllipseMarkerTransforms(target);
+    _applyLegendSymbolScale(target, scene);
     // Debounced resize re-correction.  Plotly's responsive:true only resizes
     // the canvas; it does not recompute font/marker/stroke scales.
     _ensureResizeHandler(target, correctionState, Plotly);
@@ -1585,6 +1636,7 @@
     _applyScaleCorrection,
     _applyAnnotationStrokes,
     _applyEllipseMarkerTransforms,
+    _applyLegendSymbolScale,
     magnitudeScaleTraces,
   });
 })(typeof window !== "undefined" ? window : globalThis);

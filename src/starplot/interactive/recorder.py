@@ -184,7 +184,7 @@ class DrawingRecorder:
 
     def record_polygon(
         self, points, style_dict, gid, zorder, *, rings=None,
-        space=CoordinateSpace.DATA, clip_id="plot",
+        space=CoordinateSpace.DATA, clip_id="plot", compound_fill=False,
     ):
         # These coordinates come from final Matplotlib artists.  Unlike the
         # low-level public DrawingCommand contract, a legal Matplotlib Path may
@@ -193,6 +193,8 @@ class DrawingRecorder:
         data = {"points": list(points), "final_artist": True}
         if rings is not None:
             data["rings"] = [list(ring) for ring in rings]
+        if compound_fill:
+            data["compound_fill"] = True
         self.commands.append(DrawingCommand(
             kind="polygon",
             data=data,

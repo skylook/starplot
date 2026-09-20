@@ -389,6 +389,25 @@ def test_reference_lines_record_final_matplotlib_dash_and_width():
     )
 
 
+def test_reference_line_labels_record_surviving_axes_text():
+    plot = make_zenith_plot()
+
+    plot.ecliptic()
+    plot.celestial_equator()
+
+    for gid, label in (
+        ("ecliptic-label", "ECLIPTIC"),
+        ("celestial-equator-label", "CELESTIAL EQUATOR"),
+    ):
+        artist = next(text for text in plot.ax.texts if text.get_text() == label)
+        command = next(cmd for cmd in plot._recorder.commands if cmd.gid == gid)
+        assert command.space is CoordinateSpace.AXES
+        assert command.data["text"] == artist.get_text()
+        assert command.data["x"] == pytest.approx(artist.get_position()[0])
+        assert command.data["y"] == pytest.approx(artist.get_position()[1])
+        assert command.style["rotation"] == pytest.approx(artist.get_rotation())
+
+
 def test_arrow_retains_its_matplotlib_background_clip_contract():
     plot = make_map_plot()
 
@@ -436,6 +455,42 @@ def test_camera_border_records_the_final_matplotlib_patch_exactly_once():
     )
     assert np.asarray(border.data["points"]) == pytest.approx(expected)
     assert not any(c.gid == "custom-patch" for c in plot._recorder.commands)
+
+
+def test_multisubpath_custom_patch_keeps_compound_fill_contract():
+    from matplotlib.path import Path
+    from matplotlib.patches import PathPatch
+
+    plot = make_map_plot()
+    vertices = [(70, 0), (90, 0), (90, 10), (70, 10),
+                (80, 0), (80, 10), (100, 10), (100, 0)]
+    codes = [Path.MOVETO, Path.LINETO, Path.LINETO, Path.LINETO] * 2
+    plot.ax.add_patch(PathPatch(Path(vertices, codes), facecolor="lightblue"))
+
+    plot._record_untracked_path_patches()
+
+    command = next(c for c in plot._recorder.commands if c.gid == "custom-patch")
+    assert command.data["compound_fill"] is True
+    assert len(command.data["rings"]) == 2
+
+
+def test_multisubpath_custom_patch_keeps_multiple_holes():
+    from matplotlib.path import Path
+    from matplotlib.patches import PathPatch
+
+    plot = make_map_plot()
+    outer = [(70, 0), (100, 0), (100, 20), (70, 20)]
+    hole_a = [(75, 5), (75, 9), (79, 9), (79, 5)]
+    hole_b = [(90, 5), (90, 9), (94, 9), (94, 5)]
+    vertices = [*outer, *hole_a, *hole_b]
+    codes = [Path.MOVETO, Path.LINETO, Path.LINETO, Path.LINETO] * 3
+    plot.ax.add_patch(PathPatch(Path(vertices, codes), facecolor="lightblue"))
+
+    plot._record_untracked_path_patches()
+
+    command = next(c for c in plot._recorder.commands if c.gid == "custom-patch")
+    assert command.data["compound_fill"] is True
+    assert len(command.data["rings"]) == 3
 
 
 def test_zenith_horizon_uses_axes_circle_and_fixed_cardinal_positions():

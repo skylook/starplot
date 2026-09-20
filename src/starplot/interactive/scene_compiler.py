@@ -654,6 +654,14 @@ class SceneCompiler:
         self, command: DrawingCommand, context: _CompileContext, index: int
     ) -> _CompiledParts:
         polygons = _polygon_groups(command.data)
+        if command.data.get("compound_fill") and len(polygons) >= 2:
+            # Matplotlib uses the nonzero winding rule for compound paths.
+            # Reconstruct the filled cells so any number of oppositely wound
+            # holes remain transparent instead of becoming separate fills.
+            compound = _compound_nonzero_geometry(
+                [polygon[0] for polygon in polygons]
+            )
+            polygons = _polygon_geometry_groups(compound)
         clip = _command_clip(command, context)
         if clip is not None:
             polygons = _clip_polygons(
@@ -1194,10 +1202,48 @@ def _polygon_groups(data) -> list[list[list[tuple[float, float]]]]:
     return polygons
 
 
+def _ring_winding_number(point: tuple[float, float], ring) -> int:
+    """Return the signed winding number of a closed ring around a point."""
+    px, py = point
+    winding = 0
+    for start, end in zip(ring, [*ring[1:], ring[0]]):
+        x1, y1 = start
+        x2, y2 = end
+        cross = (x2 - x1) * (py - y1) - (px - x1) * (y2 - y1)
+        if y1 <= py < y2 and cross > 0:
+            winding += 1
+        elif y2 <= py < y1 and cross < 0:
+            winding -= 1
+    return winding
+
+
+def _compound_nonzero_geometry(rings):
+    """Build the geometry filled by Matplotlib's nonzero winding rule."""
+    boundaries = shapely.union_all(
+        [LineString([*ring, ring[0]]) for ring in rings]
+    )
+    cells = shapely.get_parts(shapely.polygonize(shapely.get_parts(boundaries)))
+    filled = []
+    for cell in cells:
+        representative = cell.representative_point()
+        point = (float(representative.x), float(representative.y))
+        if sum(_ring_winding_number(point, ring) for ring in rings) != 0:
+            filled.append(cell)
+    return shapely.union_all(filled) if filled else Polygon()
+
+
 def _clip_polygons(polygons, clip: ClipGeometry, *, repair_final_artist: bool = False):
     clip_shape = _clip_shape(clip)
     result = []
     for rings in polygons:
+        if repair_final_artist and all(
+            clip_shape.covers(LineString([*ring, ring[0]])) for ring in rings
+        ):
+            # A fully visible Matplotlib Path may self-intersect and depend on
+            # its original fill winding. Geometry repair changes that drawing.
+            # No clipping is needed, so keep the artist's path and order.
+            result.append(rings)
+            continue
         polygon = Polygon(rings[0], holes=rings[1:])
         if repair_final_artist and not polygon.is_valid:
             polygon = shapely.make_valid(polygon)

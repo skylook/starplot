@@ -487,6 +487,19 @@ class RecordingMixin:
 
                 alpha = patch.get_alpha()
                 fc = patch.get_facecolor()
+                compound_fill = False
+                if fill and len(rings) >= 2:
+                    signed_areas = []
+                    for ring in rings:
+                        points = np.asarray(ring)
+                        signed_areas.append(float(np.sum(
+                            points[:, 0] * np.roll(points[:, 1], -1)
+                            - np.roll(points[:, 0], -1) * points[:, 1]
+                        )))
+                    compound_fill = (
+                        any(area > 0 for area in signed_areas)
+                        and any(area < 0 for area in signed_areas)
+                    )
                 # Remove embedded alpha from the color strings; Plotly applies
                 # the separate `alpha` style as trace/shape opacity, and we
                 # don't want to multiply them.
@@ -502,6 +515,7 @@ class RecordingMixin:
                     },
                     gid=gid or "custom-patch",
                     zorder=int(patch.get_zorder() or 0),
+                    compound_fill=compound_fill,
                 )
                 recorded.add(id(patch))
             self._recorded_external_patch_ids = recorded
@@ -1346,11 +1360,13 @@ class RecordingMixin:
 
     def ecliptic(self, style=None, label="ECLIPTIC", collision_handler=None):
         lines_before = len(self.ax.lines)
+        texts_before = len(self.ax.texts)
         super().ecliptic(style=style, label=label, collision_handler=collision_handler)
         resolved_style = style or self.style.ecliptic
         self._record_rendered_line_artists(
             lines_before, resolved_style.line, "ecliptic-line"
         )
+        self._record_reference_line_labels(texts_before, "ecliptic-label")
 
     # ------------------------------------------------------------------
     # Method 7: Celestial equator
@@ -1360,6 +1376,7 @@ class RecordingMixin:
         self, style=None, label=None, num_labels=1, collision_handler=None
     ):
         lines_before = len(self.ax.lines)
+        texts_before = len(self.ax.texts)
         equator_kwargs = {
             "style": style,
             "num_labels": num_labels,
@@ -1373,6 +1390,37 @@ class RecordingMixin:
             lines_before, resolved_style.line,
             "celestial-equator-line",
         )
+        self._record_reference_line_labels(texts_before, "celestial-equator-label")
+
+    def _record_reference_line_labels(self, texts_before, gid):
+        """Record surviving labels placed directly in axes coordinates."""
+        try:
+            for artist in self.ax.texts[texts_before:]:
+                if artist.get_transform() != self.ax.transAxes:
+                    continue
+                x, y = artist.get_position()
+                font_family = artist.get_fontfamily()
+                self._recorder.record_text(
+                    text=artist.get_text(),
+                    x=float(x),
+                    y=float(y),
+                    style_dict={
+                        "font_size": float(artist.get_fontsize()),
+                        "font_color": _rgba_to_hex(artist.get_color()),
+                        "font_alpha": _artist_alpha(artist),
+                        "font_weight": artist.get_fontweight(),
+                        "font_style": artist.get_fontstyle(),
+                        "font_name": font_family[0] if font_family else "Inter",
+                        "ha": artist.get_horizontalalignment(),
+                        "va": artist.get_verticalalignment(),
+                        "rotation": float(artist.get_rotation()),
+                    },
+                    gid=gid,
+                    zorder=int(artist.get_zorder()),
+                    space=CoordinateSpace.AXES,
+                )
+        except _RECORDING_ERRORS as e:
+            LOGGER.warning("Failed to record reference line labels (gid=%s): %s", gid, e)
 
     def _record_rendered_line_artists(self, lines_before, style, gid):
         """Record final Cartopy-split ``Line2D`` artists created by a method."""

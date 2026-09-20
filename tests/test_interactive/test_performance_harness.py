@@ -483,7 +483,7 @@ def test_tracked_dirty_ignores_untracked_review_docs_and_baseline_artifacts(
     monkeypatch.setattr(
         benchmark,
         "_git_output",
-        lambda *args: "?? REVIEW.md\n M benchmarks/baselines/candidate.json\n",
+        lambda *args: "?? REVIEW_PROMPT.md\n M benchmarks/baselines/candidate.json\n",
     )
 
     assert not benchmark._tracked_worktree_dirty()
@@ -494,6 +494,16 @@ def test_tracked_dirty_rejects_untracked_runtime_source(monkeypatch):
         benchmark,
         "_git_output",
         lambda *args: "?? src/starplot/interactive/untracked_runtime.py\n",
+    )
+
+    assert benchmark._tracked_worktree_dirty()
+
+
+def test_tracked_dirty_rejects_untracked_pythonpath_hook(monkeypatch):
+    monkeypatch.setattr(
+        benchmark,
+        "_git_output",
+        lambda *args: "?? src/sitecustomize.py\n",
     )
 
     assert benchmark._tracked_worktree_dirty()
@@ -733,6 +743,20 @@ def test_compare_results_reports_every_missed_performance_gate():
     assert any("ordinary_chart" in failure for failure in failures)
     assert any("viewport_warm_median" in failure for failure in failures)
     assert any("viewport_warm_p95" in failure for failure in failures)
+
+
+def test_compare_results_gates_cold_start_p95_not_only_first_sample():
+    before = complete_legacy_baseline()
+    after = complete_result()
+    raw_cold = [4000.0, 6000.0, 6000.0]
+    after["browser"]["raw_cold_repeats_ms"] = raw_cold
+    after["browser"]["cold_start_ms"] = raw_cold[0]
+    after["browser"]["cold_start_median_ms"] = benchmark.percentile(raw_cold, 50)
+    after["browser"]["cold_start_p95_ms"] = benchmark.percentile(raw_cold, 95)
+
+    failures = benchmark.compare_results(before, after)
+
+    assert any("browser_cold_start" in failure for failure in failures)
 
 
 def test_compare_results_rejects_point_count_mismatch_before_gate_evaluation():
@@ -1798,6 +1822,22 @@ def test_measured_browser_rejects_forged_cold_start_not_first_raw_cold():
         ValueError,
         match="cold_start_ms must be the first raw cold measurement",
     ):
+        benchmark.validate_benchmark_artifact(result)
+
+
+@pytest.mark.parametrize("series_path", [("browser",), ("browser", "legacy_same_scene")])
+def test_measured_browser_requires_exact_cold_sample_count(series_path):
+    result = complete_result()
+    series = result
+    for key in series_path:
+        series = series[key]
+    raw_cold = series["raw_cold_repeats_ms"][:-1]
+    series["raw_cold_repeats_ms"] = raw_cold
+    series["cold_start_ms"] = raw_cold[0]
+    series["cold_start_median_ms"] = benchmark.percentile(raw_cold, 50)
+    series["cold_start_p95_ms"] = benchmark.percentile(raw_cold, 95)
+
+    with pytest.raises(ValueError, match="raw_cold_repeats_ms must contain exactly"):
         benchmark.validate_benchmark_artifact(result)
 
 
