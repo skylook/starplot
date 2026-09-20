@@ -18,10 +18,10 @@
         "kind": "cold start 1/3",
         "navigation_timings": [
           {
-            "domComplete": 1064.7999999821186,
-            "duration": 1064.7999999821186,
-            "loadEventEnd": 1064.7999999821186,
-            "responseEnd": 809.9000000059605,
+            "domComplete": 1125,
+            "duration": 1125,
+            "loadEventEnd": 1125,
+            "responseEnd": 865.1999999880791,
             "startTime": 0
           }
         ],
@@ -32,10 +32,10 @@
         "kind": "cold start 2/3",
         "navigation_timings": [
           {
-            "domComplete": 1086.0999999940395,
-            "duration": 1086.2000000178814,
-            "loadEventEnd": 1086.2000000178814,
-            "responseEnd": 888.7000000178814,
+            "domComplete": 1126.5,
+            "duration": 1126.5,
+            "loadEventEnd": 1126.5,
+            "responseEnd": 870.4000000059605,
             "startTime": 0
           }
         ],
@@ -46,10 +46,10 @@
         "kind": "cold start 3/3",
         "navigation_timings": [
           {
-            "domComplete": 1062.199999988079,
-            "duration": 1062.199999988079,
-            "loadEventEnd": 1062.199999988079,
-            "responseEnd": 868.2999999821186,
+            "domComplete": 1149.1000000238419,
+            "duration": 1149.2000000178814,
+            "loadEventEnd": 1149.2000000178814,
+            "responseEnd": 895.9000000059605,
             "startTime": 0
           }
         ],
@@ -60,10 +60,10 @@
         "kind": "warm repeat 1/5",
         "navigation_timings": [
           {
-            "domComplete": 200.60000002384186,
-            "duration": 200.60000002384186,
-            "loadEventEnd": 200.60000002384186,
-            "responseEnd": 1.800000011920929,
+            "domComplete": 264.59999999403954,
+            "duration": 264.59999999403954,
+            "loadEventEnd": 264.59999999403954,
+            "responseEnd": 2.5,
             "startTime": 0
           }
         ],
@@ -74,10 +74,10 @@
         "kind": "warm repeat 2/5",
         "navigation_timings": [
           {
-            "domComplete": 205.40000000596046,
-            "duration": 205.40000000596046,
-            "loadEventEnd": 205.40000000596046,
-            "responseEnd": 1.4000000059604645,
+            "domComplete": 199.40000000596046,
+            "duration": 199.40000000596046,
+            "loadEventEnd": 199.40000000596046,
+            "responseEnd": 1.600000023841858,
             "startTime": 0
           }
         ],
@@ -88,10 +88,10 @@
         "kind": "warm repeat 3/5",
         "navigation_timings": [
           {
-            "domComplete": 210.59999999403954,
-            "duration": 210.59999999403954,
-            "loadEventEnd": 210.59999999403954,
-            "responseEnd": 1.5999999940395355,
+            "domComplete": 256.59999999403954,
+            "duration": 256.59999999403954,
+            "loadEventEnd": 256.59999999403954,
+            "responseEnd": 2.9000000059604645,
             "startTime": 0
           }
         ],
@@ -102,10 +102,10 @@
         "kind": "warm repeat 4/5",
         "navigation_timings": [
           {
-            "domComplete": 202.2999999821186,
-            "duration": 202.2999999821186,
-            "loadEventEnd": 202.2999999821186,
-            "responseEnd": 1.199999988079071,
+            "domComplete": 258.30000001192093,
+            "duration": 258.30000001192093,
+            "loadEventEnd": 258.30000001192093,
+            "responseEnd": 1.7000000178813934,
             "startTime": 0
           }
         ],
@@ -116,10 +116,10 @@
         "kind": "warm repeat 5/5",
         "navigation_timings": [
           {
-            "domComplete": 208,
-            "duration": 208,
-            "loadEventEnd": 208,
-            "responseEnd": 2,
+            "domComplete": 259.89999997615814,
+            "duration": 259.89999997615814,
+            "loadEventEnd": 259.89999997615814,
+            "responseEnd": 3.0999999940395355,
             "startTime": 0
           }
         ],
@@ -127,11 +127,11 @@
       }
     ],
     "arrow_payload_bytes": 13011688,
-    "cold_start_median_ms": 3380.5,
-    "cold_start_ms": 3380.5,
-    "cold_start_p95_ms": 3635.1100000053643,
-    "complete_render_median_ms": 2184.0999999940395,
-    "complete_render_p95_ms": 2233.9600000083447,
+    "cold_start_median_ms": 3626.5999999940395,
+    "cold_start_ms": 3735.7999999821186,
+    "cold_start_p95_ms": 3724.879999983311,
+    "complete_render_median_ms": 2732.0999999940395,
+    "complete_render_p95_ms": 2769.3199999928474,
     "completion_signal": "starplot-product-promise",
     "engine": "chromium",
     "engine_version": "153.0.8010.48",
@@ -152,10 +152,10 @@
           "kind": "cold start 1/3",
           "navigation_timings": [
             {
-              "domComplete": 5637.800000011921,
-              "duration": 5639.9000000059605,
-              "loadEventEnd": 5639.9000000059605,
-              "responseEnd": 1661.800000011921,
+              "domComplete": 6248.699999988079,
+              "duration": 6251.4000000059605,
+              "loadEventEnd": 6251.4000000059605,
+              "responseEnd": 1364.5,
               "startTime": 0
             }
           ],
@@ -166,10 +166,10 @@
           "kind": "cold start 2/3",
           "navigation_timings": [
             {
-              "domComplete": 5210.0999999940395,
-              "duration": 5212,
-              "loadEventEnd": 5212,
-              "responseEnd": 1391.9000000059605,
+              "domComplete": 5617.199999988079,
+              "duration": 5620,
+              "loadEventEnd": 5620,
+              "responseEnd": 1418.7999999821186,
               "startTime": 0
             }
           ],
@@ -180,10 +180,10 @@
           "kind": "cold start 3/3",
           "navigation_timings": [
             {
-              "domComplete": 5377.5,
-              "duration": 5379.800000011921,
-              "loadEventEnd": 5379.800000011921,
-              "responseEnd": 1456.300000011921,
+              "domComplete": 5706.0999999940395,
+              "duration": 5708.899999976158,
+              "loadEventEnd": 5708.899999976158,
+              "responseEnd": 1427.199999988079,
               "startTime": 0
             }
           ],
@@ -194,10 +194,10 @@
           "kind": "warm repeat 1/5",
           "navigation_timings": [
             {
-              "domComplete": 4700,
-              "duration": 4702.199999988079,
-              "loadEventEnd": 4702.199999988079,
-              "responseEnd": 1277.300000011921,
+              "domComplete": 5729.100000023842,
+              "duration": 5731.9000000059605,
+              "loadEventEnd": 5731.9000000059605,
+              "responseEnd": 1448,
               "startTime": 0
             }
           ],
@@ -208,10 +208,10 @@
           "kind": "warm repeat 2/5",
           "navigation_timings": [
             {
-              "domComplete": 3884.699999988079,
-              "duration": 3886.5999999940395,
-              "loadEventEnd": 3886.5999999940395,
-              "responseEnd": 451.5,
+              "domComplete": 4721.800000011921,
+              "duration": 4724.4000000059605,
+              "loadEventEnd": 4724.4000000059605,
+              "responseEnd": 540.4000000059605,
               "startTime": 0
             }
           ],
@@ -222,10 +222,10 @@
           "kind": "warm repeat 3/5",
           "navigation_timings": [
             {
-              "domComplete": 4100.9000000059605,
-              "duration": 4103,
-              "loadEventEnd": 4103,
-              "responseEnd": 556.8000000119209,
+              "domComplete": 4774,
+              "duration": 4776.799999982119,
+              "loadEventEnd": 4776.799999982119,
+              "responseEnd": 550.5999999940395,
               "startTime": 0
             }
           ],
@@ -236,10 +236,10 @@
           "kind": "warm repeat 4/5",
           "navigation_timings": [
             {
-              "domComplete": 3880.9000000059605,
-              "duration": 3882.5999999940395,
-              "loadEventEnd": 3882.5999999940395,
-              "responseEnd": 400.09999999403954,
+              "domComplete": 4765.300000011921,
+              "duration": 4767.800000011921,
+              "loadEventEnd": 4767.800000011921,
+              "responseEnd": 536.3000000119209,
               "startTime": 0
             }
           ],
@@ -250,59 +250,59 @@
           "kind": "warm repeat 5/5",
           "navigation_timings": [
             {
-              "domComplete": 4092.5,
-              "duration": 4093.699999988079,
-              "loadEventEnd": 4093.699999988079,
-              "responseEnd": 549.6999999880791,
+              "domComplete": 4879.300000011921,
+              "duration": 4882.300000011921,
+              "loadEventEnd": 4882.300000011921,
+              "responseEnd": 531.3000000119209,
               "startTime": 0
             }
           ],
           "series": "legacy"
         }
       ],
-      "cold_start_median_ms": 5380.300000011921,
-      "cold_start_ms": 5640.5,
-      "cold_start_p95_ms": 5614.480000001192,
-      "complete_render_median_ms": 4094.0,
-      "complete_render_p95_ms": 4582.9200000107285,
+      "cold_start_median_ms": 5709.5,
+      "cold_start_ms": 6252.0999999940395,
+      "cold_start_p95_ms": 6197.839999994636,
+      "complete_render_median_ms": 4777.299999982119,
+      "complete_render_p95_ms": 5562.580000001192,
       "completion_signal": "plotly-fallback",
       "raw_cold_repeats_ms": [
-        5640.5,
-        5212.5,
-        5380.300000011921
+        6252.0999999940395,
+        5620.5999999940395,
+        5709.5
       ],
       "raw_warm_repeats_ms": [
-        4702.800000011921,
-        3887.0999999940395,
-        4103.4000000059605,
-        3883.0999999940395,
-        4094.0
+        5732.5,
+        4724.9000000059605,
+        4777.299999982119,
+        4768.4000000059605,
+        4882.9000000059605
       ],
       "scene_hash": "sha256:7223be2b9bb1aeeebbe5bbc059dfd651b0a11888e049ffd72b70694fcfebebb3",
       "source_kind": "direct-plotly-same-scene-http"
     },
     "legacy_source_kind": "direct-plotly-same-scene-http",
-    "legacy_source_url": "http://127.0.0.1:57631/legacy.html",
+    "legacy_source_url": "http://127.0.0.1:60491/legacy.html",
     "raw_cold_repeats_ms": [
-      3380.5,
-      3663.4000000059605,
-      3054.199999988079
+      3735.7999999821186,
+      3626.5999999940395,
+      3602.5
     ],
     "raw_warm_repeats_ms": [
-      2181.4000000059605,
-      2184.0999999940395,
-      2246.300000011921,
-      2174.4000000059605,
-      2184.5999999940395
+      2699.2000000178814,
+      2179.800000011921,
+      2772.5999999940395,
+      2732.0999999940395,
+      2756.199999988079
     ],
     "scene_hash": "sha256:7223be2b9bb1aeeebbe5bbc059dfd651b0a11888e049ffd72b70694fcfebebb3",
     "source_kind": "external-arrow-http",
-    "source_url": "http://127.0.0.1:57631/scene.html",
+    "source_url": "http://127.0.0.1:60491/scene.html",
     "status": "measured"
   },
   "environment": {
     "browser": "chromium 153.0.8010.48",
-    "captured_at_utc": "2026-09-19T10:56:17.085993+00:00",
+    "captured_at_utc": "2026-09-20T14:03:30.292300+00:00",
     "cpu": "i386",
     "cpu_count": 12,
     "host_fingerprint": "2c491292ea611770",
@@ -318,107 +318,107 @@
   },
   "external_html_bytes": 1760,
   "legacy_renderer_preparation": {
-    "median_seconds": 11.083941354008857,
-    "p95_seconds": 11.264669162617064
+    "median_seconds": 10.957066928996937,
+    "p95_seconds": 11.259295913187088
   },
   "legacy_renderer_total": {
-    "median_seconds": 11.223900369019248,
-    "p95_seconds": 11.400799104210455
+    "median_seconds": 11.138079316006042,
+    "p95_seconds": 11.437405104370555
   },
   "ordinary_chart": {
-    "median_seconds": 0.18930094703682698,
-    "p95_seconds": 0.19886352419271133,
+    "median_seconds": 0.1991591099940706,
+    "p95_seconds": 0.21538575178128666,
     "point_count": 5000,
     "raw_repetitions": [
       {
         "arrow_payload_bytes": 68616,
         "external_html_bytes": 1760,
-        "legacy_renderer_preparation_seconds": 0.06099753198213875,
-        "legacy_renderer_total_seconds": 0.18192252397420816,
+        "legacy_renderer_preparation_seconds": 0.06326785500277765,
+        "legacy_renderer_total_seconds": 0.1991591099940706,
         "payload_bytes": 184259,
-        "peak_rss_mb": 231.71484375,
-        "plotly_construction_seconds": 0.12092499199206941,
+        "peak_rss_mb": 232.140625,
+        "plotly_construction_seconds": 0.13589125499129295,
         "point_count": 5000,
         "viewport_warm_ms": [
-          0.13347898493520916,
-          0.11078300303779542,
-          0.10231399210169911,
-          0.09986798977479339,
-          0.09802999556995928
+          0.1415979932062328,
+          0.11608400382101536,
+          0.1209820038639009,
+          0.10232999920845032,
+          0.10072198347188532
         ]
       },
       {
         "arrow_payload_bytes": 68616,
         "external_html_bytes": 1760,
-        "legacy_renderer_preparation_seconds": 0.06213488502544351,
-        "legacy_renderer_total_seconds": 0.19170913702691905,
+        "legacy_renderer_preparation_seconds": 0.07210956799099222,
+        "legacy_renderer_total_seconds": 0.21749555997666903,
         "payload_bytes": 184259,
-        "peak_rss_mb": 230.53125,
-        "plotly_construction_seconds": 0.12957425200147554,
+        "peak_rss_mb": 231.5,
+        "plotly_construction_seconds": 0.1453859919856768,
         "point_count": 5000,
         "viewport_warm_ms": [
-          0.14139499398879707,
-          0.11708398233167827,
-          0.10779500007629395,
-          0.1050790015142411,
-          0.10425198706798255
+          0.1467179972678423,
+          0.15396898379549384,
+          0.1344270131085068,
+          0.11231697862967849,
+          0.12024299940094352
         ]
       },
       {
         "arrow_payload_bytes": 68616,
         "external_html_bytes": 1760,
-        "legacy_renderer_preparation_seconds": 0.06240023602731526,
-        "legacy_renderer_total_seconds": 0.18930094703682698,
+        "legacy_renderer_preparation_seconds": 0.07059973498689942,
+        "legacy_renderer_total_seconds": 0.20694651899975725,
         "payload_bytes": 184259,
-        "peak_rss_mb": 230.58984375,
-        "plotly_construction_seconds": 0.12690071100951172,
+        "peak_rss_mb": 231.94921875,
+        "plotly_construction_seconds": 0.13634678401285782,
         "point_count": 5000,
         "viewport_warm_ms": [
-          0.13450300320982933,
-          0.10902999201789498,
-          0.10404299246147275,
-          0.09924700134433806,
-          0.09734698687680066
+          0.15144600183703005,
+          0.11856702622026205,
+          0.10820099851116538,
+          0.10550700244493783,
+          0.10382800246588886
         ]
       },
       {
         "arrow_payload_bytes": 68616,
         "external_html_bytes": 1760,
-        "legacy_renderer_preparation_seconds": 0.05878416000632569,
-        "legacy_renderer_total_seconds": 0.16407379499287345,
+        "legacy_renderer_preparation_seconds": 0.06322405399987474,
+        "legacy_renderer_total_seconds": 0.1949746309837792,
         "payload_bytes": 184259,
-        "peak_rss_mb": 231.52734375,
-        "plotly_construction_seconds": 0.10528963498654775,
+        "peak_rss_mb": 229.59375,
+        "plotly_construction_seconds": 0.13175057698390447,
         "point_count": 5000,
         "viewport_warm_ms": [
-          0.13114200555719435,
-          0.12327500735409558,
-          0.10054500307887793,
-          0.09857097757048905,
-          0.09637698531150818
+          0.1409699907526374,
+          0.11582998558878899,
+          0.10736699914559722,
+          0.1054010062944144,
+          0.10323501192033291
         ]
       },
       {
         "arrow_payload_bytes": 68616,
         "external_html_bytes": 1760,
-        "legacy_renderer_preparation_seconds": 0.06944621898583136,
-        "legacy_renderer_total_seconds": 0.2006521209841594,
+        "legacy_renderer_preparation_seconds": 0.06378822299302556,
+        "legacy_renderer_total_seconds": 0.1983359699952416,
         "payload_bytes": 184259,
-        "peak_rss_mb": 229.94921875,
-        "plotly_construction_seconds": 0.13120590199832805,
+        "peak_rss_mb": 230.9921875,
+        "plotly_construction_seconds": 0.13454774700221606,
         "point_count": 5000,
         "viewport_warm_ms": [
-          0.13627600856125355,
-          0.11331398854963481,
-          0.10070498683489859,
-          0.09902199963107705,
-          0.09741599205881357
+          0.14326602104119956,
+          0.11449799058027565,
+          0.10636899969540536,
+          0.10464800288900733,
+          0.10272100917063653
         ]
       }
     ]
   },
   "payload_bytes": 31173033,
-  "peak_rss_mb": 468.44140625,
+  "peak_rss_mb": 476.89453125,
   "plot_type_coverage": {
     "browser": {
       "engine": "chromium",
@@ -433,14 +433,14 @@
             "starplot-product-promise"
           ],
           "arrow_payload_bytes": 11728,
-          "complete_render_median_ms": 396.7999999821186,
-          "complete_render_p95_ms": 494.9,
+          "complete_render_median_ms": 505.19999998807907,
+          "complete_render_p95_ms": 509.4999999821186,
           "raw_render_repeats_ms": [
-            496.0,
-            392.2999999821186,
-            388.80000001192093,
-            396.7999999821186,
-            490.5
+            505.19999998807907,
+            503.7999999821186,
+            507.90000000596046,
+            509.89999997615814,
+            481.09999999403954
           ],
           "scene_hash": "sha256:35e269dc21106d2bd2d0f1f535aaf1eee109c121384e05305418eefc04e55afc"
         },
@@ -453,14 +453,14 @@
             "starplot-product-promise"
           ],
           "arrow_payload_bytes": 20536,
-          "complete_render_median_ms": 496.0,
-          "complete_render_p95_ms": 516.5599999904632,
+          "complete_render_median_ms": 514.5,
+          "complete_render_p95_ms": 518.2599999845028,
           "raw_render_repeats_ms": [
-            519.2999999821186,
-            496.0,
-            485.19999998807907,
-            403.59999999403954,
-            505.60000002384186
+            510.2000000178814,
+            517.7000000178814,
+            497.90000000596046,
+            518.3999999761581,
+            514.5
           ],
           "scene_hash": "sha256:9ad5875c7851f6ffd2008e6582e6e229180e6c193ddb631d7135cf9cfa025f3d"
         },
@@ -473,14 +473,14 @@
             "starplot-product-promise"
           ],
           "arrow_payload_bytes": 5968,
-          "complete_render_median_ms": 364.5,
-          "complete_render_p95_ms": 464.5600000083446,
+          "complete_render_median_ms": 462.69999998807907,
+          "complete_render_p95_ms": 468.0400000154972,
           "raw_render_repeats_ms": [
-            364.5,
-            399.59999999403954,
-            361.5,
-            480.80000001192093,
-            360.5
+            460.0,
+            467.7999999821186,
+            462.69999998807907,
+            460.19999998807907,
+            468.10000002384186
           ],
           "scene_hash": "sha256:88a1effbd6d9f08c2d80ca5da0630858814014fb1f88956fc69e5a4f76f94dea"
         },
@@ -493,14 +493,14 @@
             "starplot-product-promise"
           ],
           "arrow_payload_bytes": 3056,
-          "complete_render_median_ms": 296.39999997615814,
-          "complete_render_p95_ms": 576.280000013113,
+          "complete_render_median_ms": 376.40000000596046,
+          "complete_render_p95_ms": 379.90000001192095,
           "raw_render_repeats_ms": [
-            278.09999999403954,
-            296.39999997615814,
-            298.2000000178814,
-            645.8000000119209,
-            291.5
+            378.30000001192093,
+            380.30000001192093,
+            376.40000000596046,
+            375.40000000596046,
+            356.40000000596046
           ],
           "scene_hash": "sha256:e611b19f09c3ff10e9002fdc0a887988cc722b11360fe5ba5e58fd0752b6f8d5"
         }
@@ -512,68 +512,68 @@
     "plot_types": {
       "horizon": {
         "plot_kind": "horizon",
-        "plotly_render_seconds": 0.027023019007174298,
+        "plotly_render_seconds": 0.033132949989521876,
         "recorded_command_count": 5,
         "recorded_command_kinds": [
           "scatter",
           "text"
         ],
         "rendered_primitive_count": 6,
-        "scene_compile_seconds": 0.007274667004821822,
+        "scene_compile_seconds": 0.008580410009017214,
         "scene_layer_count": 5
       },
       "map": {
         "plot_kind": "map",
-        "plotly_render_seconds": 0.1195551359851379,
+        "plotly_render_seconds": 0.1255836630007252,
         "recorded_command_count": 9,
         "recorded_command_kinds": [
           "scatter",
           "text"
         ],
         "rendered_primitive_count": 10,
-        "scene_compile_seconds": 0.013597512006526813,
+        "scene_compile_seconds": 0.013896844000555575,
         "scene_layer_count": 9
       },
       "optic": {
         "plot_kind": "optic",
-        "plotly_render_seconds": 0.059349131013732404,
+        "plotly_render_seconds": 0.05123318999540061,
         "recorded_command_count": 2,
         "recorded_command_kinds": [
           "info_table",
           "polygon"
         ],
         "rendered_primitive_count": 17,
-        "scene_compile_seconds": 0.030613284994615242,
+        "scene_compile_seconds": 0.029335484985494986,
         "scene_layer_count": 2
       },
       "zenith": {
         "plot_kind": "zenith",
-        "plotly_render_seconds": 0.1412166930094827,
+        "plotly_render_seconds": 0.14743063697824255,
         "recorded_command_count": 1,
         "recorded_command_kinds": [
           "line"
         ],
         "rendered_primitive_count": 2,
-        "scene_compile_seconds": 0.004195174988126382,
+        "scene_compile_seconds": 0.004410254012327641,
         "scene_layer_count": 1
       }
     },
     "semantics": "One small, real recording/SceneCompiler/PlotlySceneAdapter sample for each supported interactive plot family, paired with external-Arrow browser diagnostics; this is coverage evidence, not a cross-family performance gate."
   },
   "plotly_construction": {
-    "median_seconds": 0.1361091180006042,
-    "p95_seconds": 0.14510246539721267
+    "median_seconds": 0.1808735799859278,
+    "p95_seconds": 0.18152474781381897
   },
   "point_count": 974153,
   "provenance": {
     "source": {
-      "fingerprint": "sha256:450655a2350f9ce95916e507c90c1a4f1e54729f62948a4991251787718b873f",
+      "fingerprint": "sha256:2476bb8b6cfec6f29815ff16b4d9b5c18fd2af8dada4fe9b67161906192a83e2",
       "fingerprint_scope": [
         "benchmarks/interactive_scene_pipeline.py",
         "pyproject.toml",
         "src/starplot/** (tracked files)"
       ],
-      "git_revision": "8915ab5a614fd4f43a752cb87ac6260c46e8c4e2",
+      "git_revision": "2c0fdf657575981dbef5dc903b51d262d3fc2f06",
       "tracked_dirty": false
     },
     "workload": {
@@ -588,97 +588,97 @@
     {
       "arrow_payload_bytes": 13011688,
       "external_html_bytes": 1760,
-      "legacy_renderer_preparation_seconds": 11.300110499025322,
-      "legacy_renderer_total_seconds": 11.43367584401858,
+      "legacy_renderer_preparation_seconds": 10.969826597982319,
+      "legacy_renderer_total_seconds": 11.150700177968247,
       "payload_bytes": 31173033,
-      "peak_rss_mb": 462.4296875,
-      "plotly_construction_seconds": 0.1335653449932579,
+      "peak_rss_mb": 474.72265625,
+      "plotly_construction_seconds": 0.1808735799859278,
       "point_count": 974153,
       "viewport_warm_ms": [
-        10.956289013847709,
-        10.76602900866419,
-        10.505585989449173,
-        10.172185982810333,
-        9.660962998168543
+        10.947290022158995,
+        10.997703997418284,
+        10.469683998962864,
+        10.269008984323591,
+        10.486476996447891
       ]
     },
     {
       "arrow_payload_bytes": 13011688,
       "external_html_bytes": 1760,
-      "legacy_renderer_preparation_seconds": 10.8371012910211,
-      "legacy_renderer_total_seconds": 10.970206487021642,
+      "legacy_renderer_preparation_seconds": 10.874499586003367,
+      "legacy_renderer_total_seconds": 11.045964168006321,
       "payload_bytes": 31173033,
-      "peak_rss_mb": 464.484375,
-      "plotly_construction_seconds": 0.1331051960005425,
+      "peak_rss_mb": 461.05859375,
+      "plotly_construction_seconds": 0.17146458200295456,
       "point_count": 974153,
       "viewport_warm_ms": [
-        10.986412991769612,
-        10.416595003334805,
-        10.016057000029832,
-        10.017476015491411,
-        9.068507992196828
+        11.149127007229254,
+        10.843196010682732,
+        10.650212003383785,
+        10.53617600700818,
+        10.121945000719279
       ]
     },
     {
       "arrow_payload_bytes": 13011688,
       "external_html_bytes": 1760,
-      "legacy_renderer_preparation_seconds": 10.82987578198663,
-      "legacy_renderer_total_seconds": 10.965984899987234,
+      "legacy_renderer_preparation_seconds": 10.957066928996937,
+      "legacy_renderer_total_seconds": 11.138079316006042,
       "payload_bytes": 31173033,
-      "peak_rss_mb": 459.13671875,
-      "plotly_construction_seconds": 0.1361091180006042,
+      "peak_rss_mb": 476.05859375,
+      "plotly_construction_seconds": 0.1810123870091047,
       "point_count": 974153,
       "viewport_warm_ms": [
-        10.533885011682287,
-        10.182386002270505,
-        9.600679011782631,
-        8.340315980603918,
-        8.146926003973931
+        11.142823990667239,
+        10.813564993441105,
+        10.729647008702159,
+        10.441774007631466,
+        10.273079009493813
       ]
     },
     {
       "arrow_payload_bytes": 13011688,
       "external_html_bytes": 1760,
-      "legacy_renderer_preparation_seconds": 11.122903816984035,
-      "legacy_renderer_total_seconds": 11.269292144977953,
+      "legacy_renderer_preparation_seconds": 10.910767140012467,
+      "legacy_renderer_total_seconds": 11.092419978027465,
       "payload_bytes": 31173033,
-      "peak_rss_mb": 468.3671875,
-      "plotly_construction_seconds": 0.1463883279939182,
+      "peak_rss_mb": 465.1484375,
+      "plotly_construction_seconds": 0.18165283801499754,
       "point_count": 974153,
       "viewport_warm_ms": [
-        8.48977401619777,
-        8.048025978496298,
-        8.79034199169837,
-        7.984616997418925,
-        8.521618001395836
+        11.047582986066118,
+        11.030558991478756,
+        10.527031001402065,
+        10.153822018764913,
+        10.073737998027354
       ]
     },
     {
       "arrow_payload_bytes": 13011688,
       "external_html_bytes": 1760,
-      "legacy_renderer_preparation_seconds": 11.083941354008857,
-      "legacy_renderer_total_seconds": 11.223900369019248,
+      "legacy_renderer_preparation_seconds": 11.33166324198828,
+      "legacy_renderer_total_seconds": 11.509081335971132,
       "payload_bytes": 31173033,
-      "peak_rss_mb": 468.44140625,
-      "plotly_construction_seconds": 0.13995901501039043,
+      "peak_rss_mb": 476.89453125,
+      "plotly_construction_seconds": 0.17741809398285113,
       "point_count": 974153,
       "viewport_warm_ms": [
-        7.9615160066168755,
-        8.975451026344672,
-        8.01766401855275,
-        8.659868995891884,
-        8.070748997852206
+        10.955477016977966,
+        11.181835987372324,
+        10.35633499850519,
+        10.29338501393795,
+        10.15717099653557
       ]
     }
   ],
   "scene_compile": {
-    "median_seconds": 11.083941354008857,
-    "p95_seconds": 11.264669162617064,
+    "median_seconds": 10.957066928996937,
+    "p95_seconds": 11.259295913187088,
     "semantics": "Native SceneCompiler.compile timing."
   },
   "schema_version": 2,
   "viewport_warm": {
-    "median_ms": 9.068507992196828,
-    "p95_ms": 10.918237012811005
+    "median_ms": 10.53617600700818,
+    "p95_ms": 11.14786640391685
   }
 }
