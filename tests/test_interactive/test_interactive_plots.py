@@ -1,5 +1,7 @@
 """Integration tests for Interactive*Plot classes."""
 
+import inspect
+
 import pytest
 import starplot.interactive.plots as interactive_plots
 
@@ -40,6 +42,29 @@ def test_interactive_map_plot_imports():
     assert InteractiveZenithPlot is not None
     assert InteractiveHorizonPlot is not None
     assert InteractiveOpticPlot is not None
+
+
+def test_export_html_public_signature_is_complete():
+    expected = [
+        "self",
+        "filename",
+        "width",
+        "height",
+        "transparent",
+        "data_mode",
+        "library_mode",
+        "data_url",
+        "allowed_data_origins",
+        "kwargs",
+    ]
+    for plot_class in (
+        interactive_plots.InteractiveMapPlot,
+        interactive_plots.InteractiveZenithPlot,
+        interactive_plots.InteractiveHorizonPlot,
+        interactive_plots.InteractiveOpticPlot,
+    ):
+        assert list(inspect.signature(plot_class.export_html).parameters) == expected
+        assert inspect.getdoc(plot_class.export_html)
 
 
 def test_interactive_map_plot_creates():

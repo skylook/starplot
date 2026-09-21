@@ -19,6 +19,7 @@ nav:
         - Callables: reference-callables.md
         - Collision Handling: reference-collisions.md
         - Positions: reference-positions.md
+        - Interactive Web Export: reference/interactive-web-export.md
         - Data Catalogs:
             - Overview: data/overview.md
             - Stars: data/stars.md
@@ -31,6 +32,9 @@ nav:
             - Deep Sky Objects: object-names/dsos.md
         - Localization: reference-localization.md
         - Settings: reference-settings.md
+    - Migration Guides:
+        - Version 0.16.0: migration-guides/0.16.0.md
+        - Plotly 6 and Arrow Export: migrations/plotly-6-arrow-export.md
     - Data Sources: data-sources.md
     - Showcase: showcase.md
     - License: license.md

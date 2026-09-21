@@ -1,3 +1,10 @@
+## Unreleased
+
+- Adds interactive Plotly output for map, zenith, horizon, and optic plots,
+  including notebook figures and inline, external, or remote Arrow Scene HTML
+  delivery. See the [interactive web export guide](reference/interactive-web-export.md)
+  and [migration notes](migrations/plotly-6-arrow-export.md).
+
 ## v0.20.x
 
 - Adds a `GalaxyPlot` for plotting in galactic coordinates

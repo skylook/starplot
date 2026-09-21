@@ -41,6 +41,10 @@ STARPLOT_DATA_PATH=/home/myuser/data
 
 ```
 
+Set `STARPLOT_DATA_PATH` before importing Starplot. The directory must be
+writable; Starplot creates it during initialization if it does not already
+exist.
+
 ::: starplot.config.Settings
     options:
         show_root_heading: true

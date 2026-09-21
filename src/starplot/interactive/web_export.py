@@ -484,6 +484,15 @@ def export_scene_html(
     beside an external Scene bundle, while ``'inline'`` embeds them in the HTML;
     those two modes are offline-capable.  Delivery modes are explicit and do
     not silently fall back to one another.
+
+    ``library_mode='directory'`` requires ``data_mode='external'``. Remote
+    exports require an absolute HTTP(S) ``data_url``; extra layer origins must
+    be listed in ``allowed_data_origins``.
+
+    Returns an :class:`ExportResult` containing the output paths, canonical
+    transport bytes, and Scene hash. Raises :class:`ValueError` for invalid
+    mode, path, or URL combinations, and :class:`TypeError` when ``scene`` is
+    not a :class:`ScenePackage`.
     """
     if not isinstance(scene, ScenePackage):
         raise TypeError("scene must be a ScenePackage")

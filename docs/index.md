@@ -30,6 +30,8 @@ Starplot is a Python library for creating star charts and maps of the sky
 
 - 📥 **Export** - png, svg, jpeg
 
+- 🌐 **Interactive Web Charts** - Plotly figures and inline, external, or remote HTML delivery
+
 - 🚀 **Data Backend** - powered by DuckDB + Ibis for fast object lookup
 
 - 📓 **Custom Data Catalogs** - with helpers for building and optimizing

@@ -8,6 +8,16 @@ Supported Python versions: 3.10 / 3.11 / 3.12 / 3.13
 pip install starplot
 ```
 
+To create Plotly figures or interactive HTML charts, install the optional web
+dependencies:
+
+```
+pip install "starplot[interactive]"
+```
+
+See the [interactive web export guide](reference/interactive-web-export.md) for
+the supported plot classes and delivery modes.
+
 Or, via [Conda](https://anaconda.org/channels/conda-forge/packages/starplot/overview):
 ```
 conda install conda-forge::starplot

@@ -40,9 +40,3 @@ cd web && npm test
 # Lint changed Python files
 python -m ruff check <paths>
 ```
-
-## Test environment quirks
-
-- `tests/test_data.py::test_data_path` mocks `STARPLOT_DATA_PATH` to `/testing`.
-  On a read-only filesystem this test will fail with `OSError: [Errno 30] Read-only
-  file system`. This is an environment limitation, not a code regression.

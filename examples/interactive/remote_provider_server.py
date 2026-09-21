@@ -6,7 +6,6 @@ This example builds a simplified Orion scene (same field as
 - ``/`` or ``/orion-remote.html`` — the client HTML shell.
 - ``/scenes/orion/manifest.json`` — the scene manifest.
 - ``/scenes/orion/<layer-uri>.arrow`` — individual Arrow IPC Stream layers.
-- ``/scenes/orion/detail/<object-id>`` — optional catalog detail for objects.
 
 Run this script first:
 
@@ -66,32 +65,9 @@ def _build_client_html_and_provider():
     )
 
     manifest = parse_scene_manifest(export.manifest_bytes)
-    provider = SceneProvider(
-        manifest,
-        export.manifest_bytes,
-        export.layer_bytes,
-        detail_provider=_CatalogDetailProvider(),
-    )
+    provider = SceneProvider(manifest, export.manifest_bytes, export.layer_bytes)
     uri_to_id = {layer.data_source.uri: layer.id for layer in manifest.layers}
     return export.html_path, provider, uri_to_id
-
-
-class _CatalogDetailProvider:
-    """Placeholder detail provider that echoes object_id.
-
-    A real implementation would look up the object in a catalog database. This
-    is only used when a scene both advertises ``catalog_detail: true`` in its
-    manifest capabilities and has at least one layer with
-    ``InteractionPolicy.HOVER_AND_DETAIL``. The simplified Orion scene used here
-    does not, so the detail endpoint returns 404 through the provider.
-    """
-
-    def get_object(self, object_id: str) -> Mapping[str, object] | None:
-        return {
-            "object_id": object_id,
-            "name": object_id,
-            "detail": "Replace with a real catalog lookup.",
-        }
 
 
 def _viewport_request(query: Mapping[str, str]) -> ViewportRequest | None:
@@ -130,7 +106,11 @@ class _Handler(BaseHTTPRequestHandler):
         query = dict(parse_qsl(parsed.query))
 
         if path in ("/", "/orion-remote.html"):
-            self._send(200, "text/html; charset=utf-8", self.html_bytes)
+            self._send(
+                200,
+                {"Content-Type": "text/html; charset=utf-8"},
+                self.html_bytes,
+            )
             return
 
         parts = [part for part in path.split("/") if part]
@@ -139,21 +119,20 @@ class _Handler(BaseHTTPRequestHandler):
             or parts[0] != "scenes"
             or parts[1] != SCENE_ID
         ):
-            self._send(404, "text/plain", b"Not found")
+            self._send(404, {"Content-Type": "text/plain"}, b"Not found")
             return
 
         if parts[2:] == ["manifest.json"]:
             resp = self.provider.manifest(self.headers.get("If-None-Match"))
-        elif len(parts) == 4 and parts[2] == "detail":
-            # Only reachable in the browser when catalog_detail is true and a
-            # layer uses HOVER_AND_DETAIL; this stub scene does not.
-            object_id = parts[3]
-            resp = self.provider.object_detail(object_id)
         else:
             layer_uri = "/".join(parts[2:])
             layer_id = self.uri_to_id.get(layer_uri)
             if layer_id is None:
-                self._send(404, "text/plain", b"Layer not found")
+                self._send(
+                    404,
+                    {"Content-Type": "text/plain"},
+                    b"Layer not found",
+                )
                 return
             viewport = _viewport_request(query)
             resp = self.provider.layer(
@@ -162,12 +141,14 @@ class _Handler(BaseHTTPRequestHandler):
                 self.headers.get("If-None-Match"),
             )
 
-        self._send(resp.status, resp.headers.get("Content-Type"), resp.body_bytes())
+        self._send(resp.status, resp.headers, resp.body_bytes())
 
-    def _send(self, status: int, content_type: str, body: bytes) -> None:
+    def _send(self, status: int, headers: Mapping[str, str], body: bytes) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
+        for name, value in headers.items():
+            self.send_header(name, value)
+        if "Content-Length" not in headers:
+            self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 

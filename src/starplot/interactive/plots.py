@@ -17,11 +17,12 @@ Usage::
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 
 from starplot.interactive.recording_mixin import RecordingMixin
 from starplot.interactive.plotly_renderer import PlotlyRenderer
 from starplot.interactive.scene_compiler import SceneCompiler
-from starplot.interactive.web_export import export_scene_html
+from starplot.interactive.web_export import ExportResult, export_scene_html
 from starplot.plots import MapPlot, ZenithPlot, HorizonPlot, OpticPlot
 
 
@@ -50,9 +51,10 @@ class _InteractiveMixin:
             transparent,
         )
 
-    def export_html(self, filename: str, width: int = None, height: int = None,
+    def export_html(self, filename: str | Path, width: int = None, height: int = None,
                     transparent: bool = False, data_mode="external",
-                    library_mode=None, data_url=None, allowed_data_origins=(), **kwargs):
+                    library_mode=None, data_url=None, allowed_data_origins=(),
+                    **kwargs) -> ExportResult:
         """Export as an interactive Plotly HTML file.
 
         Args:
@@ -70,6 +72,19 @@ class _InteractiveMixin:
                 use locally bundled libraries and work offline.
             data_url: Required manifest URL for ``remote`` mode.
             allowed_data_origins: Explicit remote layer-origin allow-list.
+
+        Returns:
+            The written HTML path, optional bundle path, canonical manifest and
+            layer bytes, and Scene hash.
+
+        Raises:
+            ValueError: If modes conflict, remote configuration is incomplete,
+                or an output/remote URL is unsafe.
+            TypeError: If an unsupported option is supplied.
+
+        ``library_mode='directory'`` is valid only with external data. If no
+        library mode is supplied, inline data defaults to inline libraries;
+        external and remote data default to CDN libraries.
         """
         include_plotlyjs = kwargs.pop("include_plotlyjs", None)
         for legacy_name in ("full_html", "auto_open", "config", "post_script"):
@@ -173,34 +188,13 @@ class InteractiveMapPlot(_InteractiveMixin, RecordingMixin, MapPlot):
         p.export_html("chart.html", width=1400, height=900)
     """
 
-    def export_html(self, filename: str, width: int = None, height: int = None,
-                    transparent: bool = False, **kwargs):
-        return super().export_html(filename, width=width, height=height,
-                                   transparent=transparent, **kwargs)
-
-
 class InteractiveZenithPlot(_InteractiveMixin, RecordingMixin, ZenithPlot):
     """ZenithPlot with interactive Plotly export.  API same as ZenithPlot."""
-
-    def export_html(self, filename: str, width: int = None, height: int = None,
-                    transparent: bool = False, **kwargs):
-        return super().export_html(filename, width=width, height=height,
-                                   transparent=transparent, **kwargs)
 
 
 class InteractiveHorizonPlot(_InteractiveMixin, RecordingMixin, HorizonPlot):
     """HorizonPlot with interactive Plotly export.  API same as HorizonPlot."""
 
-    def export_html(self, filename: str, width: int = None, height: int = None,
-                    transparent: bool = False, **kwargs):
-        return super().export_html(filename, width=width, height=height,
-                                   transparent=transparent, **kwargs)
-
 
 class InteractiveOpticPlot(_InteractiveMixin, RecordingMixin, OpticPlot):
     """OpticPlot with interactive Plotly export.  API same as OpticPlot."""
-
-    def export_html(self, filename: str, width: int = None, height: int = None,
-                    transparent: bool = False, **kwargs):
-        return super().export_html(filename, width=width, height=height,
-                                   transparent=transparent, **kwargs)
