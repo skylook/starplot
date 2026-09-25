@@ -1,13 +1,23 @@
 # Interactive Scene / Arrow Parity Ledger
 
-> Final Scene/Arrow browser review: **ACCEPTED, 2026-08-16** at revision
-> `67d13d637cd90286e2e8b5c3a41e3a131225ae8b`. This run includes the dense
+> Final Scene/Arrow browser review: **ACCEPTED, 2026-09-25** at revision
+> `badf62d4a3641902e67f737d8eb3d3d44deafda3`. This run includes the dense
 > finite-palette ScatterGL batching and responsive marker-edge paths.
 
 This ledger supersedes the earlier direct-Python-Plotly/Kaleido review. Every
 row below was regenerated from one `ScenePackage`, exported as inline Arrow,
 external Arrow and remote `SceneProvider` data, then rendered in a real Chrome
-browser. The exact artifacts live in the corresponding example directory.
+browser. The exact artifacts live in the gitignored local directory
+`comparison_outputs/<example>/`; they are review evidence, not release files.
+
+Reproduce the evidence from a clean checkout with:
+
+```bash
+for example in horizon_double_cluster horizon_gradient horizon_sgr galaxy_custom_marker map_big map_big_dipper map_canis_major map_carina map_cas map_milky_way_stars map_orion map_orthographic map_sagittarius map_virgo_cluster optic_iss_transit optic_m45 optic_moon_saturn optic_orion_nebula optic_solar_eclipse star_chart_basic star_chart_detail star_chart_french; do
+  PYTHONPATH=src python tools/visual_parity/gen_comparison.py "$example" \
+    --transports inline,external,provider || exit 1
+done
+```
 
 ## Evidence contract applied to every example
 
@@ -26,7 +36,7 @@ Final evidence: **22/22** folders contain all required artifacts, **22/22**
 transport reports pass, and **22/22** browser reports have equal inline /
 external / provider trace counts. Every report records `tracked_dirty=false`
 and source fingerprint
-`sha256:fa0f6855dcfcec3b23617cbafdbab0951097d81062556de6e6899cfa66953045`.
+`sha256:2bb5c65dacd25e9389a5f3a7e2b5c06af3edf6579507fbc61237ca360517a658`.
 `map_milky_way_stars` renders as 51 bounded finite-palette ScatterGL traces in
 every transport, with identical canonical Arrow data and restored dense-field
 marker-edge coverage.
