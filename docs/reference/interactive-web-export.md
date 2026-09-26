@@ -84,6 +84,18 @@ its Scene viewer performs that additional correction.
 
 ## 2. External bundle — default
 
+Scene HTML also delivers the requested bundled Inter faces and GFS Didot,
+including their font licenses, and waits for them before drawing. Directory
+library mode stores reusable files inside that chart's `.scene/assets/fonts/`;
+standalone and CDN-library pages embed the requested faces. Inter Regular adds
+about 543 KB of base64 data, with other faces included only when requested.
+Fonts are not deduplicated across different chart bundles. Custom fonts outside
+Starplot's bundled families must be supplied by the application.
+
+Bounded SVG layers preserve recorded native custom marker outlines. Very large
+layers rendered with WebGL retain Plotly's supported-symbol approximations;
+use a bounded SVG scene when exact custom glyphs are required.
+
 `export_html("chart.html")` writes two items:
 
 - `chart.html` — a small HTML shell.

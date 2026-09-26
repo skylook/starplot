@@ -886,6 +886,28 @@ test("recorded legend geometry restores native elements idempotently", async () 
   assert.equal(hit.attrs.get("width"), "46");
 });
 
+test("native custom marker paths retain proportions after idempotent redraw", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const attrs = new Map([["transform", "translate(10,20)"]]);
+  const point = { __data__: { i: 0 },
+    getAttribute(key) { return attrs.get(key); },
+    setAttribute(key, value) { attrs.set(key, value); } };
+  const traceNode = { __data__: [{ trace: { index: 0 } }],
+    querySelectorAll() { return [point]; } };
+  const target = { _fullData: [{ marker: { size: [10] }, meta: {
+    starplot_marker_path: [{ code: 1, vertices: [-0.5, 0] }, { code: 2, vertices: [0.5, 0] }],
+    starplot_marker_path_scale: 2,
+  } }], querySelectorAll() { return [traceNode]; } };
+  runtime._applyRecordedMarkerPaths(target);
+  assert.equal(attrs.get("d"), "M-0.5,0 L0.5,0");
+  assert.equal(attrs.get("transform"), "translate(10,20) scale(20)");
+  runtime._applyRecordedMarkerPaths(target);
+  assert.equal(attrs.get("transform"), "translate(10,20) scale(20)");
+  target._fullData[0].marker.size = [5];
+  runtime._applyRecordedMarkerPaths(target);
+  assert.equal(attrs.get("transform"), "translate(10,20) scale(10)");
+});
+
 test("afterplot presentation correction binds once and uses the latest scene", async () => {
   const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
   const listeners = [];

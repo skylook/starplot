@@ -143,6 +143,26 @@ def _artist_alpha(artist):
     return float(1.0 if alpha is None else alpha)
 
 
+def _native_marker_path(collection, symbol):
+    """Carry custom glyph geometry instead of renderer-specific approximations."""
+    if collection is None or str(symbol) in {
+        "point", "circle", "square", "star", "diamond", "triangle", "plus",
+        ".", "o", "s", "*", "D", "^", "+",
+    }:
+        return {}
+    paths = collection.get_paths()
+    if not paths:
+        return {}
+    from starplot.interactive.style_converter import _marker_extent_factor
+    return {
+        "marker_path": [{"code": int(code), "vertices": [
+            float(value) if index % 2 == 0 else -float(value)
+            for index, value in enumerate(vertices)]}
+            for vertices, code in paths[0].iter_segments(curves=True)],
+        "marker_path_scale": 1 / _marker_extent_factor(str(symbol)),
+    }
+
+
 def _capture_legend_layout(ax, legend):
     """Capture drawn legend geometry, independently of plotted trace sizes.
 
@@ -446,6 +466,7 @@ class RecordingMixin:
                 })
                 command.style.update({"xref": "x domain", "yref": "y domain",
                                       "ha": "center", "va": "top"})
+                command.space = CoordinateSpace.AXES
 
         try:
             has_gradient = (
@@ -790,6 +811,7 @@ class RecordingMixin:
             "edge_width": getattr(resolved_style.marker, "edge_width", 0),
             "legend_label": legend_label,
             "fill": getattr(resolved_style.marker, "fill", "full"),
+            **_native_marker_path(coll if len(self.ax.collections) > collections_before else None, symbol),
         }
         self._recorder.record_scatter(
             x=xs,
@@ -1027,6 +1049,7 @@ class RecordingMixin:
             "edge_width": float(linewidths[0]) if len(linewidths) else 0.0,
             "fill": "full" if face_alpha > 0 else "none",
             "legend_label": legend_label,
+            **_native_marker_path(coll, style.marker.symbol),
         }
 
         self._recorder.record_scatter(

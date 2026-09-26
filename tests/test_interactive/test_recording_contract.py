@@ -469,6 +469,7 @@ def test_title_refresh_uses_drawn_bbox_relative_to_final_axes():
     command = next(c for c in plot._recorder.commands if c.gid == "title")
     axes = plot.ax.get_window_extent()
     title = plot.ax.title.get_window_extent()
+    assert command.space is CoordinateSpace.AXES
     assert command.style["xref"] == "x domain"
     assert command.style["yref"] == "y domain"
     assert command.data["x"] == pytest.approx((title.x0 + title.width / 2 - axes.x0) / axes.width)
@@ -487,6 +488,19 @@ def test_recorded_polygon_preserves_transformed_compound_fill(monkeypatch):
     command = next(c for c in plot._recorder.commands if c.kind == "polygon")
     assert command.data["compound_fill"] is True
     assert command.data["rings"] == rings
+
+
+def test_custom_marker_records_actual_native_path():
+    plot = make_map_plot()
+    plot.marker(80, 10, style={"marker": {"symbol": "circle_dotted_edge", "size": 20}})
+    command = next(c for c in plot._recorder.commands if c.kind == "scatter")
+    native = plot.ax.collections[-1].get_paths()[0]
+    expected = [{"code": int(code), "vertices":
+                 [float(value) if index % 2 == 0 else -float(value)
+                  for index, value in enumerate(vertices)]}
+                for vertices, code in native.iter_segments(curves=True)]
+    assert command.style["marker_path"] == expected
+    assert command.style["marker_path_scale"] == 1
 
 
 def test_camera_border_records_the_final_matplotlib_patch_exactly_once():

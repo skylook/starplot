@@ -341,7 +341,10 @@
       name: traceName(layer, style),
       legendgroup: layer.group_id,
       showlegend: Boolean(traceName(layer, style)),
-      meta: { starplot_marker_symbol: style.symbol || "circle" },
+      meta: { starplot_marker_symbol: style.symbol || "circle", ...(style.marker_path ? {
+        starplot_marker_path: style.marker_path,
+        starplot_marker_path_scale: style.marker_path_scale,
+      } : {}) },
     };
     if (hoverAllowed
         && layer.hover_fields && layer.hover_fields.length) {
@@ -1267,7 +1270,8 @@
       const traceIndex = traceNode.__data__ && traceNode.__data__[0]
         && traceNode.__data__[0].trace && traceNode.__data__[0].trace.index;
       const trace = fullData[traceIndex];
-      if (!trace || !trace.meta || trace.meta.starplot_marker_symbol !== "ellipse") return;
+      if (!trace || !trace.meta || trace.meta.starplot_marker_symbol !== "ellipse"
+          || trace.meta.starplot_marker_path) return;
       traceNode.querySelectorAll("path.point").forEach((point) => {
         const transform = point.getAttribute("transform");
         if (!transform) return;
@@ -1303,6 +1307,39 @@
     });
   }
 
+  function markerPathString(path, scale = 1) {
+    const commands = { 1: ["M", 2], 2: ["L", 2], 3: ["Q", 4], 4: ["C", 6], 79: ["Z", 2] };
+    const segments = (path || []).map((segment) => {
+      const command = commands[segment.code], points = segment.vertices;
+      if (!command || !Array.isArray(points) || points.length !== command[1] || !points.every(Number.isFinite)) return null;
+      return command[0] === "Z" ? "Z" : command[0] + points.map((point) => point * scale).join(",");
+    });
+    return segments.length && segments.every((segment) => segment != null) ? segments.join(" ") : null;
+  }
+
+  function _applyRecordedMarkerPaths(target) {
+    if (!target || typeof target.querySelectorAll !== "function") return;
+    const data = target._fullData || [];
+    target.querySelectorAll("g.trace").forEach((node) => {
+      const index = node.__data__?.[0]?.trace?.index;
+      const trace = data[index], meta = trace && trace.meta;
+      if (!meta || !meta.starplot_marker_path || !trace.marker) return;
+      const path = markerPathString(meta.starplot_marker_path);
+      const multiplier = Number(meta.starplot_marker_path_scale);
+      if (!path || !Number.isFinite(multiplier) || multiplier <= 0) return;
+      node.querySelectorAll("path.point").forEach((point, position) => {
+        const row = Number.isInteger(point.__data__?.i) ? point.__data__.i : position;
+        const sizes = trace.marker.size;
+        const size = Number(Array.isArray(sizes) || ArrayBuffer.isView(sizes) ? sizes[row] : sizes);
+        const translation = (point.getAttribute("transform") || "").match(/^translate\([^)]*\)/);
+        if (!translation || !Number.isFinite(size) || size < 0) return;
+        point.setAttribute("d", path);
+        point.setAttribute("transform", `${translation[0]} scale(${size * multiplier})`);
+        point.setAttribute("vector-effect", "non-scaling-stroke");
+      });
+    });
+  }
+
   function _applyRecordedLegendLayout(target, scene, state) {
     const recorded = scene.viewport.legend_layout;
     if (!recorded) { _applyLegendSymbolScale(target, scene); return; }
@@ -1316,7 +1353,6 @@
     const fontScale = Number(state.correctedFontPixelScale || state.metrics?.fontPixelScale || 1);
     const texts = new Map((recorded.texts || []).map((item) => [String(item.text), item]));
     const markers = new Map((recorded.markers || []).map((item) => [String(item.label), item]));
-    const pathCommands = { 1: ["M", 2], 2: ["L", 2], 3: ["Q", 4], 4: ["C", 6], 79: ["Z", 2] };
     target.querySelectorAll("g.legend").forEach((legend) => {
       legend.setAttribute("transform", `translate(${xaxis._offset + frame.x * width},${yaxis._offset + (1 - frame.y) * height})`);
       legend.querySelectorAll("rect.bg").forEach((bg) => {
@@ -1349,13 +1385,9 @@
         const name = label && (label.getAttribute("data-unformatted") || label.textContent);
         const marker = markers.get(name);
         if (marker && [marker.x, marker.y].every(Number.isFinite)) {
-          const segments = (marker.path || []).map((segment) => {
-            const command = pathCommands[segment.code], points = segment.vertices;
-            if (!command || !Array.isArray(points) || points.length !== command[1] || !points.every(Number.isFinite)) return null;
-            return command[0] === "Z" ? "Z" : command[0] + points.map((point) => point * width).join(",");
-          });
-          if (segments.length && segments.every((segment) => segment != null)) row.querySelectorAll("path.scatterpts").forEach((symbol) => {
-            symbol.setAttribute("d", segments.join(" "));
+          const path = markerPathString(marker.path, width);
+          if (path) row.querySelectorAll("path.scatterpts").forEach((symbol) => {
+            symbol.setAttribute("d", path);
             symbol.setAttribute("transform", `translate(${marker.x * width},${marker.y * width})`);
             symbol.setAttribute("vector-effect", "non-scaling-stroke");
             symbol.style.fill = marker.facecolor || "none";
@@ -1557,6 +1589,7 @@
     const handler = () => {
       const current = target._starplotDrawState;
       // DOM-only: never call Plotly here, which would emit afterplot recursively.
+      _applyRecordedMarkerPaths(target);
       _applyEllipseMarkerTransforms(target);
       _applyRecordedLegendLayout(target, current.scene, current);
       _applyAnnotationStrokes(target, current);
@@ -1579,6 +1612,7 @@
         const context = target._starplotResizeContext;
         if (!context) return;
         await _applyScaleCorrection(target, context.state, context.Plotly);
+        _applyRecordedMarkerPaths(target);
         _applyEllipseMarkerTransforms(target);
         _applyRecordedLegendLayout(target, context.state.scene, context.state);
         _applyAnnotationStrokes(target, context.state);
@@ -1717,6 +1751,7 @@
     // the actual axes domain and restyle when the correction is significant.
     // This also runs on window resize (see _applyScaleCorrection).
     await _applyScaleCorrection(target, correctionState, Plotly);
+    _applyRecordedMarkerPaths(target);
     _applyEllipseMarkerTransforms(target);
     _applyRecordedLegendLayout(target, scene, correctionState);
     // Debounced resize re-correction.  Plotly's responsive:true only resizes
@@ -1746,6 +1781,7 @@
     _applyEllipseMarkerTransforms,
     _applyLegendSymbolScale,
     _applyRecordedLegendLayout,
+    _applyRecordedMarkerPaths,
     _ensureDrawHandler,
     magnitudeScaleTraces,
   });
