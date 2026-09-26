@@ -340,6 +340,37 @@ def _compile(command, *, width=500, height=500):
     return SceneCompiler().compile([command], PROJECTION, STYLE, width, height, False)
 
 
+@pytest.mark.parametrize("rotation", [15, -30])
+def test_text_rotation_converts_matplotlib_counterclockwise_to_plotly(rotation):
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    command = primitive_commands()["text"]
+    command.style["rotation"] = rotation
+    annotation = PlotlySceneAdapter().render(_compile(command)).layout.annotations[0]
+    assert annotation.textangle == -rotation
+
+
+def test_bold_text_keeps_recorded_font_family():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    command = primitive_commands()["text"]
+    command.style["font_weight"] = "bold"
+    annotation = PlotlySceneAdapter().render(_compile(command)).layout.annotations[0]
+    assert annotation.font.family == "Inter, Arial, sans-serif"
+    assert annotation.font.weight == 700
+    assert annotation.text == "Orion<br>Major"
+
+
+def test_horizontal_legend_title_stays_above_entries():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    scene = _compile(primitive_commands()["text"])
+    scene = replace(scene,
+        style_info={**scene.style_info, "legend_title": "Legend"},
+        viewport={**scene.viewport, "legend_position": {"orientation": "h"}})
+    assert PlotlySceneAdapter().render(scene).layout.legend.title.side == "top"
+
+
 def test_recorded_top_margin_places_plotly_title_above_full_height_axes():
     from starplot.interactive.plotly_adapter import PlotlySceneAdapter
 
@@ -459,6 +490,10 @@ def test_scene_adapter_matches_independently_captured_legacy_primitive_snapshot(
         legacy_visual_view(actual),
         legacy_visual_view(expected),
         scene,
+        # The legacy renderer copied the angle without converting direction.
+        allowed_diffs={
+            ("layout", "annotations", 0, "textangle"): (15.0, -15.0)
+        } if name == "text" else None,
     )
 
 

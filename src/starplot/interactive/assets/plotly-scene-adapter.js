@@ -180,9 +180,6 @@
 
   function plotlyFontFamily(value, weight) {
     const raw = String(value || "Inter").trim();
-    if (String(weight || "").toLowerCase().includes("bold")) {
-      return "Arial Black, Arial, sans-serif";
-    }
     return raw.includes(",") ? raw : `${raw}, Arial, sans-serif`;
   }
 
@@ -646,23 +643,27 @@
       const horizontal = variant.ha || style.ha || "center";
       const vertical = variant.va || style.va || "center";
       const weight = String(variant.font_weight || style.font_weight || "normal").toLowerCase();
+      const fontWeight = ({ normal: 400, bold: 700, light: 300, medium: 500,
+        semibold: 600, heavy: 800, "extra bold": 800, black: 900 })[weight]
+        ?? (Number.isFinite(Number(weight)) ? Number(weight) : 400);
       const titleTop = Number(style.axes_domain_top);
       const titleY = layer.group_id === "title" && (scene.viewport || {}).margin
         && yref === "paper" && Number.isFinite(titleTop) && titleTop > 0
         ? y[index] / titleTop : y[index];
       annotations.push({
         x: x[index], y: (yref === "paper" && (layer.group_id === "horizon-bottom" || layer.group_id === "horizon-label" || style.footer)
-          ? titleY + Number(settings.footerOffset || 0) : titleY), text: weight === "bold" ? `<b>${text[index]}</b>` : text[index],
+          ? titleY + Number(settings.footerOffset || 0) : titleY), text: text[index],
         showarrow: false, xref, yref,
         xanchor: ["left", "right", "center"].includes(horizontal) ? horizontal : "center",
         yanchor: ({ center: "middle", baseline: "bottom", bottom: "bottom", top: "top" })[vertical] || "middle",
         xshift: Number(variant.xshift ?? style.xshift ?? xOffset[index]) * pointScale,
         yshift: Number(variant.yshift ?? style.yshift ?? yOffset[index]) * pointScale,
-        textangle: Number(rotation[index]),
+        textangle: -Number(rotation[index]),
         font: {
           size: Math.max(8, Number(variant.font_size || style.font_size || 12) * pointScale),
           color: variant.font_color || style.font_color || "#ffffff",
           family: plotlyFontFamily(variant.font_name || style.font_name, weight),
+          weight: fontWeight,
         },
         opacity: Number(variant.font_alpha ?? style.font_alpha ?? style.alpha ?? 1),
       });
@@ -960,6 +961,7 @@
     if (legendTitle) {
       legend.title = {
         text: legendTitle,
+        side: "top",
         font: { ...legend.grouptitlefont },
       };
     }
@@ -1263,8 +1265,8 @@
       traceNode.querySelectorAll("path.point").forEach((point) => {
         const transform = point.getAttribute("transform");
         if (!transform) return;
-        const baseTransform = transform.replace(/ rotate\(15\) scale\(1 0\.5\)$/, "");
-        point.setAttribute("transform", `${baseTransform} rotate(15) scale(1 0.5)`);
+        const baseTransform = transform.replace(/ rotate\(-?15\) scale\(1 0\.5\)$/, "");
+        point.setAttribute("transform", `${baseTransform} rotate(-15) scale(1 0.5)`);
         point.setAttribute("vector-effect", "non-scaling-stroke");
       });
     });

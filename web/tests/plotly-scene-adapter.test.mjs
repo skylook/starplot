@@ -471,7 +471,7 @@ test("text preserves coordinate references, rotation, offsets, and per-row style
   assert.equal(trace.visible, false);
   assert.equal(effects.annotations[0].xref, "x domain");
   assert.equal(effects.annotations[0].yref, "y domain");
-  assert.deepEqual(Array.from(effects.annotations, (item) => item.textangle), [15, 30]);
+  assert.deepEqual(Array.from(effects.annotations, (item) => item.textangle), [-15, -30]);
   assert.deepEqual(Array.from(effects.annotations, (item) => item.font.size), [10, 14]);
   assert.deepEqual(Array.from(effects.annotations, (item) => item.xshift), [10, -10]);
   assert.deepEqual(Array.from(effects.annotations, (item) => item.yshift), [5, -5]);
@@ -589,7 +589,7 @@ test("ellipse SVG transforms target only semantic ellipse marker paths", async (
   assert.equal(ordinaryPoint.getAttribute("vector-effect"), null);
   assert.equal(
     ellipsePoint.getAttribute("transform"),
-    "translate(30,40) rotate(15) scale(1 0.5)",
+    "translate(30,40) rotate(-15) scale(1 0.5)",
   );
   assert.equal(ellipsePoint.getAttribute("vector-effect"), "non-scaling-stroke");
 });
@@ -803,6 +803,7 @@ test("browser legend preserves recorded styling and magnitude scale", async () =
   assert.equal(layout.legend.font.color, "#101010");
   assert.equal(layout.legend.font.size, 10);
   assert.equal(layout.legend.title.text, "Legend &lt;unsafe&gt;");
+  assert.equal(layout.legend.title.side, "top");
   assert.equal(layout.legend.title.font.size, 12);
   assert.equal(layout.legend.grouptitlefont.size, 12);
   assert.equal(layout.legend.tracegroupgap, 33);
@@ -891,7 +892,9 @@ test("layout-only layers keep one trace slot and emit valid annotations and foot
   assert.equal(final.annotations.length, 3);
   assert.equal(final.annotations[0].xanchor, "right");
   assert.equal(final.annotations[0].yanchor, "top");
-  assert.equal(final.annotations[0].textangle, 15);
+  assert.equal(final.annotations[0].textangle, -15);
+  assert.equal(final.annotations[0].font.family, "Inter, Arial, sans-serif");
+  assert.equal(final.annotations[0].font.weight, 700);
   assert.equal(final.shapes[0].fillcolor, "#abc");
   assert.equal(final.margin.b, 105);
 });

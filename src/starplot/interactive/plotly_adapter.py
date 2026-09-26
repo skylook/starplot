@@ -346,6 +346,7 @@ class _PlotlyRenderContext:
         if legend_title:
             legend["title"] = dict(
                 text=_html_escape(legend_title),
+                side="top",
                 font=dict(
                     color=self.style_info.get("legend_font_color", "#ffffff"),
                     size=max(
@@ -1047,11 +1048,6 @@ class _PlotlyRenderContext:
         )
         if "weight" in go.layout.annotation.Font()._valid_props:
             font["weight"] = numeric_weight
-        if numeric_weight == 700 or (
-            isinstance(numeric_weight, (int, float)) and numeric_weight >= 600
-        ):
-            text = f"<b>{text}</b>"
-            font["family"] = "Arial Black, Arial, sans-serif"
         self.fig.add_annotation(
             x=x,
             y=y,
@@ -1062,7 +1058,8 @@ class _PlotlyRenderContext:
             yanchor=yanchor,
             xshift=xshift,
             yshift=yshift,
-            textangle=float(layer.data["rotation"][0]),
+            # Matplotlib rotates counterclockwise; Plotly rotates clockwise.
+            textangle=-float(layer.data["rotation"][0]),
             xref=xref,
             yref=yref,
             opacity=style.get("font_alpha", style.get("alpha", 1.0)),

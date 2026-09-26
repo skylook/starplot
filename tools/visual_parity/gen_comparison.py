@@ -35,9 +35,11 @@ from urllib.request import Request, urlopen
 
 if __package__:
     from . import crops
+    from ._example_seed import COMPARISON_RANDOM_SEED
     from .server import SafeStaticHandler
 else:
     import crops
+    from _example_seed import COMPARISON_RANDOM_SEED
     from server import SafeStaticHandler
 import numpy as np
 
@@ -484,6 +486,7 @@ def _snapshot_provenance(root: Path = ROOT, name: str | None = None) -> dict[str
     """Capture a full provenance snapshot before or after generating evidence."""
     return {
         "git_revision": _git_stdout(root, "rev-parse", "HEAD").strip(),
+        "comparison_random_seed": COMPARISON_RANDOM_SEED,
         "tracked_dirty": _tracked_dirty(root),
         "source_fingerprint": _source_fingerprint(root),
         "source_fingerprint_scope": _source_fingerprint_scope(root),
@@ -801,6 +804,22 @@ def _find_new_png(
     return new[0]
 
 
+def _run_original(script: Path, folder: Path, environment: Mapping[str, str]) -> None:
+    """Run the original example with the interactive runner's fixed RNG seed."""
+    seed_runner = ROOT / "tools" / "visual_parity" / "_example_seed.py"
+    result = subprocess.run(
+        [sys.executable, str(seed_runner), str(script)],
+        cwd=folder,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=900,
+        env=dict(environment),
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr)
+
+
 def _run_interactive(name: str, folder: Path, environment: Mapping[str, str]) -> None:
     """Run the interactive example through the comparison-export harness."""
     interactive = ROOT / "examples" / "interactive" / f"{name}_interactive.py"
@@ -938,9 +957,7 @@ def run_example(name: str, transports: tuple[str, ...]) -> Path:
     try:
         print(f"[1/4] Running original: {original.name}")
         pngs_before = _snapshot_pngs(staging)
-        result = subprocess.run([sys.executable, str(original)], cwd=staging, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=900, env=environment)
-        if result.returncode:
-            raise RuntimeError(result.stderr)
+        _run_original(original, staging, environment)
         original_png = _find_new_png(staging, pngs_before, preferred_name=f"{name}.png")
         original_png.replace(staging / "orig.png")
         print(f"[2/4] Compiling one Scene and exporting: {name}_interactive.py")

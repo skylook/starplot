@@ -15,11 +15,15 @@ import hashlib
 import importlib.util
 import json
 import os
-import runpy
 import sys
 import unittest.mock as mock
 import warnings
 from pathlib import Path
+
+if __package__:
+    from ._example_seed import run_example
+else:
+    from _example_seed import run_example
 
 try:
     import starplot.interactive.plots as plots
@@ -226,7 +230,7 @@ def main() -> None:
     with mock.patch.object(
         plots._InteractiveMixin, "export_html", _comparison_export
     ):
-        runpy.run_path(str(interactive_path), run_name="__main__")
+        run_example(str(interactive_path))
 
 
 if __name__ == "__main__":

@@ -1,7 +1,10 @@
 """Unit tests for the visual parity comparison harness helpers."""
 
 import hashlib
+import ast
 import os
+import random
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,6 +26,48 @@ from starplot.interactive.scene import (
 from starplot.interactive.web_export import export_scene_html
 import tools.visual_parity.gen_comparison as gen
 import tools.visual_parity._example_runner as runner
+
+
+def test_milky_way_example_changes_only_backend_not_star_layers():
+    root = Path(__file__).resolve().parents[2]
+    def star_calls(path):
+        tree = ast.parse(path.read_text())
+        return [ast.dump(node, include_attributes=False) for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name) and node.func.value.id == "p"
+            and node.func.attr == "stars"]
+    assert star_calls(root / "examples/map_milky_way_stars.py") == star_calls(
+        root / "examples/interactive/map_milky_way_stars_interactive.py")
+
+
+def test_original_comparison_execution_reseeds_each_run(tmp_path):
+    script = tmp_path / "original.py"
+    output = tmp_path / "sample.txt"
+    script.write_text(
+        "import random\nfrom pathlib import Path\n"
+        "Path('sample.txt').write_text(str(random.random()))\n"
+    )
+    for _ in range(2):
+        gen._run_original(script, tmp_path, os.environ)
+        assert float(output.read_text()) == random.Random(42).random()
+
+
+def test_interactive_comparison_execution_reseeds_each_run(tmp_path, monkeypatch):
+    script = tmp_path / "interactive.py"
+    output = tmp_path / "sample.txt"
+    script.write_text(
+        "import random\nfrom pathlib import Path\n"
+        f"Path({str(output)!r}).write_text(str(random.random()))\n"
+    )
+    monkeypatch.setattr(sys, "argv", ["_example_runner.py", str(script)])
+    state = random.getstate()
+    try:
+        for prior_seed in (99, 17):
+            random.seed(prior_seed)
+            runner.main()
+            assert float(output.read_text()) == random.Random(42).random()
+    finally:
+        random.setstate(state)
 
 
 def _ls_files_response(root: Path) -> str:
@@ -107,6 +152,7 @@ class TestProvenanceSnapshot:
         prov = gen._snapshot_provenance(fake_root, "horizon_double_cluster")
 
         assert prov["git_revision"] == "a" * 40
+        assert prov["comparison_random_seed"] == 42
         assert prov["tracked_dirty"] is True
         assert prov["source_fingerprint"].startswith("sha256:")
         assert prov["source_fingerprint_scope"] == [

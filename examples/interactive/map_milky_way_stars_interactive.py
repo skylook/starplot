@@ -13,13 +13,6 @@ style = PlotStyle().extend(
 _sizer = size_by_magnitude_factory(6, 0.02, 7)
 
 
-def alpha(s):
-    if s.magnitude > 9:
-        return 0.5
-    else:
-        return 0.9
-
-
 p = InteractiveMapPlot(
     projection=Mollweide(),
     style=style,
@@ -30,20 +23,10 @@ p.stars(
     where=[_.magnitude < 11],
     where_labels=[False],
     size_fn=_sizer,
-    alpha_fn=alpha,
+    alpha_fn=lambda s: 0.95 if s.magnitude < 9 else 0.6,
     color_fn=color_by_bv,
     catalog=BIG_SKY,
-    style__marker__edge_color="#c5c5c5",
-)
-p.stars(
-    where=[_.magnitude < 6],
-    where_labels=[False],
-    size_fn=lambda s: _sizer(s) * 1.5,
-    alpha_fn=lambda s: 0.4,
-    color_fn=color_by_bv,
-    catalog=BIG_SKY,
-    style__marker__symbol="star_8",
-    style__marker__edge_color=None,
+    style__marker__edge_color="#fff",
 )
 
 p.export("map_milky_way_stars.png", padding=0.1, transparent=True)
