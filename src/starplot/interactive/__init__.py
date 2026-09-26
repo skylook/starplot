@@ -23,6 +23,7 @@ from starplot.interactive.plots import (
     InteractiveZenithPlot,
     InteractiveHorizonPlot,
     InteractiveOpticPlot,
+    InteractiveGalaxyPlot,
 )
 from starplot.interactive.commands import DrawingCommand
 from starplot.interactive.recorder import DrawingRecorder
@@ -78,6 +79,7 @@ __all__ = [
     "InteractiveZenithPlot",
     "InteractiveHorizonPlot",
     "InteractiveOpticPlot",
+    "InteractiveGalaxyPlot",
     "DrawingCommand",
     "DrawingRecorder",
     "readonly_array",

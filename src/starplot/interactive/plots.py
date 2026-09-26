@@ -23,7 +23,7 @@ from starplot.interactive.recording_mixin import RecordingMixin
 from starplot.interactive.plotly_renderer import PlotlyRenderer
 from starplot.interactive.scene_compiler import SceneCompiler
 from starplot.interactive.web_export import ExportResult, export_scene_html
-from starplot.plots import MapPlot, ZenithPlot, HorizonPlot, OpticPlot
+from starplot.plots import MapPlot, ZenithPlot, HorizonPlot, OpticPlot, GalaxyPlot
 
 
 class _InteractiveMixin:
@@ -198,3 +198,12 @@ class InteractiveHorizonPlot(_InteractiveMixin, RecordingMixin, HorizonPlot):
 
 class InteractiveOpticPlot(_InteractiveMixin, RecordingMixin, OpticPlot):
     """OpticPlot with interactive Plotly export.  API same as OpticPlot."""
+
+
+class InteractiveGalaxyPlot(_InteractiveMixin, RecordingMixin, GalaxyPlot):
+    """GalaxyPlot with interactive Plotly export. API same as GalaxyPlot."""
+
+    def galactic_equator(self, *args, **kwargs):
+        texts_before = len(self.ax.texts)
+        super().galactic_equator(*args, **kwargs)
+        self._record_reference_line_labels(texts_before, "galactic-equator-label")

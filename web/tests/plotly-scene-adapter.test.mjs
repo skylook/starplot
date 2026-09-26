@@ -744,6 +744,18 @@ test("recorded top margin positions title above an unshrunk plot", async () => {
   assert.ok(Math.abs(calls[0][2].annotations[0].y - 1 / 0.88) < 1e-6);
 });
 
+test("browser legend preserves recorded position", async () => {
+  let layout;
+  const Plotly = { async react(_target, _traces, value) { layout = value; }, async restyle() {}, async relayout() {} };
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"], { Plotly });
+  const position = { x: 0.98, y: 0.08, xanchor: "right", yanchor: "top", orientation: "h" };
+  await runtime.renderScene("chart", {
+    async loadManifest() { return { viewport: { legend_position: position }, layers: [], styles: [], palettes: [], clips: [] }; },
+    async *loadLayer() {},
+  }, { Plotly });
+  for (const [key, value] of Object.entries(position)) assert.equal(layout.legend[key], value);
+});
+
 test("browser legend preserves recorded styling and magnitude scale", async () => {
   const calls = [];
   const Plotly = {

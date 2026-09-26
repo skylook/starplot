@@ -895,10 +895,38 @@
     async loadObjectDetail(objectId, signal) {
       const manifest = await this.loadManifest(signal);
       if (!manifest.capabilities || !manifest.capabilities.catalog_detail) return null;
-      const catalogBase = this.options.catalogBaseUrl || new URL("../../catalog/objects/", this.baseUrl).href;
-      const url = new URL(encodeURIComponent(objectId), catalogBase).href;
-      const response = checkedResponse(await this.fetch(url, { signal }), url);
-      return response.json();
+      if (typeof objectId !== "string" || !objectId
+          || objectId === "." || objectId === ".." || /[/\\%]/.test(objectId)) {
+        throw new Error("object detail ID must be one path segment");
+      }
+      const catalogBase = new URL(
+        this.options.catalogBaseUrl || "../../catalog/objects/", this.baseUrl,
+      );
+      if (!catalogBase.pathname.endsWith("/")) catalogBase.pathname += "/";
+      const manifestOrigin = new URL(this.manifestUrl || this.baseUrl).origin;
+      const allowedOrigins = [...new Set([manifestOrigin, ...this.allowedDataOrigins])];
+      if (!allowedOrigins.includes(catalogBase.origin)) {
+        throw new Error("object detail URL origin is not allowed");
+      }
+      const url = new URL(encodeURIComponent(objectId), catalogBase);
+      if (url.origin !== catalogBase.origin || !url.pathname.startsWith(catalogBase.pathname)) {
+        throw new Error("object detail URL must stay inside the catalog endpoint");
+      }
+      const response = await fetchWithRetry(this.fetch, url.href, signal);
+      const finalUrl = new URL(validateFinalHttpUrl(
+        response, url.href, allowedOrigins, "object detail",
+      ));
+      if (!finalUrl.pathname.startsWith(catalogBase.pathname)) {
+        throw new Error("object detail URL must stay inside the catalog endpoint");
+      }
+      const declaredLength = declaredContentLength(response);
+      if (declaredLength !== null && declaredLength > this.limits.max_manifest_bytes) {
+        throw new Error("object detail exceeds the configured byte limit");
+      }
+      const text = await readLimitedText(
+        response, this.limits.max_manifest_bytes, "object detail",
+      );
+      return JSON.parse(text);
     }
   }
 

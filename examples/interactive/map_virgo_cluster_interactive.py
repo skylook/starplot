@@ -15,7 +15,7 @@ collision_handler = CollisionHandler(plot_on_fail=True, attempts=1)
 p = InteractiveMapPlot(
     projection=Equidistant(center_ra=11 * 15),
     ra_min=12 * 15, ra_max=13 * 15, dec_min=8, dec_max=18,
-    style=style, resolution=3000, scale=1, collision_handler=collision_handler,
+    style=style, resolution=3000, scale=1, point_label_handler=collision_handler,
 )
 p.title("Virgo Cluster", style__font_color="hsl(330, 44%, 92%)")
 p.stars(where=[_.magnitude < 12], where_labels=[False])

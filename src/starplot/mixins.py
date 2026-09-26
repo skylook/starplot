@@ -339,20 +339,24 @@ class CreateMapMixin:
 
 
 class CreateOpticMixin:
-    def create_optic(self, *args, **kwargs):
+    def create_optic(self, *args, plot_class=None, **kwargs):
         """
         Creates an optic plot with this object at the center
 
         Args:
-            *args: args passed through to [`OpticPlot()`][starplot.OpticPlot]
-            **kwargs: kwargs passed through to [`OpticPlot()`][starplot.OpticPlot]
+            *args: args passed through to the optic plot constructor
+            plot_class: Optional optic plot class. Defaults to [`OpticPlot`][starplot.OpticPlot];
+                pass `InteractiveOpticPlot` to create an interactive view.
+            **kwargs: kwargs passed through to the optic plot constructor
 
         Returns:
-            OpticPlot: new instance of a [`OpticPlot`][starplot.OpticPlot]
+            OpticPlot: new instance of the selected optic plot class
         """
-        from starplot import OpticPlot
+        if plot_class is None:
+            from starplot import OpticPlot
+            plot_class = OpticPlot
 
-        return OpticPlot(
+        return plot_class(
             ra=self.ra,
             dec=self.dec,
             *args,

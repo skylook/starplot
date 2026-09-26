@@ -18,9 +18,8 @@ observer = Observer(
 
 m = Moon.get(observer)
 
-op = InteractiveOpticPlot(
-    ra=m.ra,
-    dec=m.dec,
+op = m.create_optic(
+    plot_class=InteractiveOpticPlot,
     observer=observer,
     optic=Binoculars(magnification=30, fov=65),
     style=PlotStyle().extend(

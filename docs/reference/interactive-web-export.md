@@ -14,7 +14,7 @@ pip install "starplot[interactive]"
 ## Quick start
 
 All interactive plot classes (`InteractiveMapPlot`, `InteractiveZenithPlot`,
-`InteractiveHorizonPlot`, `InteractiveOpticPlot`) are drop-in replacements for
+`InteractiveHorizonPlot`, `InteractiveOpticPlot`, `InteractiveGalaxyPlot`) are drop-in replacements for
 their Matplotlib counterparts and add two methods:
 
 - `to_plotly()` — return a `plotly.graph_objects.Figure` for notebooks or
@@ -44,6 +44,19 @@ fig = p.to_plotly()
 # Interactive HTML — see sections below for mode details
 p.export_html("chart.html")
 ```
+
+For object-centered optic examples, keep the existing `create_optic()` call and
+select the interactive class explicitly:
+
+```python
+from starplot.interactive import InteractiveOpticPlot
+
+optic = moon.create_optic(plot_class=InteractiveOpticPlot, optic=binoculars)
+optic.export_html("optic.html")
+```
+
+Without `plot_class`, `create_optic()` still returns the original Matplotlib
+`OpticPlot`.
 
 ## 1. Notebook use with `to_plotly()`
 
@@ -423,9 +436,12 @@ The repository includes two runnable examples that cover all the modes above:
   `http.server` remote provider that serves the `remote` client HTML, manifest,
   and layers.
 
-The directory also contains 22 visual-parity examples covering every supported
-plot family (`map`, `horizon`, `optic`, `zenith`). Together with the two
-transport examples above, `examples/interactive/` contains 24 runnable scripts.
+The directory also contains 22 previously accepted visual-parity examples and
+the new `map_galaxy_interactive.py` Galactic Mollweide example. The Galaxy
+example is runnable, but is not yet included in the accepted 22-example ledger.
+Together these cover every supported plot family
+(`map`, `horizon`, `optic`, `zenith`, `galaxy`). Together with the two
+transport examples above, `examples/interactive/` contains 25 runnable scripts.
 
 ## 10. Common issues
 

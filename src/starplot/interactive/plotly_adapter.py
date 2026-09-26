@@ -361,6 +361,11 @@ class _PlotlyRenderContext:
             legend["itemwidth"] = max(30, round(165 * font_scale))
             legend["x"] = 1.026
             legend["xanchor"] = "left"
+        elif self.viewport.get("legend_position"):
+            position = self.viewport["legend_position"]
+            legend.update({key: position[key] for key in (
+                "x", "y", "xanchor", "yanchor", "orientation"
+            ) if key in position})
 
         self.fig.update_layout(
             plot_bgcolor=background,

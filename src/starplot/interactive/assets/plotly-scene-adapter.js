@@ -948,6 +948,14 @@
       legend.itemwidth = Math.max(30, Math.round(165 * fontPixelScale));
       legend.x = 1.026;
       legend.xanchor = "left";
+    } else if (viewport.legend_position) {
+      const position = viewport.legend_position;
+      for (const key of ["x", "y"]) {
+        if (typeof position[key] === "number" && Number.isFinite(position[key])) legend[key] = position[key];
+      }
+      if (["left", "center", "right"].includes(position.xanchor)) legend.xanchor = position.xanchor;
+      if (["top", "middle", "bottom"].includes(position.yanchor)) legend.yanchor = position.yanchor;
+      if (["h", "v"].includes(position.orientation)) legend.orientation = position.orientation;
     }
     if (legendTitle) {
       legend.title = {

@@ -174,9 +174,11 @@ class RecordingMixin:
         if source_space == "prepared":
             return tuple(map(float, self._proj.transform_point(x, y, self._crs)))
         if source_space == "radec":
-            if self._coordinate_system == CoordinateSystem.AZ_ALT:
-                az, alt = self._prepare_coords(x, y)
-                return tuple(map(float, self._proj.transform_point(az, alt, self._crs)))
+            from starplot.plots.galaxy import GalaxyPlot
+
+            if self._coordinate_system == CoordinateSystem.AZ_ALT or isinstance(self, GalaxyPlot):
+                prepared_x, prepared_y = self._prepare_coords(x, y)
+                return tuple(map(float, self._proj.transform_point(prepared_x, prepared_y, self._crs)))
             return tuple(map(float, self._proj.transform_point(x, y, self._crs)))
         raise ValueError(f"Unknown interactive source space: {source_space}")
 
@@ -230,6 +232,7 @@ class RecordingMixin:
         from starplot.plots.horizon import HorizonPlot
         from starplot.plots.zenith import ZenithPlot
         from starplot.plots.optic import OpticPlot
+        from starplot.plots.galaxy import GalaxyPlot
 
         if isinstance(self, OpticPlot):
             plot_kind = "optic"
@@ -239,6 +242,8 @@ class RecordingMixin:
             plot_kind = "horizon"
         elif isinstance(self, MapPlot):
             plot_kind = "map"
+        elif isinstance(self, GalaxyPlot):
+            plot_kind = "galaxy"
         else:
             plot_kind = "unknown"
 
@@ -368,7 +373,17 @@ class RecordingMixin:
             legend_texts = self._legend.get_texts()
             legend_title = self._legend.get_title()
             frame = self._legend.get_frame()
+            legend_bbox = self._legend.get_window_extent().transformed(
+                self.ax.transAxes.inverted()
+            )
             self._recorder.style_info.update({
+                "legend_position": {
+                    "x": float(legend_bbox.x1),
+                    "y": float(legend_bbox.y1),
+                    "xanchor": "right",
+                    "yanchor": "top",
+                    "orientation": "h" if self._legend._ncols > 1 else "v",
+                },
                 "legend_labels": list(self._legend_handles.keys()),
                 "legend_background_color": _rgba_to_hex(frame.get_facecolor()),
                 "legend_border_color": _rgba_to_hex(frame.get_edgecolor()),
@@ -932,6 +947,7 @@ class RecordingMixin:
 
             from starplot.plots.horizon import HorizonPlot
             from starplot.plots.map import MapPlot
+            from starplot.plots.galaxy import GalaxyPlot
 
             if isinstance(self, HorizonPlot):
                 # Cartopy's Gridliner has already applied HorizonPlot's
@@ -1041,7 +1057,7 @@ class RecordingMixin:
                     )
                 return
 
-            if isinstance(self, MapPlot):
+            if isinstance(self, (MapPlot, GalaxyPlot)):
                 # MapPlot delegates all seam handling, polar redraws, edge
                 # visibility and label placement to Cartopy's Gridliner.
                 # Sampling RA/DEC ourselves loses those decisions, so replay
@@ -1358,10 +1374,13 @@ class RecordingMixin:
     # Method 6: Ecliptic line
     # ------------------------------------------------------------------
 
-    def ecliptic(self, style=None, label="ECLIPTIC", collision_handler=None):
+    def ecliptic(self, style=None, label="ECLIPTIC", num_labels=1, collision_handler=None):
         lines_before = len(self.ax.lines)
         texts_before = len(self.ax.texts)
-        super().ecliptic(style=style, label=label, collision_handler=collision_handler)
+        super().ecliptic(
+            style=style, label=label, num_labels=num_labels,
+            collision_handler=collision_handler,
+        )
         resolved_style = style or self.style.ecliptic
         self._record_rendered_line_artists(
             lines_before, resolved_style.line, "ecliptic-line"
