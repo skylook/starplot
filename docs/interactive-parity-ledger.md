@@ -1,5 +1,10 @@
 # Interactive Scene / Arrow Parity Ledger
 
+> Historical acceptance only. Current whole-example visual reacceptance is
+> **IN PROGRESS**; see [interactive-visual-reacceptance.md](interactive-visual-reacceptance.md).
+> Fresh inspections found semantic rotation/font/legend differences and example
+> input drift that the historical transport-focused review did not resolve.
+
 > Final Scene/Arrow browser review: **ACCEPTED, 2026-09-25** at revision
 > `badf62d4a3641902e67f737d8eb3d3d44deafda3`. This run includes the dense
 > finite-palette ScatterGL batching and responsive marker-edge paths.

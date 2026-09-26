@@ -40,6 +40,31 @@ def test_milky_way_example_changes_only_backend_not_star_layers():
         root / "examples/interactive/map_milky_way_stars_interactive.py")
 
 
+@pytest.mark.parametrize("name", ["map_big_dipper", "map_orthographic"])
+def test_paired_map_examples_keep_original_inputs(name):
+    root = Path(__file__).resolve().parents[2]
+
+    class BackendOnly(ast.NodeTransformer):
+        def visit_Name(self, node):
+            if node.id == "InteractiveMapPlot":
+                node.id = "MapPlot"
+            return node
+
+    def drawing_script(path):
+        tree = BackendOnly().visit(ast.parse(path.read_text()))
+        tree.body = [node for node in tree.body
+            if not isinstance(node, (ast.Import, ast.ImportFrom))
+            and not (isinstance(node, ast.Expr) and (
+                isinstance(node.value, ast.Constant)
+                or (isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Attribute)
+                    and node.value.func.attr == "export_html")))]
+        return ast.dump(tree, include_attributes=False)
+
+    assert drawing_script(root / f"examples/{name}.py") == drawing_script(
+        root / f"examples/interactive/{name}_interactive.py")
+
+
 def test_original_comparison_execution_reseeds_each_run(tmp_path):
     script = tmp_path / "original.py"
     output = tmp_path / "sample.txt"

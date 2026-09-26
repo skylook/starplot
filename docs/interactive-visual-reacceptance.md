@@ -47,6 +47,40 @@ Remaining issues require screenshot confirmation, including font availability
 custom symbol styling, and the dense example's published PNG-only median filter.
 No claim of universal visual equivalence is made.
 
+## Recheck at e04c6ef
+
+Galaxy and Carina were regenerated individually at clean revision
+`e04c6eff84dfa20dda8bc7bff54622b9028b6548`, with seed42. Both runs completed;
+each has three actual browser screenshots and passing canonical transport gates.
+Galaxy's original and interactive Matplotlib controls are pixel identical.
+Manual full-image and Galaxy crop inspection confirms corrected reference-label
+rotation and improved title weight. Carina's constellation labels now align
+with its seeded original. Neither is unconditional visual acceptance: ordinary
+legend glyph sizes/padding and font fallback remain visibly different.
+
+Root causes for the remaining legend differences: Matplotlib builds independent
+fixed-size legend handles (`plots/base.py`), while Plotly inherits plotted trace
+marker sizes. Recorder currently captures the legend's top-right position but
+not handle dimensions or frame padding. Browser `_applyLegendSymbolScale`
+currently only corrects magnitude legends. Preserve independent handle sizes;
+do not stretch the entire legend or use the first plotted star's size.
+
+Bundled Inter regular/bold fonts can be supplied without dependencies, but
+unconditionally embedding TTF adds about 1.1 MB per HTML. Prefer reusable font
+assets for directory exports and self-contained fonts only for inline exports;
+retain the existing font license and wait for fonts before screenshot capture.
+This design is not implemented yet.
+
+Full 23-script normalized AST audit found and corrected two additional drifts:
+Big Dipper colors and Orthographic's pytz direct `tzinfo` assignment. The latter
+produced UTC04:53 instead of the original ZoneInfo UTC04:00, changing projection
+center. Regression tests now protect original inputs. Remaining drawing calls
+match originals after backend/factory/export normalization. This audit is not
+a substitute for screenshot inspection.
+
+Verification: interactive/parity suite 728 passed before the two additional AST
+tests, final harness suite31 passed, Node76 passed, Ruff and diff-check passed.
+
 ## Complete queue
 
 23 paired examples (all require final-revision inspection):

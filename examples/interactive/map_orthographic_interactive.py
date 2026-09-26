@@ -1,14 +1,14 @@
 """Orthographic full-sky map - interactive version (corresponds to map_orthographic.py)
 Includes constellation lines, borders, DSOs, ecliptic, celestial equator, milky way"""
 from datetime import datetime
-from pytz import timezone
+from zoneinfo import ZoneInfo
 
 from starplot.interactive import InteractiveMapPlot
 from starplot import Orthographic, Observer, _
 from starplot.styles import PlotStyle, extensions
 
 style = PlotStyle().extend(extensions.BLUE_MEDIUM, extensions.MAP)
-tz = timezone("America/Los_Angeles")
+tz = ZoneInfo("America/Los_Angeles")
 dt = datetime(2024, 10, 19, 21, 00, tzinfo=tz)
 
 observer = Observer(dt=dt, lat=32.97, lon=-117.038611)

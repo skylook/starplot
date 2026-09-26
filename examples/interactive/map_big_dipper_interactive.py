@@ -4,7 +4,7 @@ from starplot import StereoNorth, _
 from starplot.styles import PlotStyle, extensions
 
 style = PlotStyle().extend(
-    extensions.BLUE_DARK, extensions.MAP, {"background_color": "#2C3F62"}
+    extensions.BLUE_DARK, extensions.MAP, {"background_color": "#193561"}
 )
 
 p = InteractiveMapPlot(
@@ -17,7 +17,7 @@ p.stars(
     where=[_.magnitude < 3.6, _.dec > 45, _.dec < 64],
     size_fn=lambda s: 2600,
     style__marker__symbol="star",
-    style__marker__color="#ffff6c",
+    style__marker__color="hsl(59, 100%, 53%)",
     style__label__font_size=14,
     style__label__font_weight=400,
 )
