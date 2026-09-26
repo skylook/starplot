@@ -145,6 +145,11 @@ class _InteractiveMixin:
                   transparent: bool = False):
         """Return a Plotly Figure object for further customisation.
 
+        Native Plotly responsive layout does not proportionally resize recorded
+        fonts, markers or strokes. Specify the final ``width`` and ``height``
+        for visual fidelity and disable responsive resizing when writing HTML.
+        Use :meth:`export_html` for the automatically scaled responsive viewer.
+
         Args:
             width: Optional chart width in pixels; used to scale marker sizes.
             height: Optional chart height in pixels; used to scale marker sizes.

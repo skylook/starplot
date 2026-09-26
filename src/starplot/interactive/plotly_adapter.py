@@ -95,6 +95,18 @@ def _font_family(value) -> str:
     return family if "," in family else f"{family}, Arial, sans-serif"
 
 
+def _font_weight(value) -> int:
+    weights = {"normal": 400, "bold": 700, "light": 300, "medium": 500,
+               "semibold": 600, "heavy": 800, "extra bold": 800, "black": 900}
+    numeric = weights.get(str(value).lower())
+    if numeric is None:
+        try:
+            numeric = int(value)
+        except (ValueError, TypeError):
+            numeric = 400
+    return min(1000, max(1, numeric))
+
+
 def _group_name(group_id: str) -> str:
     return {
         "stars": "Stars",
@@ -342,6 +354,8 @@ class _PlotlyRenderContext:
             ),
             borderwidth=1,
         )
+        if "legend_font_name" in self.style_info:
+            legend["font"]["family"] = _font_family(self.style_info["legend_font_name"])
         legend_title = self.style_info.get("legend_title")
         if legend_title:
             legend["title"] = dict(
@@ -356,6 +370,10 @@ class _PlotlyRenderContext:
                     ),
                 ),
             )
+            if "legend_title_font_name" in self.style_info:
+                legend["title"]["font"]["family"] = _font_family(self.style_info["legend_title_font_name"])
+            if "legend_title_font_weight" in self.style_info:
+                legend["title"]["font"]["weight"] = _font_weight(self.style_info["legend_title_font_weight"])
         if self.viewport.get("magnitude_scale"):
             font_scale = self._font_pixel_scale()
             legend["tracegroupgap"] = round(66 * font_scale)
@@ -1030,17 +1048,7 @@ class _PlotlyRenderContext:
         xshift = style.get("xshift", float(layer.data["x_offset"][0]) * point_scale)
         yshift = style.get("yshift", float(layer.data["y_offset"][0]) * point_scale)
         text = _html_escape(str(layer.data["text"][0])).replace("\n", "<br>")
-        weight = style.get("font_weight", "normal")
-        _WEIGHT_MAP = {
-            "normal": 400, "bold": 700, "light": 300, "medium": 500,
-            "semibold": 600, "heavy": 800, "extra bold": 800, "black": 900,
-        }
-        numeric_weight = _WEIGHT_MAP.get(str(weight).lower())
-        if numeric_weight is None:
-            try:
-                numeric_weight = int(weight)
-            except (ValueError, TypeError):
-                numeric_weight = 400
+        numeric_weight = _font_weight(style.get("font_weight", "normal"))
         font = dict(
             size=max(8, style.get("font_size", 12) * point_scale),
             color=_sanitize_color(style.get("font_color", "#ffffff")),
@@ -1048,6 +1056,8 @@ class _PlotlyRenderContext:
         )
         if "weight" in go.layout.annotation.Font()._valid_props:
             font["weight"] = numeric_weight
+        if "font_style" in style and "style" in go.layout.annotation.Font()._valid_props:
+            font["style"] = "italic" if style.get("font_style") in {"italic", "oblique"} else "normal"
         self.fig.add_annotation(
             x=x,
             y=y,

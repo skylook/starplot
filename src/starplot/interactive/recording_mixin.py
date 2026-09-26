@@ -143,6 +143,99 @@ def _artist_alpha(artist):
     return float(1.0 if alpha is None else alpha)
 
 
+def _capture_legend_layout(ax, legend):
+    """Capture drawn legend geometry, independently of plotted trace sizes.
+
+    Relative coordinates use axes-width units so browser resize preserves the
+    original proportions; the frame anchor itself uses axes fractions.
+    """
+    from matplotlib.lines import Line2D
+    from matplotlib.collections import PathCollection
+    from matplotlib.markers import MarkerStyle
+    from matplotlib.offsetbox import DrawingArea, HPacker, TextArea
+    from matplotlib.text import Text
+    from matplotlib.transforms import Affine2D
+
+    frame = legend.get_window_extent()
+    axes_width = ax.get_window_extent().width
+    normalized = frame.transformed(ax.transAxes.inverted())
+    texts = []
+    for text in legend.findobj(Text):
+        if not text.get_text():
+            continue
+        box = text.get_window_extent()
+        texts.append({
+            "text": text.get_text(),
+            "x": float((box.x0 - frame.x0) / axes_width),
+            "y": float((frame.y1 - box.y1) / axes_width),
+            "font_size": float(text.get_fontsize()),
+            "font_color": _rgba_to_hex(text.get_color()),
+            "font_name": text.get_fontfamily()[0],
+            "font_weight": text.get_fontweight(),
+            "font_style": text.get_fontstyle(),
+        })
+    markers = []
+    # Legend handlers clone the Line2D and discard its label. Pair each drawn
+    # handle with its sibling TextArea instead of reading the clone's label.
+    for row in legend.findobj(HPacker):
+        children = row.get_children()
+        if (len(children) != 2 or not isinstance(children[0], DrawingArea)
+                or not isinstance(children[1], TextArea)):
+            continue
+        handles = children[0].findobj(
+            lambda artist: isinstance(artist, (Line2D, PathCollection))
+        )
+        labels = children[1].findobj(Text)
+        if not handles or not labels:
+            continue
+        handle = handles[0]
+        if isinstance(handle, Line2D):
+            if handle.get_marker() in (None, "None", "", " "):
+                continue
+            xy = handle.get_xydata()
+            if not len(xy):
+                continue
+            center = handle.get_transform().transform(xy[len(xy) // 2])
+            marker = MarkerStyle(handle.get_marker(), fillstyle=handle.get_fillstyle())
+            scale = handle.get_markersize() * ax.figure.dpi / 72.0 / axes_width
+            path = marker.get_path().transformed(
+                marker.get_transform() + Affine2D().scale(scale, -scale)
+            )
+            face = handle.get_markerfacecolor()
+            edge = handle.get_markeredgecolor()
+            edgewidth = handle.get_markeredgewidth()
+            alpha = _artist_alpha(handle)
+        else:
+            offsets, paths, transforms = handle.get_offsets(), handle.get_paths(), handle.get_transforms()
+            if not len(offsets) or not paths or not len(transforms):
+                continue
+            center = handle.get_offset_transform().transform(offsets[0])
+            path = paths[0].transformed(Affine2D(transforms[0])
+                + handle.get_transform() + Affine2D().scale(1 / axes_width, -1 / axes_width))
+            faces, edges, widths = handle.get_facecolors(), handle.get_edgecolors(), handle.get_linewidths()
+            face = faces[0] if len(faces) else "none"
+            edge = edges[0] if len(edges) else "none"
+            edgewidth = widths[0] if len(widths) else 0
+            alpha = 1.0  # Collection color arrays already include artist alpha.
+        markers.append({
+            "label": labels[0].get_text(),
+            "x": float((center[0] - frame.x0) / axes_width),
+            "y": float((frame.y1 - center[1]) / axes_width),
+            "path": [{"code": int(code), "vertices": vertices.tolist()}
+                for vertices, code in path.iter_segments(curves=True)],
+            "facecolor": _rgba_to_hex(face),
+            "edgecolor": _rgba_to_hex(edge),
+            "edgewidth": float(edgewidth),
+            "alpha": alpha,
+        })
+    return {
+        "frame": {"x": float(normalized.x0), "y": float(normalized.y1),
+            "width": float(frame.width / axes_width),
+            "height": float(frame.height / axes_width)},
+        "texts": texts, "markers": markers,
+    }
+
+
 class RecordingMixin:
     """Mixin that records drawing commands alongside matplotlib rendering."""
 
@@ -396,6 +489,10 @@ class RecordingMixin:
                     if legend_texts else 11.0
                 ),
                 "legend_title_font_size": float(legend_title.get_fontsize()),
+                "legend_font_name": legend_texts[0].get_fontfamily()[0] if legend_texts else "Inter",
+                "legend_title_font_name": legend_title.get_fontfamily()[0],
+                "legend_title_font_weight": legend_title.get_fontweight(),
+                "legend_layout": _capture_legend_layout(self.ax, self._legend),
             })
         magnitude_scale = getattr(self, "_interactive_magnitude_scale", None)
         if magnitude_scale is not None:

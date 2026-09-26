@@ -361,6 +361,28 @@ def test_bold_text_keeps_recorded_font_family():
     assert annotation.text == "Orion<br>Major"
 
 
+def test_italic_text_keeps_recorded_font_style():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    command = primitive_commands()["text"]
+    command.style["font_style"] = "italic"
+    annotation = PlotlySceneAdapter().render(_compile(command)).layout.annotations[0]
+    assert annotation.font.style == "italic"
+
+
+def test_legend_keeps_recorded_font_families_and_title_weight():
+    from starplot.interactive.plotly_adapter import PlotlySceneAdapter
+
+    scene = _compile(primitive_commands()["text"])
+    scene = replace(scene, style_info={**scene.style_info,
+        "legend_title": "Legend", "legend_font_name": "GFS Didot",
+        "legend_title_font_name": "Inter", "legend_title_font_weight": "bold"})
+    legend = PlotlySceneAdapter().render(scene).layout.legend
+    assert legend.font.family == "GFS Didot, Arial, sans-serif"
+    assert legend.title.font.family == "Inter, Arial, sans-serif"
+    assert legend.title.font.weight == 700
+
+
 def test_horizontal_legend_title_stays_above_entries():
     from starplot.interactive.plotly_adapter import PlotlySceneAdapter
 

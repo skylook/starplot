@@ -19,6 +19,33 @@ def test_matplotlib_color_serialization_preserves_transparent_edges():
     assert _edge_color_string((0.0, 0.0, 0.0, 1.0)) == "#000000"
 
 
+def test_legend_records_drawn_layout_and_independent_marker_geometry():
+    import matplotlib.pyplot as plt
+    from starplot import StereoNorth
+    from starplot.interactive import InteractiveMapPlot
+
+    plot = InteractiveMapPlot(projection=StereoNorth(), ra_min=150, ra_max=210,
+        dec_min=40, dec_max=70, resolution=512)
+    try:
+        plot.marker(180, 55, legend_label="Star", style={"marker": {
+            "symbol": "star", "size": 2, "color": "yellow"}})
+        plot.legend(style={"num_columns": 1})
+        plot._record_plot_info()
+        layout = plot._recorder.style_info["legend_layout"]
+        assert layout["frame"]["width"] > 0
+        assert layout["frame"]["height"] > 0
+        assert {item["text"] for item in layout["texts"]} == {"Legend", "Star"}
+        marker = layout["markers"][0]
+        assert marker["label"] == "Star"
+        assert marker["path"]
+        # The actual legend handle is larger than the tiny plotted marker.
+        assert max(abs(v) for segment in marker["path"]
+            for v in segment["vertices"]) > 0.001
+        assert plot._recorder.style_info["legend_font_name"] == "Inter"
+    finally:
+        plt.close(plot.fig)
+
+
 def test_artist_offset_extraction_uses_collection_offset_transform():
     """Scatter offsets live in the offset transform, not marker-path transform."""
     import matplotlib.pyplot as plt

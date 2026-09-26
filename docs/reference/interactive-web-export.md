@@ -75,6 +75,13 @@ fig = p.to_plotly(width=1400, height=900)
 fig.show()
 ```
 
+For visual fidelity, specify the final pixel dimensions. Native Plotly's
+responsive layout changes the axes size without proportionally scaling recorded
+fonts, markers or strokes. For a fixed-size native HTML, use
+`fig.write_html("chart.html", config={"responsive": False})`. Use `export_html()`
+when the chart must preserve these proportions while its container is resized;
+its Scene viewer performs that additional correction.
+
 ## 2. External bundle — default
 
 `export_html("chart.html")` writes two items:

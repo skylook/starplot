@@ -438,6 +438,10 @@ class SceneCompiler:
             "legend_title",
             "legend_title_font_size",
             "legend_position",
+            "legend_font_name",
+            "legend_title_font_name",
+            "legend_title_font_weight",
+            "legend_layout",
             "magnitude_scale",
         ):
             if style.get(key) is not None:

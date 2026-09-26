@@ -71,6 +71,7 @@ class _LibraryAssets:
 
 
 _ASSETS = Path(__file__).with_name("assets")
+_FONT_ASSETS = Path(__file__).parents[1] / "styles" / "fonts-library" / "inter"
 _ARROW_CDN = "https://cdn.jsdelivr.net/npm/apache-arrow@21.1.0/Arrow.es2015.min.js"
 _CUSTOM_PLOTLY_FILENAME = "plotly-starplot-3.3.1.min.js"
 _CUSTOM_PLOTLY_PATH = _ASSETS / "vendor" / _CUSTOM_PLOTLY_FILENAME
@@ -371,10 +372,81 @@ def _csp_header(
     return f'<meta http-equiv="Content-Security-Policy" content="{_html_attr(policy)}">'
 
 
+def _font_assets(scene: ScenePackage, bundle: Path | None, prefix: str) -> tuple[str, str]:
+    """Deliver requested bundled faces, using the same licensed files as MPL."""
+    weights = {"ultralight": 200, "extra light": 200, "light": 300, "normal": 400,
+               "regular": 400, "medium": 500, "semibold": 600, "bold": 700,
+               "heavy": 800, "extra bold": 800, "black": 900}
+    names = {200: "ExtraLight", 300: "Light", 400: "Regular", 600: "SemiBold",
+             700: "Bold", 800: "ExtraBold"}
+    faces = {("Inter", 400, "normal")}
+
+    def visit(value):
+        if isinstance(value, Mapping):
+            font_prefixes = {key[:-len("font_name")] for key in value if key.endswith("font_name")}
+            if "font_weight" in value or "font_style" in value:
+                font_prefixes.add("")
+            for font_prefix in font_prefixes:
+                family = str(value.get(font_prefix + "font_name") or "Inter").split(",")[0].strip()
+                if family == "GFS Didot":
+                    faces.add((family, 400, "normal"))
+                elif family == "Inter":
+                    weight = value.get(font_prefix + "font_weight", "normal")
+                    numeric = weights.get(str(weight).lower())
+                    if numeric is None:
+                        try:
+                            numeric = int(weight)
+                        except (ValueError, TypeError):
+                            numeric = 400
+                    # Match CSS's nearest available face where Inter has no 500/900.
+                    style = "italic" if value.get(font_prefix + "font_style") in {"italic", "oblique"} else "normal"
+                    available = names if style == "normal" else {key: val for key, val in names.items() if key != 800}
+                    numeric = min(available, key=lambda item: (abs(item - numeric), item))
+                    faces.add((family, numeric, style))
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    visit(scene.style_info)
+    visit(scene.viewport)
+    for layer in scene.layers:
+        visit(layer.style)
+    css, loads = [], []
+    licenses = {"LICENSE.txt": (_FONT_ASSETS / "LICENSE.txt").read_text()}
+    for family, weight, style in sorted(faces):
+        stem = names[weight]
+        if style == "italic":
+            stem = "Italic" if stem == "Regular" else stem + "Italic"
+        filename = f"Inter-{stem}.ttf"
+        source = _FONT_ASSETS / filename
+        if family == "GFS Didot":
+            filename = "GFSDidot-Regular.ttf"
+            source = _FONT_ASSETS.parent / "gfs-didot" / filename
+            licenses["GFSDidot-OFL.txt"] = (source.parent / "OFL.txt").read_text()
+        data = source.read_bytes()
+        if bundle is None:
+            url = "data:font/ttf;base64," + base64.b64encode(data).decode("ascii")
+        else:
+            _atomic_write(bundle / "assets" / "fonts" / filename, data)
+            url = prefix + "assets/fonts/" + filename
+        css_family = "Inter" if family == "Inter" else "'GFS Didot'"
+        css.append(f"@font-face{{font-family:{css_family};src:url('{url}') format('truetype');"
+                   f"font-weight:{weight};font-style:{style};font-display:block}}")
+        loads.append(f"{style} {weight} 12px {css_family}")
+    # The full OFL travels with both standalone pages and copied font assets.
+    for filename, license_text in licenses.items():
+        if bundle is not None:
+            _atomic_write(bundle / "assets" / "fonts" / filename, license_text.encode())
+        css.append("/* " + license_text.replace("*/", "* /") + " */")
+    return "".join(css), _json_script(loads)
+
+
 def _html_shell(*, mode: DataMode, libraries: LibraryMode, manifest: dict | None,
                 manifest_json: str | None, layers: Mapping[str, bytes], base_url: str | None,
                 allowed_data_origins: tuple[str, ...], bundle: Path | None,
-                asset_prefix: str = "") -> str:
+                asset_prefix: str = "", scene: ScenePackage) -> str:
     nonce = secrets.token_urlsafe(16)
     csp = _csp_header(
         nonce,
@@ -385,6 +457,7 @@ def _html_shell(*, mode: DataMode, libraries: LibraryMode, manifest: dict | None
     )
 
     lib_assets = _libraries(libraries, bundle)
+    font_css, font_loads = _font_assets(scene, bundle, asset_prefix)
 
     def external_src(path: str, integrity: str | None) -> str:
         return _script_src(asset_prefix + path, integrity=integrity, cross_origin=lib_assets.cross_origin, nonce=nonce)
@@ -451,15 +524,18 @@ const source=new StarplotScene.InlineSceneSource({manifest,manifestJson,layers})
         )
 
     main_script = (
-        f"{bootstrap} window.__starplotRenderPromise=StarplotScene.renderScene("
-        "document.getElementById('starplot-chart'),source).then(()=>{"
+        f"{bootstrap} window.__starplotRenderPromise=Promise.all({font_loads}.map("
+        "async font=>{if(!document.fonts)throw new Error('Starplot font loading unavailable');"
+        "try{const faces=await document.fonts.load(font);if(!faces.length)throw new Error('no face');}"
+        "catch(error){throw new Error('Starplot font failed to load: '+font+' ('+error.message+')');}})).then(()=>"
+        "StarplotScene.renderScene(document.getElementById('starplot-chart'),source)).then(()=>{"
         "document.body.dataset.starplotRendered='true';}).catch(error=>{"
         "console.error(error);document.body.dataset.starplotError=error.message;throw error;});"
     )
     main_script_tag = _script_inline(main_script, nonce=nonce)
 
     return f"""<!doctype html><html><head><meta charset=\"utf-8\">{csp}<title>Starplot chart</title>
-<style nonce=\"{_html_attr(nonce)}\">html,body,#starplot-chart{{width:100%;height:100%;margin:0;overflow:hidden}}.js-plotly-plot .main-svg{{position:absolute;top:0;left:0;pointer-events:none}}</style></head>
+<style nonce=\"{_html_attr(nonce)}\">{font_css}html,body,#starplot-chart{{width:100%;height:100%;margin:0;overflow:hidden}}.js-plotly-plot .main-svg{{position:absolute;top:0;left:0;pointer-events:none}}</style></head>
 <body><div id=\"starplot-chart\"></div>{payload_tags}{library_tags}{runtime_tags}
 {main_script_tag}
 </body></html>"""
@@ -551,7 +627,8 @@ def export_scene_html(
             html = _html_shell(mode=mode, libraries=libraries, manifest=None, manifest_json=None,
                                layers={}, base_url=f"{bundle.name}/", allowed_data_origins=origins,
                                bundle=temporary if libraries is LibraryMode.DIRECTORY else None,
-                               asset_prefix=f"{bundle.name}/" if libraries is LibraryMode.DIRECTORY else "")
+                               asset_prefix=f"{bundle.name}/" if libraries is LibraryMode.DIRECTORY else "",
+                               scene=scene)
             backup = bundle.with_name(f".{bundle.name}.previous")
             if backup.exists():
                 shutil.rmtree(backup)
@@ -572,6 +649,6 @@ def export_scene_html(
     else:
         html = _html_shell(mode=mode, libraries=libraries, manifest=manifest_value,
                            manifest_json=manifest_bytes.decode("utf-8"), layers=layer_bytes,
-                           base_url=remote_url, allowed_data_origins=origins, bundle=None)
+                           base_url=remote_url, allowed_data_origins=origins, bundle=None, scene=scene)
     _atomic_write(output, html.encode("utf-8"))
     return ExportResult(output, bundle, manifest.content_hash, manifest_bytes, layer_bytes)

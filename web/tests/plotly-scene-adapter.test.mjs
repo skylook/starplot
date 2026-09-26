@@ -780,6 +780,10 @@ test("browser legend preserves recorded styling and magnitude scale", async () =
           legend_font_color: "#101010",
           legend_font_size: 20,
           legend_title_font_size: 24,
+          legend_font_name: "DejaVu Sans",
+          legend_title_font_name: "DejaVu Serif",
+          legend_title_font_weight: 700,
+          legend_title_font_style: "italic",
           magnitude_scale: {
             title: "Magnitude <unsafe>",
             labels: ["0", "<one>"],
@@ -805,6 +809,10 @@ test("browser legend preserves recorded styling and magnitude scale", async () =
   assert.equal(layout.legend.title.text, "Legend &lt;unsafe&gt;");
   assert.equal(layout.legend.title.side, "top");
   assert.equal(layout.legend.title.font.size, 12);
+  assert.equal(layout.legend.font.family, "DejaVu Sans");
+  assert.equal(layout.legend.title.font.family, "DejaVu Serif");
+  assert.equal(layout.legend.title.font.weight, 700);
+  assert.equal(layout.legend.title.font.style, "italic");
   assert.equal(layout.legend.grouptitlefont.size, 12);
   assert.equal(layout.legend.tracegroupgap, 33);
   assert.equal(layout.legend.itemwidth, 83);
@@ -841,6 +849,53 @@ test("legend ranks follow recorded Matplotlib order, not scene zorder", async ()
   assert.equal(starTrace.showlegend, true);
   assert.equal(openTrace.showlegend, true);
   assert.ok(starTrace.legendrank < openTrace.legendrank);
+});
+
+test("recorded legend geometry restores native elements idempotently", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const node = (box = { x: 2, y: -8, width: 30, height: 10 }) => ({
+    attrs: new Map(), style: {},
+    setAttribute(k, v) { this.attrs.set(k, String(v)); },
+    getAttribute(k) { return this.attrs.get(k); },
+    getBBox() { return box; },
+  });
+  const text = node(); text.attrs.set("data-unformatted", "Star");
+  const symbol = node(); const hit = node(); const bg = node();
+  const row = node();
+  row.querySelector = (selector) => selector === "text.legendtext" ? text : null;
+  row.querySelectorAll = (selector) => selector === "path.scatterpts" ? [symbol] : selector === "rect.legendtoggle" ? [hit] : [];
+  const legend = node();
+  legend.querySelectorAll = (selector) => selector === "text" ? [text] : selector === "g.traces" ? [row] : selector === "rect.bg" ? [bg] : [];
+  const target = { _fullLayout: { xaxis: { _offset: 10, _length: 200 }, yaxis: { _offset: 20, _length: 100 } }, querySelectorAll() { return [legend]; } };
+  const scene = { viewport: { legend_layout: { frame: { x: 0.5, y: 0.8, width: 0.3, height: 0.2 }, texts: [{ text: "Star", x: 0.1, y: 0.05, font_size: 12 }], markers: [{ label: "Star", x: 0.04, y: 0.075, path: [{ code: 1, vertices: [-0.01, 0] }, { code: 2, vertices: [0.01, 0] }], facecolor: "red", edgecolor: "black", edgewidth: 1, alpha: 0.5 }] } } };
+  runtime._applyRecordedLegendLayout(target, scene, { correctedFontPixelScale: 2 });
+  assert.equal(legend.attrs.get("transform"), "translate(110,40)");
+  assert.equal(bg.attrs.get("width"), "60");
+  assert.equal(text.attrs.get("transform"), "translate(18,18)");
+  assert.equal(symbol.attrs.get("d"), "M-2,0 L2,0");
+  assert.equal(symbol.attrs.get("transform"), "translate(8,15)");
+  assert.equal(symbol.style.strokeWidth, "2px");
+  runtime._applyRecordedLegendLayout(target, scene, { correctedFontPixelScale: 2 });
+  assert.equal(text.attrs.get("transform"), "translate(18,18)");
+  assert.equal(hit.attrs.get("width"), "60");
+});
+
+test("afterplot presentation correction binds once and uses the latest scene", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const listeners = [];
+  let queries = 0;
+  const target = {
+    on(event, callback) { listeners.push([event, callback]); },
+    querySelectorAll() { queries += 1; return []; },
+  };
+  const state = { scene: { viewport: {} }, textStrokes: [] };
+  runtime._ensureDrawHandler(target, state);
+  runtime._ensureDrawHandler(target, state);
+  assert.equal(listeners.length, 1);
+  assert.equal(listeners[0][0], "plotly_afterplot");
+  listeners[0][1]();
+  assert.ok(queries > 0);
+  assert.equal(target._starplotDrawState, state);
 });
 
 test("legend symbols restore recorded size without compounding on resize", async () => {
@@ -1356,6 +1411,28 @@ test("Fix 1: annotation strokes are re-applied with corrected scale after restyl
   assert.ok(strokeNodes[0].style.stroke, "stroke color must be set");
   assert.ok(strokeNodes[0].style.strokeWidth, "stroke width must be set");
   assert.equal(strokeNodes[0].style.paintOrder, "stroke fill");
+});
+
+test("afterplot repairs DOM-only decoration once with the latest render state", async () => {
+  const runtime = await loadRuntime(["starplot-scene-loader.js", "plotly-scene-adapter.js"]);
+  const { source } = scaleCorrectionScene({ sourceAxesWidth: 3600, strokeWidth: 2 });
+  const { Plotly, calls } = mockPlotly({ layoutWidth: 1280, layoutHeight: 800, xDomain: [0.19, 0.81] });
+  const listeners = [];
+  const annotation = { style: {} };
+  const target = {
+    getBoundingClientRect() { return { width: 1280, height: 800 }; },
+    on(event, handler) { if (event === "plotly_afterplot") listeners.push(handler); },
+    querySelectorAll(selector) { return selector === ".annotation-text" ? [annotation] : []; },
+  };
+  await runtime.renderScene(target, source, { Plotly });
+  await runtime.renderScene(target, source, { Plotly });
+  assert.equal(listeners.length, 1);
+  const count = calls.relayout.length + calls.restyle.length;
+  const expected = annotation.style.strokeWidth;
+  annotation.style = {};
+  listeners[0](); listeners[0]();
+  assert.equal(annotation.style.strokeWidth, expected);
+  assert.equal(calls.relayout.length + calls.restyle.length, count);
 });
 
 test("Fix 2: polygon shape line widths are restyled via relayout", async () => {

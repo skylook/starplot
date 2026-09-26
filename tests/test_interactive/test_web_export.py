@@ -28,7 +28,7 @@ import starplot.interactive.web_export as web_export
 import tools.build_plotly_bundle as build_plotly_bundle
 
 
-def _load_generated_inline_html_with_javascript(html: str) -> None:
+def _load_generated_inline_html_with_javascript(html: str, *, font_available=True) -> None:
     scripts = list(
         re.finditer(r"<script\b(?P<attrs>[^>]*)>(?P<content>.*?)</script>", html, re.S | re.I)
     )
@@ -54,7 +54,9 @@ const elements = Object.fromEntries(Object.entries(input.elements).map(
 const document = {
   body: { dataset: {} },
   getElementById(id) { return elements[id] || {}; },
+  fonts: { load: async () => { await new Promise(resolve => setTimeout(resolve, 1)); fontLoaded = true; return input.fontAvailable ? [{}] : []; } },
 };
+let fontLoaded = false;
 const atob = (value) => Buffer.from(value, "base64").toString("binary");
 const window = { crypto: webcrypto, document, atob };
 window.window = window;
@@ -66,7 +68,10 @@ const context = vm.createContext({
 });
 vm.runInContext(fs.readFileSync(input.loader, "utf8"), context);
 context.StarplotScene = window.StarplotScene;
-window.StarplotScene.renderScene = async (_element, source) => source.loadManifest();
+window.StarplotScene.renderScene = async (_element, source) => {
+  if (!fontLoaded) throw new Error("rendered before font loading completed");
+  return source.loadManifest();
+};
 (async () => {
   vm.runInContext(input.bootstrap, context);
   await window.__starplotRenderPromise;
@@ -75,7 +80,8 @@ window.StarplotScene.renderScene = async (_element, source) => source.loadManife
 """
     subprocess.run(
         ["node", "-e", script],
-        input=json.dumps({"loader": str(loader), "elements": elements, "bootstrap": bootstrap}),
+        input=json.dumps({"loader": str(loader), "elements": elements, "bootstrap": bootstrap,
+                          "fontAvailable": font_available}),
         text=True,
         check=True,
         capture_output=True,
@@ -170,6 +176,59 @@ def test_inline_embeds_exact_arrow_payload(tmp_path):
     assert 'application/vnd.apache.arrow.stream' in html
 
 
+@pytest.mark.parametrize("mode", ["inline", "external", "remote"])
+def test_export_embeds_requested_inter_fonts_and_waits_for_loading(tmp_path, mode):
+    scene = _scene()
+    scene = replace(scene, layers=(replace(scene.layers[0], style={
+        **scene.layers[0].style,
+        "font_name": "Inter", "font_weight": "bold", "font_style": "italic",
+    }),))
+    result = export_scene_html(scene, "font.html", data_mode=mode, library_mode="cdn",
+                               data_url="https://example.test/scene")
+    html = result.html_path.read_text()
+    assert "@font-face" in html
+    assert "data:font/ttf;base64," in html
+    assert "font-weight:700;font-style:italic" in html
+    assert "SIL OPEN FONT LICENSE" in html
+    assert "document.fonts.load" in html
+    assert html.index("document.fonts.load") < html.index("StarplotScene.renderScene(")
+
+
+def test_directory_fonts_use_licensed_assets_not_embedded_payloads(tmp_path):
+    result = export_scene_html(_scene(), "font.html", library_mode="directory")
+    html = result.html_path.read_text()
+    assert "data:font/ttf" not in html
+    assert "font.scene/assets/fonts/Inter-Regular.ttf" in html
+    fonts = result.bundle_path / "assets" / "fonts"
+    assert (fonts / "Inter-Regular.ttf").read_bytes() == (
+        web_export._FONT_ASSETS / "Inter-Regular.ttf"
+    ).read_bytes()
+    assert (fonts / "LICENSE.txt").is_file()
+    assert not (fonts / "Inter-Bold.ttf").exists()
+    assert len(html.encode()) < 20_000
+
+
+def test_requested_didot_face_and_legend_weight_are_bundled(tmp_path):
+    scene = replace(_scene(), viewport={
+        **_scene().viewport, "legend_font_name": "GFS Didot",
+        "legend_title_font_name": "Inter", "legend_title_font_weight": 700,
+    })
+    result = export_scene_html(scene, "fonts.html", library_mode="directory")
+    html = result.html_path.read_text()
+    assert "font-family:'GFS Didot'" in html
+    assert (result.bundle_path / "assets/fonts/GFSDidot-Regular.ttf").is_file()
+    assert (result.bundle_path / "assets/fonts/GFSDidot-OFL.txt").is_file()
+    assert (result.bundle_path / "assets/fonts/Inter-Bold.ttf").is_file()
+    assert "Starplot font failed to load" in html
+
+
+def test_bootstrap_reports_missing_font_instead_of_rendering_fallback(tmp_path):
+    result = export_scene_html(_scene(), "fonts.html", data_mode="inline", library_mode="cdn")
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        _load_generated_inline_html_with_javascript(result.html_path.read_text(), font_available=False)
+    assert "Starplot font failed to load: normal 400 12px Inter" in error.value.stderr
+
+
 def test_inline_bootstrap_loads_exact_canonical_manifest_text(tmp_path):
     layer_id = "x</script><script>globalThis.pwn=1</script><script>"
     result = export_scene_html(
@@ -216,7 +275,8 @@ def test_every_export_shell_has_full_viewport_and_render_completion_signal(tmp_p
     )
     html = result.html_path.read_text(encoding="utf-8")
     assert "html,body,#starplot-chart{width:100%;height:100%;margin:0;overflow:hidden}" in html
-    assert "window.__starplotRenderPromise=StarplotScene.renderScene" in html
+    assert "window.__starplotRenderPromise=Promise.all" in html
+    assert "StarplotScene.renderScene" in html
     assert "document.body.dataset.starplotRendered='true'" in html
     assert "document.body.dataset.starplotError=error.message" in html
 

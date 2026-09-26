@@ -54,8 +54,10 @@ p.export_html(
 )
 
 # 4. Plotly Figure for notebooks or further Plotly customisation.
-fig = p.to_plotly()
-fig.write_html("orion-plotly.html")
+# Native Plotly does not rescale marker/font sizes when its container changes.
+# Compile for the final viewport; use export_html for proportional responsive UI.
+fig = p.to_plotly(width=1400, height=1200)
+fig.write_html("orion-plotly.html", config={"responsive": False})
 
 print("Generated:")
 print("  orion.html + orion.scene/   (external bundle)")

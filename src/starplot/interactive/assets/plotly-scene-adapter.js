@@ -664,6 +664,8 @@
           color: variant.font_color || style.font_color || "#ffffff",
           family: plotlyFontFamily(variant.font_name || style.font_name, weight),
           weight: fontWeight,
+          style: ["normal", "italic"].includes(variant.font_style || style.font_style)
+            ? (variant.font_style || style.font_style) : "normal",
         },
         opacity: Number(variant.font_alpha ?? style.font_alpha ?? style.alpha ?? 1),
       });
@@ -938,10 +940,14 @@
       font: {
         color: legendFontColor,
         size: scaledLegendFont(viewport.legend_font_size, 11),
+        family: viewport.legend_font_name || "DejaVu Sans",
       },
       grouptitlefont: {
         color: legendFontColor,
         size: scaledLegendFont(viewport.legend_title_font_size, 11),
+        family: viewport.legend_title_font_name || viewport.legend_font_name || "DejaVu Sans",
+        weight: viewport.legend_title_font_weight || "normal",
+        style: ["normal", "italic"].includes(viewport.legend_title_font_style) ? viewport.legend_title_font_style : "normal",
       },
     };
     if (viewport.magnitude_scale) {
@@ -1297,6 +1303,71 @@
     });
   }
 
+  function _applyRecordedLegendLayout(target, scene, state) {
+    const recorded = scene.viewport.legend_layout;
+    if (!recorded) { _applyLegendSymbolScale(target, scene); return; }
+    if (!target || typeof target.querySelectorAll !== "function") return;
+    const full = target._fullLayout || {};
+    const xaxis = full.xaxis || {}, yaxis = full.yaxis || {};
+    const frame = recorded.frame || {};
+    const width = Number(xaxis._length), height = Number(yaxis._length);
+    if (![width, height, xaxis._offset, yaxis._offset, frame.x, frame.y, frame.width, frame.height].every(Number.isFinite)
+        || width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) return;
+    const fontScale = Number(state.correctedFontPixelScale || state.metrics?.fontPixelScale || 1);
+    const texts = new Map((recorded.texts || []).map((item) => [String(item.text), item]));
+    const markers = new Map((recorded.markers || []).map((item) => [String(item.label), item]));
+    const pathCommands = { 1: ["M", 2], 2: ["L", 2], 3: ["Q", 4], 4: ["C", 6], 79: ["Z", 2] };
+    target.querySelectorAll("g.legend").forEach((legend) => {
+      legend.setAttribute("transform", `translate(${xaxis._offset + frame.x * width},${yaxis._offset + (1 - frame.y) * height})`);
+      legend.querySelectorAll("rect.bg").forEach((bg) => {
+        bg.setAttribute("x", 0); bg.setAttribute("y", 0);
+        bg.setAttribute("width", frame.width * width); bg.setAttribute("height", frame.height * width);
+      });
+      legend.querySelectorAll("g.traces, g.legendpoints, g.legendlines, g.legendfill").forEach((group) => group.setAttribute("transform", "translate(0,0)"));
+      legend.querySelectorAll("text").forEach((node) => {
+        const item = texts.get(node.getAttribute("data-unformatted") || node.textContent);
+        if (!item || ![item.x, item.y].every(Number.isFinite)) return;
+        node.setAttribute("x", 0); node.setAttribute("y", 0); node.setAttribute("text-anchor", "start");
+        node.removeAttribute?.("transform");
+        if (Number.isFinite(item.font_size)) node.style.fontSize = `${item.font_size * fontScale}px`;
+        if (item.font_color) node.style.fill = item.font_color;
+        if (item.font_name) node.style.fontFamily = item.font_name;
+        if (item.font_weight) node.style.fontWeight = item.font_weight;
+        if (["normal", "italic", "oblique"].includes(item.font_style)) node.style.fontStyle = item.font_style;
+        const box = node.getBBox();
+        node.setAttribute("transform", `translate(${item.x * width - box.x},${item.y * width - box.y})`);
+      });
+      legend.querySelectorAll("g.traces").forEach((row) => {
+        row.setAttribute("transform", "translate(0,0)");
+        const label = row.querySelector("text.legendtext");
+        const name = label && (label.getAttribute("data-unformatted") || label.textContent);
+        const marker = markers.get(name);
+        if (marker && [marker.x, marker.y].every(Number.isFinite)) {
+          const segments = (marker.path || []).map((segment) => {
+            const command = pathCommands[segment.code], points = segment.vertices;
+            if (!command || !Array.isArray(points) || points.length !== command[1] || !points.every(Number.isFinite)) return null;
+            return command[0] === "Z" ? "Z" : command[0] + points.map((point) => point * width).join(",");
+          });
+          if (segments.length && segments.every((segment) => segment != null)) row.querySelectorAll("path.scatterpts").forEach((symbol) => {
+            symbol.setAttribute("d", segments.join(" "));
+            symbol.setAttribute("transform", `translate(${marker.x * width},${marker.y * width})`);
+            symbol.setAttribute("vector-effect", "non-scaling-stroke");
+            symbol.style.fill = marker.facecolor || "none";
+            symbol.style.stroke = marker.edgecolor || "none";
+            if (Number.isFinite(marker.edgewidth)) symbol.style.strokeWidth = `${marker.edgewidth * fontScale}px`;
+            if (Number.isFinite(marker.alpha)) symbol.style.opacity = Math.max(0, Math.min(1, marker.alpha));
+          });
+        }
+        const item = texts.get(name);
+        if (item && Number.isFinite(item.y)) row.querySelectorAll("rect.legendtoggle").forEach((hit) => {
+          hit.setAttribute("x", 0); hit.setAttribute("y", item.y * width);
+          hit.setAttribute("width", frame.width * width);
+          hit.setAttribute("height", Math.max(Number(item.font_size || 11) * fontScale, 1));
+        });
+      });
+    });
+  }
+
   async function _applyScaleCorrection(target, state, Plotly) {
     const { scene, slots, traces, layout, metrics } = state;
     const fullLayout = target._fullLayout;
@@ -1468,6 +1539,21 @@
     state.appliedWidthScale = correctedWidthScale;
   }
 
+  function _ensureDrawHandler(target, state) {
+    if (!target || typeof target.on !== "function") return;
+    target._starplotDrawState = state;
+    if (target._starplotDrawHandler) return;
+    const handler = () => {
+      const current = target._starplotDrawState;
+      // DOM-only: never call Plotly here, which would emit afterplot recursively.
+      _applyEllipseMarkerTransforms(target);
+      _applyRecordedLegendLayout(target, current.scene, current);
+      _applyAnnotationStrokes(target, current);
+    };
+    target.on("plotly_afterplot", handler);
+    target._starplotDrawHandler = handler;
+  }
+
   function _ensureResizeHandler(target, state, Plotly) {
     if (!target || (typeof target !== "object" && typeof target !== "function")) return;
     target._starplotResizeContext = { state, Plotly };
@@ -1483,7 +1569,7 @@
         if (!context) return;
         await _applyScaleCorrection(target, context.state, context.Plotly);
         _applyEllipseMarkerTransforms(target);
-        _applyLegendSymbolScale(target, context.state.scene);
+        _applyRecordedLegendLayout(target, context.state.scene, context.state);
         _applyAnnotationStrokes(target, context.state);
       }, 150);
     };
@@ -1612,6 +1698,7 @@
     };
     await Plotly.react(target, plotlyTraces, layout,
       { responsive: true, ...settings.config });
+    _ensureDrawHandler(target, correctionState);
     // Plotly calibrates the axes domain to keep scaleanchor axes square inside
     // the (possibly non-square) container.  The initial renderingMetrics used
     // the container width as a proxy for the axes width, which overestimates
@@ -1620,7 +1707,7 @@
     // This also runs on window resize (see _applyScaleCorrection).
     await _applyScaleCorrection(target, correctionState, Plotly);
     _applyEllipseMarkerTransforms(target);
-    _applyLegendSymbolScale(target, scene);
+    _applyRecordedLegendLayout(target, scene, correctionState);
     // Debounced resize re-correction.  Plotly's responsive:true only resizes
     // the canvas; it does not recompute font/marker/stroke scales.
     _ensureResizeHandler(target, correctionState, Plotly);
@@ -1647,6 +1734,8 @@
     _applyAnnotationStrokes,
     _applyEllipseMarkerTransforms,
     _applyLegendSymbolScale,
+    _applyRecordedLegendLayout,
+    _ensureDrawHandler,
     magnitudeScaleTraces,
   });
 })(typeof window !== "undefined" ? window : globalThis);

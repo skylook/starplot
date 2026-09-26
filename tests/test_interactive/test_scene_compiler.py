@@ -933,6 +933,9 @@ def test_compile_carries_only_browser_legend_presentation_fields():
         "legend_font_color": "#101010",
         "legend_font_size": 15.0,
         "legend_title_font_size": 18.0,
+        "legend_layout": {"frame": {"x": 0.8, "y": 0.9, "width": 0.2, "height": 0.1}},
+        "legend_font_name": "Inter",
+        "legend_title_font_weight": "bold",
         "magnitude_scale": {
             "title": "Star Magnitude",
             "labels": ["0", "1"],
@@ -951,6 +954,9 @@ def test_compile_carries_only_browser_legend_presentation_fields():
     assert scene.viewport["legend_font_color"] == "#101010"
     assert scene.viewport["legend_font_size"] == 15.0
     assert scene.viewport["legend_title_font_size"] == 18.0
+    assert scene.viewport["legend_layout"]["frame"]["width"] == 0.2
+    assert scene.viewport["legend_font_name"] == "Inter"
+    assert scene.viewport["legend_title_font_weight"] == "bold"
     assert scene.viewport["magnitude_scale"]["labels"] == ("0", "1")
     assert "unrelated_backend_state" not in scene.viewport
 
