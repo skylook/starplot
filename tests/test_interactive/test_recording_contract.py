@@ -448,6 +448,7 @@ def test_constellations_record_final_style_keyword_overrides():
     assert command.style["color"] == "#78d78e"
     assert command.style["alpha"] == pytest.approx(artist.get_alpha())
     assert command.style["width"] == pytest.approx(artist.get_linewidths()[0])
+    assert command.style["line_style"] == "solid"
 
 
 def test_arrow_retains_its_matplotlib_background_clip_contract():

@@ -1466,13 +1466,14 @@ class RecordingMixin:
         if segments:
             artist = artists[0]
             colors = artist.get_colors()
+            dash = artist.get_linestyles()[0]
             self._recorder.record_line_collection(
                 lines=segments,
                 style_dict={
                     "color": _rgb_string(colors[0]),
                     "width": float(artist.get_linewidths()[0]),
                     "alpha": float(colors[0][3]),
-                    "line_style": artist.get_linestyles()[0],
+                    "line_style": "solid" if dash[1] is None else dash,
                 },
                 metadata=[{"type": "constellation"} for _ in segments],
                 gid="constellations-line",
