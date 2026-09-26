@@ -115,6 +115,9 @@ def _marker_scale(
 
 def _marker_extent_factor(symbol: str | None) -> float:
     """Map Matplotlib marker-path extents to the equivalent Plotly diameter."""
+    # Plotly's five-point star has a 1.4x larger outer radius at the same size.
+    if symbol in {"star", "*"}:
+        return 1.0 / 1.4
     # Plotly renders these compact Starplot glyphs at roughly twice the visual
     # diameter of Matplotlib's corresponding marker path for the same scatter
     # area. Ordinary circles and squares already agree directly.
@@ -194,7 +197,10 @@ def convert_marker_style(style_dict: dict, scale: float = 1.0, resolution: int =
     s = (size * scale) ** 2
     return {
         "symbol": MARKER_SYMBOL_MAP.get(style_dict.get("symbol", "circle"), "circle"),
-        "size": calibrate_marker_size(s, resolution=resolution, width=width),
+        "size": calibrate_marker_size(
+            s, resolution=resolution, width=width,
+            symbol=style_dict.get("symbol", "circle"),
+        ),
         "color": style_dict.get("color"),
         "opacity": style_dict.get("alpha", 1.0),
         "line": {

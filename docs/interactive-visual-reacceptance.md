@@ -81,6 +81,27 @@ a substitute for screenshot inspection.
 Verification: interactive/parity suite 728 passed before the two additional AST
 tests, final harness suite31 passed, Node76 passed, Ruff and diff-check passed.
 
+## Recheck at 3158c54
+
+- Big Dipper: clean three-mode capture complete, Matplotlib controls identical,
+  transport screenshots identical. Manual comparison exposed five-point stars
+  approximately1.4x too large. Bundled Plotly's star generator multiplies outer
+  radius by1.4; Matplotlib does not. Shared marker calibration now divides by1.4
+  for `star` and `*`, protected by scalar/vector/legacy-helper regression tests.
+  Re-render this single example before accepting the repair.
+- Orthographic: clean three-mode capture complete, Matplotlib controls identical,
+  transport screenshots identical. Manual comparison confirms the corrected
+  projection center and circular crop. Its explicit HTML viewport is1000x1000;
+  compare normalized geometry, not raw pixel size against2866x2866 original.
+  Custom DSO symbols and font differences remain part of the shared styling
+  review, not an unconditional full visual pass.
+- Full interactive/parity run at this revision:730 passed in56.81s.
+
+Inspected five distinct examples so far (Galaxy, Carina, Virgo, Big Dipper,
+Orthographic); only four received the current post-initial-repair regeneration.
+Do not report all23 as inspected or accepted. Reusable fixes change the source
+fingerprint, so keep earlier artifacts revision-bound and refresh affected pairs.
+
 ## Complete queue
 
 23 paired examples (all require final-revision inspection):

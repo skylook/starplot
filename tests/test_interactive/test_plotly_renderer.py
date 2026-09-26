@@ -613,6 +613,24 @@ def test_marker_size_calibration_can_retain_subpixel_diameter():
     np.testing.assert_allclose(calibrated, expected, rtol=2e-6)
 
 
+@pytest.mark.parametrize("symbol", ["star", "*"])
+def test_star_marker_calibration_accounts_for_plotly_outer_radius(symbol):
+    from starplot.interactive.style_converter import (
+        calibrate_marker_size, calibrate_marker_sizes_array, convert_marker_style,
+    )
+
+    kwargs = dict(dpi=72, width=1000, source_axes_width=1000, min_size=0)
+    assert calibrate_marker_size(100, symbol=symbol, **kwargs) == pytest.approx(10 / 1.4)
+    values = calibrate_marker_sizes_array(
+        np.array([100, 400], dtype=np.float32), dpi=72, target_width=1000,
+        source_axes_width=1000, min_size=0, symbol=symbol,
+    )
+    np.testing.assert_allclose(values, np.array([10, 20]) / 1.4, rtol=1e-6)
+    star = convert_marker_style({"size": 10, "symbol": symbol})
+    circle = convert_marker_style({"size": 10, "symbol": "circle"})
+    assert star["size"] / circle["size"] == pytest.approx(1 / 1.4)
+
+
 def test_marker_size_calibration_matches_matplotlib_circle_extent():
     """Matplotlib's default circle path has a diameter of sqrt(s) points."""
     from starplot.interactive.style_converter import calibrate_marker_size
