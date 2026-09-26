@@ -28,6 +28,14 @@ import tools.visual_parity.gen_comparison as gen
 import tools.visual_parity._example_runner as runner
 
 
+def test_compact_crops_keep_original_browser_pair_without_dropping_default_pairs():
+    pairs = [(name, Path("left.png"), Path("right.png"), "right") for name in
+             ["orig vs interactive", "orig vs inline", "orig vs external", "inline vs provider"]]
+    assert gen._select_crop_pairs(pairs, compact=False) == pairs
+    assert gen._select_crop_pairs(pairs, compact=True) == [pairs[1]]
+    assert gen._select_crop_pairs([pairs[2]], compact=True) == [pairs[2]]
+
+
 def test_milky_way_example_changes_only_backend_not_star_layers():
     root = Path(__file__).resolve().parents[2]
     def star_calls(path):

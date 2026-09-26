@@ -864,8 +864,11 @@ test("recorded legend geometry restores native elements idempotently", async () 
   const row = node();
   row.querySelector = (selector) => selector === "text.legendtext" ? text : null;
   row.querySelectorAll = (selector) => selector === "path.scatterpts" ? [symbol] : selector === "rect.legendtoggle" ? [hit] : [];
+  const group = node(); const scrollbox = node();
+  scrollbox.attrs.set("clip-path", "url(#old-clip)");
+  scrollbox.removeAttribute = (name) => scrollbox.attrs.delete(name);
   const legend = node();
-  legend.querySelectorAll = (selector) => selector === "text" ? [text] : selector === "g.traces" ? [row] : selector === "rect.bg" ? [bg] : [];
+  legend.querySelectorAll = (selector) => selector === "text" ? [text] : selector === "g.traces" ? [row] : selector === "rect.bg" ? [bg] : selector === "g.scrollbox" ? [scrollbox] : selector.includes("g.groups") ? [group] : [];
   const target = { _fullLayout: { xaxis: { _offset: 10, _length: 200 }, yaxis: { _offset: 20, _length: 100 } }, querySelectorAll() { return [legend]; } };
   const scene = { viewport: { legend_layout: { frame: { x: 0.5, y: 0.8, width: 0.3, height: 0.2 }, texts: [{ text: "Star", x: 0.1, y: 0.05, font_size: 12 }], markers: [{ label: "Star", x: 0.04, y: 0.075, path: [{ code: 1, vertices: [-0.01, 0] }, { code: 2, vertices: [0.01, 0] }], facecolor: "red", edgecolor: "black", edgewidth: 1, alpha: 0.5 }] } } };
   runtime._applyRecordedLegendLayout(target, scene, { correctedFontPixelScale: 2 });
@@ -875,9 +878,12 @@ test("recorded legend geometry restores native elements idempotently", async () 
   assert.equal(symbol.attrs.get("d"), "M-2,0 L2,0");
   assert.equal(symbol.attrs.get("transform"), "translate(8,15)");
   assert.equal(symbol.style.strokeWidth, "2px");
+  assert.equal(group.attrs.get("transform"), "translate(0,0)");
+  assert.equal(scrollbox.attrs.has("clip-path"), false);
   runtime._applyRecordedLegendLayout(target, scene, { correctedFontPixelScale: 2 });
   assert.equal(text.attrs.get("transform"), "translate(18,18)");
-  assert.equal(hit.attrs.get("width"), "60");
+  assert.equal(hit.attrs.get("x"), "6");
+  assert.equal(hit.attrs.get("width"), "46");
 });
 
 test("afterplot presentation correction binds once and uses the latest scene", async () => {

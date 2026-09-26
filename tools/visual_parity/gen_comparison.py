@@ -666,7 +666,17 @@ def _format_image_diff(stats: dict) -> str:
     )
 
 
-def _write_diff(folder: Path, name: str, transports: tuple[str, ...], exports: dict) -> None:
+def _select_crop_pairs(pairs, *, compact=False):
+    """Keep full reports by default; compact mode crops the visual reference pair."""
+    if not compact:
+        return pairs
+    preferred = next((pair for pair in pairs if pair[0] == "orig vs inline"), None)
+    if preferred is None:
+        preferred = next((pair for pair in pairs if pair[0].startswith("orig vs ")), None)
+    return [preferred] if preferred is not None else []
+
+
+def _write_diff(folder: Path, name: str, transports: tuple[str, ...], exports: dict, *, compact_crops=False) -> None:
     from contextlib import ExitStack
     from PIL import Image
 
@@ -742,7 +752,7 @@ def _write_diff(folder: Path, name: str, transports: tuple[str, ...], exports: d
             pairs.append((f"{left_name} vs {right_name}", folder / f"{left_name}.png", folder / f"{right_name}.png", "left"))
 
     crop_sections = []
-    for label, left_path, right_path, reference in pairs:
+    for label, left_path, right_path, reference in _select_crop_pairs(pairs, compact=compact_crops):
         review = crops.build_pair_review(
             left_path, right_path, crops_dir, label,
             root_dir=folder, semantic=True, reference=reference,
@@ -920,7 +930,7 @@ def _safe_remove_staging(staging: Path, staging_root: Path | None = None) -> Non
         _remove_path(staging)
 
 
-def run_example(name: str, transports: tuple[str, ...]) -> Path:
+def run_example(name: str, transports: tuple[str, ...], *, compact_crops=False) -> Path:
     """Render and verify one example through the requested transports."""
     _validate_name(name)
     original = ROOT / "examples" / f"{name}.py"
@@ -1002,7 +1012,11 @@ def run_example(name: str, transports: tuple[str, ...]) -> Path:
             if collapsed_ids != expected_layer_ids:
                 raise AssertionError(f"{transport}: browser traces do not preserve the canonical layer order")
         (staging / "browser-render.json").write_text(json.dumps(browser_report, indent=2) + "\n", encoding="utf-8")
-        _write_diff(staging, name, transports, exports)
+        if compact_crops:
+            _write_diff(staging, name, transports, exports, compact_crops=True)
+        else:
+            _write_diff(staging, name, transports, exports)
+        exports["compact_crops"] = bool(compact_crops)
         verified = ", ".join(transports)
         provider_note = (
             "- Provider HTTP manifest/layer bytes and headers: PASS\n"
@@ -1042,11 +1056,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("example")
     parser.add_argument("--transports", default=",".join(ALL_TRANSPORTS))
+    parser.add_argument("--compact-crops", action="store_true",
+                        help="Crop only original vs browser; retain all screenshots and full-image metrics")
     args = parser.parse_args()
     transports = tuple(value.strip() for value in args.transports.split(",") if value.strip())
     if not transports or any(value not in ALL_TRANSPORTS for value in transports):
         parser.error(f"--transports must be a non-empty subset of {','.join(ALL_TRANSPORTS)}")
-    run_example(args.example, transports)
+    run_example(args.example, transports, compact_crops=args.compact_crops)
 
 
 if __name__ == "__main__":

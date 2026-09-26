@@ -462,6 +462,33 @@ def test_title_records_final_artist_style_and_tight_bbox_gutter():
     assert command.style["axes_domain_top"] < command.data["y"] <= 1.0
 
 
+def test_title_refresh_uses_drawn_bbox_relative_to_final_axes():
+    plot = make_map_plot()
+    plot.title("Probe")
+    plot._record_plot_info()
+    command = next(c for c in plot._recorder.commands if c.gid == "title")
+    axes = plot.ax.get_window_extent()
+    title = plot.ax.title.get_window_extent()
+    assert command.style["xref"] == "x domain"
+    assert command.style["yref"] == "y domain"
+    assert command.data["x"] == pytest.approx((title.x0 + title.width / 2 - axes.x0) / axes.width)
+    assert command.data["y"] == pytest.approx((title.y1 - axes.y0) / axes.height)
+
+
+def test_recorded_polygon_preserves_transformed_compound_fill(monkeypatch):
+    from starplot.styles import PolygonStyle
+    import starplot.interactive.recording_mixin as recording
+
+    plot = make_map_plot()
+    rings = [[(0, 0), (4, 0), (4, 4), (0, 4)],
+             [(1, 1), (1, 3), (3, 3), (3, 1)]]
+    monkeypatch.setattr(recording, "_transformed_path_rings", lambda *args: rings)
+    plot.polygon(points=[(70, 0), (80, 0), (80, 10)], style=PolygonStyle())
+    command = next(c for c in plot._recorder.commands if c.kind == "polygon")
+    assert command.data["compound_fill"] is True
+    assert command.data["rings"] == rings
+
+
 def test_camera_border_records_the_final_matplotlib_patch_exactly_once():
     """A rectangular camera must not acquire a synthetic circular border."""
     import numpy as np

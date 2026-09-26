@@ -1323,7 +1323,13 @@
         bg.setAttribute("x", 0); bg.setAttribute("y", 0);
         bg.setAttribute("width", frame.width * width); bg.setAttribute("height", frame.height * width);
       });
-      legend.querySelectorAll("g.traces, g.legendpoints, g.legendlines, g.legendfill").forEach((group) => group.setAttribute("transform", "translate(0,0)"));
+      legend.querySelectorAll("g.groups, g.traces, g.legendpoints, g.legendlines, g.legendfill").forEach((group) => group.setAttribute("transform", "translate(0,0)"));
+      // Native Plotly clip dimensions describe its old layout, not our recorded
+      // frame. Every corrected entry is already bounded by the reference frame.
+      legend.querySelectorAll("g.scrollbox").forEach((group) => {
+        group.setAttribute("transform", "translate(0,0)");
+        group.removeAttribute("clip-path");
+      });
       legend.querySelectorAll("text").forEach((node) => {
         const item = texts.get(node.getAttribute("data-unformatted") || node.textContent);
         if (!item || ![item.x, item.y].every(Number.isFinite)) return;
@@ -1360,8 +1366,13 @@
         }
         const item = texts.get(name);
         if (item && Number.isFinite(item.y)) row.querySelectorAll("rect.legendtoggle").forEach((hit) => {
-          hit.setAttribute("x", 0); hit.setAttribute("y", item.y * width);
-          hit.setAttribute("width", frame.width * width);
+          // Individual columns must retain distinct click areas, not overlapping
+          // full-frame rectangles that let the last entry steal every click.
+          const padding = Math.max(2, width * 0.01);
+          const left = Math.max(0, Math.min(item.x, marker ? marker.x : item.x) * width - padding);
+          const right = item.x * width + label.getBBox().width + padding;
+          hit.setAttribute("x", left); hit.setAttribute("y", item.y * width);
+          hit.setAttribute("width", Math.max(1, Math.min(frame.width * width, right) - left));
           hit.setAttribute("height", Math.max(Number(item.font_size || 11) * fontScale, 1));
         });
       });

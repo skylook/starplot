@@ -433,6 +433,20 @@ class RecordingMixin:
 
         self._recorder.projection_info = proj_info
 
+        # Titles can extend beyond the original figure and export() can change
+        # the tight canvas. Anchor the drawn text box to the final axes, rather
+        # than normalizing it twice against two different paper heights.
+        for command in self._recorder.commands:
+            if command.gid == "title":
+                axes = self.ax.get_window_extent()
+                box = self.ax.title.get_window_extent()
+                command.data.update({
+                    "x": float((box.x0 + box.width / 2 - axes.x0) / axes.width),
+                    "y": float((box.y1 - axes.y0) / axes.height),
+                })
+                command.style.update({"xref": "x domain", "yref": "y domain",
+                                      "ha": "center", "va": "top"})
+
         try:
             has_gradient = (
                 hasattr(self.style, "has_gradient_background")
@@ -823,6 +837,7 @@ class RecordingMixin:
         self._recorder.record_polygon(
             points=rings[0],
             rings=rings,
+            compound_fill=True,
             style_dict=style_dict,
             gid=patch.get_gid() or kwargs.get("gid", "polygon"),
             zorder=int(patch.get_zorder() or 0),
