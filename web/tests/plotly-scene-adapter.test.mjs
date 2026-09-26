@@ -908,6 +908,24 @@ test("native custom marker paths retain proportions after idempotent redraw", as
   assert.equal(attrs.get("transform"), "translate(10,20) scale(10)");
 });
 
+test("ordinary SVG markers preserve native edge dashes across resize", async () => {
+  const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
+  const point = { style: {} };
+  const node = { __data__: [{ trace: { index: 0 } }], querySelectorAll() { return [point]; } };
+  const trace = { marker: { line: { width: 4 } }, meta: {
+    starplot_marker_edge_dash: [1, 1.65], starplot_marker_edge_dash_offset: 0.5,
+    starplot_marker_edge_width: 2,
+  } };
+  const target = { _fullData: [trace], querySelectorAll() { return [node]; } };
+  runtime._applyRecordedMarkerPaths(target);
+  assert.equal(point.style.strokeDasharray, "2,3.3");
+  assert.equal(point.style.strokeDashoffset, "1px");
+  trace.marker.line.width = 2;
+  runtime._applyRecordedMarkerPaths(target);
+  assert.equal(point.style.strokeDasharray, "1,1.65");
+  assert.equal(point.style.strokeDashoffset, "0.5px");
+});
+
 test("afterplot presentation correction binds once and uses the latest scene", async () => {
   const runtime = await loadRuntime(["plotly-scene-adapter.js"]);
   const listeners = [];

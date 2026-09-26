@@ -344,6 +344,10 @@
       meta: { starplot_marker_symbol: style.symbol || "circle", ...(style.marker_path ? {
         starplot_marker_path: style.marker_path,
         starplot_marker_path_scale: style.marker_path_scale,
+      } : {}), ...(style.marker_edge_dash ? {
+        starplot_marker_edge_dash: style.marker_edge_dash,
+        starplot_marker_edge_dash_offset: style.marker_edge_dash_offset,
+        starplot_marker_edge_width: style.edge_width,
       } : {}) },
     };
     if (hoverAllowed
@@ -1323,7 +1327,15 @@
     target.querySelectorAll("g.trace").forEach((node) => {
       const index = node.__data__?.[0]?.trace?.index;
       const trace = data[index], meta = trace && trace.meta;
-      if (!meta || !meta.starplot_marker_path || !trace.marker) return;
+      if (!meta || !trace.marker) return;
+      const dash = meta.starplot_marker_edge_dash;
+      if (Array.isArray(dash) && dash.length && dash.every((value) => Number.isFinite(value) && value >= 0)) {
+        const ratio = Number(trace.marker.line?.width) / Number(meta.starplot_marker_edge_width);
+        if (Number.isFinite(ratio) && ratio > 0) node.querySelectorAll("path.point").forEach((point) => {
+          point.style.strokeDasharray = dash.map((value) => value * ratio).join(",");
+          point.style.strokeDashoffset = `${Number(meta.starplot_marker_edge_dash_offset || 0) * ratio}px`;
+        });
+      }
       const path = markerPathString(meta.starplot_marker_path);
       const multiplier = Number(meta.starplot_marker_path_scale);
       if (!path || !Number.isFinite(multiplier) || multiplier <= 0) return;
@@ -1391,6 +1403,10 @@
             symbol.setAttribute("transform", `translate(${marker.x * width},${marker.y * width})`);
             symbol.setAttribute("vector-effect", "non-scaling-stroke");
             symbol.style.fill = marker.facecolor || "none";
+            if (Array.isArray(marker.edge_dash) && marker.edge_dash.every(Number.isFinite)) {
+              symbol.style.strokeDasharray = marker.edge_dash.map((value) => value * fontScale).join(",");
+              symbol.style.strokeDashoffset = `${Number(marker.edge_dash_offset || 0) * fontScale}px`;
+            }
             symbol.style.stroke = marker.edgecolor || "none";
             if (Number.isFinite(marker.edgewidth)) symbol.style.strokeWidth = `${marker.edgewidth * fontScale}px`;
             if (Number.isFinite(marker.alpha)) symbol.style.opacity = Math.max(0, Math.min(1, marker.alpha));

@@ -145,16 +145,24 @@ def _artist_alpha(artist):
 
 def _native_marker_path(collection, symbol):
     """Carry custom glyph geometry instead of renderer-specific approximations."""
-    if collection is None or str(symbol) in {
+    if collection is None:
+        return {}
+    result = {}
+    linestyles = collection.get_linestyles()
+    if linestyles and linestyles[0][1] is not None:
+        offset, pattern = linestyles[0]
+        result.update(marker_edge_dash=[float(value) for value in pattern],
+                      marker_edge_dash_offset=float(offset))
+    if str(symbol) in {
         "point", "circle", "square", "star", "diamond", "triangle", "plus",
         ".", "o", "s", "*", "D", "^", "+",
     }:
-        return {}
+        return result
     paths = collection.get_paths()
     if not paths:
-        return {}
+        return result
     from starplot.interactive.style_converter import _marker_extent_factor
-    return {
+    return {**result,
         "marker_path": [{"code": int(code), "vertices": [
             float(value) if index % 2 == 0 else -float(value)
             for index, value in enumerate(vertices)]}
@@ -209,6 +217,7 @@ def _capture_legend_layout(ax, legend):
         if not handles or not labels:
             continue
         handle = handles[0]
+        edge_dash = {}
         if isinstance(handle, Line2D):
             if handle.get_marker() in (None, "None", "", " "):
                 continue
@@ -237,6 +246,11 @@ def _capture_legend_layout(ax, legend):
             edge = edges[0] if len(edges) else "none"
             edgewidth = widths[0] if len(widths) else 0
             alpha = 1.0  # Collection color arrays already include artist alpha.
+            linestyles = handle.get_linestyles()
+            if linestyles and linestyles[0][1] is not None:
+                offset, pattern = linestyles[0]
+                edge_dash = {"edge_dash": [float(value) for value in pattern],
+                             "edge_dash_offset": float(offset)}
         markers.append({
             "label": labels[0].get_text(),
             "x": float((center[0] - frame.x0) / axes_width),
@@ -247,6 +261,7 @@ def _capture_legend_layout(ax, legend):
             "edgecolor": _rgba_to_hex(edge),
             "edgewidth": float(edgewidth),
             "alpha": alpha,
+            **edge_dash,
         })
     return {
         "frame": {"x": float(normalized.x0), "y": float(normalized.y1),
@@ -1554,6 +1569,13 @@ class RecordingMixin:
                     continue
                 x, y = artist.get_position()
                 font_family = artist.get_fontfamily()
+                stroke_style = {}
+                for effect in artist.get_path_effects():
+                    gc = getattr(effect, "_gc", {})
+                    if gc.get("foreground") is not None and gc.get("linewidth"):
+                        stroke_style = {"stroke_color": _rgba_to_hex(gc["foreground"]),
+                                        "stroke_width": float(gc["linewidth"])}
+                        break
                 self._recorder.record_text(
                     text=artist.get_text(),
                     x=float(x),
@@ -1568,6 +1590,7 @@ class RecordingMixin:
                         "ha": artist.get_horizontalalignment(),
                         "va": artist.get_verticalalignment(),
                         "rotation": float(artist.get_rotation()),
+                        **stroke_style,
                     },
                     gid=gid,
                     zorder=int(artist.get_zorder()),

@@ -433,6 +433,9 @@ def test_reference_line_labels_record_surviving_axes_text():
         assert command.data["x"] == pytest.approx(artist.get_position()[0])
         assert command.data["y"] == pytest.approx(artist.get_position()[1])
         assert command.style["rotation"] == pytest.approx(artist.get_rotation())
+        stroke = next(effect._gc for effect in artist.get_path_effects()
+                      if getattr(effect, "_gc", {}).get("linewidth"))
+        assert command.style["stroke_width"] == pytest.approx(stroke["linewidth"])
 
 
 def test_arrow_retains_its_matplotlib_background_clip_contract():
@@ -501,6 +504,16 @@ def test_custom_marker_records_actual_native_path():
                 for vertices, code in native.iter_segments(curves=True)]
     assert command.style["marker_path"] == expected
     assert command.style["marker_path_scale"] == 1
+
+
+def test_circle_marker_records_native_dashed_edge():
+    plot = make_map_plot()
+    plot.marker(80, 10, style={"marker": {"symbol": "circle", "size": 20,
+                                       "line_style": "dotted"}})
+    command = next(c for c in plot._recorder.commands if c.kind == "scatter")
+    offset, pattern = plot.ax.collections[-1].get_linestyles()[0]
+    assert command.style["marker_edge_dash"] == [float(v) for v in pattern]
+    assert command.style["marker_edge_dash_offset"] == float(offset)
 
 
 def test_camera_border_records_the_final_matplotlib_patch_exactly_once():
