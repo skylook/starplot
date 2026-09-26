@@ -95,6 +95,11 @@ def _font_family(value) -> str:
     return family if "," in family else f"{family}, Arial, sans-serif"
 
 
+def _same_filled_area(left, right) -> bool:
+    """Allow only intersection roundoff, not missing or filled polygon holes."""
+    return left.symmetric_difference(right).area <= max(1e-12, left.area * 1e-12)
+
+
 def _font_weight(value) -> int:
     weights = {"normal": 400, "bold": 700, "light": 300, "medium": 500,
                "semibold": 600, "heavy": 800, "extra bold": 800, "black": 900}
@@ -875,15 +880,15 @@ class _PlotlyRenderContext:
                     for face in polygonize(unary_union([polygon.boundary, *edges]))
                     if face.area > 0 and polygon.covers(face.representative_point())
                 ]
-                if not faces or not polygon.equals(unary_union(faces)):
+                if not faces or not _same_filled_area(polygon, unary_union(faces)):
                     raise ValueError("DATA polygon tessellation must cover the polygon")
                 for face in faces:
-                    if face.interiors or not face.equals(face.convex_hull):
+                    if face.interiors or not _same_filled_area(face, face.convex_hull):
                         raise ValueError(
                             "DATA polygon tessellation cells must be convex and hole-free"
                         )
                     triangles = triangulate(face, tolerance=0.0, edges=False)
-                    if not triangles or not face.equals(unary_union(triangles)):
+                    if not triangles or not _same_filled_area(face, unary_union(triangles)):
                         raise ValueError(
                             "DATA polygon tessellation cells must be fully triangulated"
                         )

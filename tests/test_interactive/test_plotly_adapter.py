@@ -971,6 +971,46 @@ def _polygon_with_hole(*, zorder):
     )
 
 
+def test_tessellation_roundoff_tolerance_does_not_accept_filled_holes():
+    from starplot.interactive.plotly_adapter import _same_filled_area
+
+    outer = [(0, 0), (4, 0), (4, 4), (0, 4)]
+    hole = [(1, 1), (1, 3), (3, 3), (3, 1)]
+    expected = Polygon(outer, holes=[hole])
+    assert _same_filled_area(expected, expected)
+    assert not _same_filled_area(expected, Polygon(outer))
+
+
+def test_projected_polygon_tessellation_accepts_only_roundoff_area():
+    import math
+    import random
+    from starplot.interactive.plotly_adapter import _PlotlyRenderContext
+
+    # Projected metre coordinates, a concave border and a tiny triangular hole
+    # reproduce GEOS intersection roundoff seen in the actual Milky Way scene.
+    rng = random.Random(42)
+    for _ in range(12):
+        outer = []
+        for index in range(32):
+            theta = index * 2 * math.pi / 32
+            radius = 1 + rng.random()
+            outer.append((12345678.9 + radius * 1e6 * math.cos(theta),
+                          2345678.9 + radius * 1e6 * math.sin(theta)))
+    hole = [(12345678.99, 2345678.99), (12345678.991, 2345678.988),
+            (12345678.995, 2345678.996)]
+    scene = _compile(_polygon_with_hole(zorder=2))
+    context = _PlotlyRenderContext(scene)
+    context._add_data_polygon_holes(scene.layers[0], [[outer, hole]],
+        has_fill=True, fill_color="red", edge_color="black", edge_width=0,
+        edge_dash="solid")
+    fill = context.fig.data[0]
+    triangles = [Polygon(path) for path in _split_finite_paths(fill.x, fill.y)]
+    expected = Polygon(outer, holes=[hole])
+    from shapely.ops import unary_union
+    assert expected.symmetric_difference(unary_union(triangles)).area <= expected.area * 1e-12
+    assert not any(triangle.covers(Polygon(hole).centroid) for triangle in triangles)
+
+
 def test_data_polygon_hole_is_tessellated_on_trace_plane_with_stable_zorder():
     from starplot.interactive.plotly_adapter import PlotlySceneAdapter
 
