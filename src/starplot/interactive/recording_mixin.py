@@ -669,7 +669,7 @@ class RecordingMixin:
                     points=rings[0],
                     rings=rings,
                     style_dict={
-                        "fill_color": _rgb_string(fc) if fill else "none",
+                        "fill_color": _rgb_string(fc) if fill and fc[3] > 0 else "none",
                         "edge_color": _edge_color_string(edge),
                         "edge_width": lw,
                         "alpha": float(alpha if alpha is not None else 1.0),
@@ -858,10 +858,11 @@ class RecordingMixin:
             )
             if not rings:
                 return
+            face = patch.get_facecolor()
             style_dict = {
                 # Strip embedded alpha from fill/edge colors; a separate
                 # `alpha` is recorded and applied as Plotly trace opacity.
-                "fill_color": _rgb_string(patch.get_facecolor()),
+                "fill_color": _rgb_string(face) if face[3] > 0 else "none",
                 "edge_color": _edge_color_string(patch.get_edgecolor()),
                 "edge_width": float(patch.get_linewidth() or 0),
                 "alpha": float(patch.get_alpha() if patch.get_alpha() is not None else 1.0),

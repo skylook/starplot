@@ -529,6 +529,27 @@ def test_circle_marker_records_native_dashed_edge():
     assert command.style["marker_edge_dash_offset"] == float(offset)
 
 
+def test_polygon_without_face_fill_remains_transparent():
+    from starplot.styles import PolygonStyle
+    plot = make_map_plot()
+    plot.polygon(points=[(70, 0), (80, 0), (80, 10)],
+                 style=PolygonStyle(fill_color=None, edge_color="red"))
+    assert plot.ax.patches[-1].get_facecolor()[3] == 0
+    command = next(c for c in plot._recorder.commands if c.kind == "polygon")
+    assert command.style["fill_color"] == "none"
+
+
+def test_untracked_patch_without_face_fill_remains_transparent():
+    from matplotlib.path import Path
+    from matplotlib.patches import PathPatch
+    plot = make_map_plot()
+    plot.ax.add_patch(PathPatch(Path([(70, 0), (80, 0), (80, 10), (70, 0)]),
+                               facecolor="none", edgecolor="red"))
+    plot._record_untracked_path_patches()
+    command = next(c for c in plot._recorder.commands if c.gid == "custom-patch")
+    assert command.style["fill_color"] == "none"
+
+
 def test_camera_border_records_the_final_matplotlib_patch_exactly_once():
     """A rectangular camera must not acquire a synthetic circular border."""
     import numpy as np
