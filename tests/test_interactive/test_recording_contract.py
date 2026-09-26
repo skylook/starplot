@@ -438,6 +438,18 @@ def test_reference_line_labels_record_surviving_axes_text():
         assert command.style["stroke_width"] == pytest.approx(stroke["linewidth"])
 
 
+def test_constellations_record_final_style_keyword_overrides():
+    from matplotlib.collections import LineCollection
+    plot = make_map_plot()
+    before = len(plot.ax.collections)
+    plot.constellations(style__color="#78d78e", style__alpha=0.25)
+    artist = next(c for c in plot.ax.collections[before:] if isinstance(c, LineCollection))
+    command = next(c for c in plot._recorder.commands if c.gid == "constellations-line")
+    assert command.style["color"] == "#78d78e"
+    assert command.style["alpha"] == pytest.approx(artist.get_alpha())
+    assert command.style["width"] == pytest.approx(artist.get_linewidths()[0])
+
+
 def test_arrow_retains_its_matplotlib_background_clip_contract():
     plot = make_map_plot()
 

@@ -1450,9 +1450,11 @@ class RecordingMixin:
 
             self.fig.canvas.draw()
             segments = []
+            artists = []
             for collection in self.ax.collections[collections_before:]:
                 if not isinstance(collection, LineCollection):
                     continue
+                artists.append(collection)
                 for segment in collection.get_segments():
                     segments.extend(_transformed_path_segments(
                         self.ax, collection.get_transform(), segment
@@ -1462,17 +1464,19 @@ class RecordingMixin:
             return
 
         if segments:
-            resolved_style = style or self.style.constellation_lines
+            artist = artists[0]
+            colors = artist.get_colors()
             self._recorder.record_line_collection(
                 lines=segments,
                 style_dict={
-                    "color": resolved_style.color.as_hex(),
-                    "width": resolved_style.width,
-                    "alpha": resolved_style.alpha,
+                    "color": _rgb_string(colors[0]),
+                    "width": float(artist.get_linewidths()[0]),
+                    "alpha": float(colors[0][3]),
+                    "line_style": artist.get_linestyles()[0],
                 },
                 metadata=[{"type": "constellation"} for _ in segments],
                 gid="constellations-line",
-                zorder=resolved_style.zorder,
+                zorder=int(artist.get_zorder()),
             )
 
     # ------------------------------------------------------------------
