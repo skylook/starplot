@@ -123,6 +123,10 @@ artifacts are revision-bound; do not silently reuse them as final-source proof.
 Inspect untouched18 pairs plus repeat Virgo after the fixes and verify both mode
 demos. No high-resolution renderer is left running at this checkpoint.
 
+Final checkpoint verification at082c60a:732 interactive/visual-parity Python
+tests passed in55.53s;76 Node tests passed; Ruff and diff-check passed. Python
+retained `src` first and used the host-only readline shim noted above.
+
 ## Complete queue
 
 23 paired examples (all require final-revision inspection):
