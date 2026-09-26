@@ -102,6 +102,27 @@ Orthographic); only four received the current post-initial-repair regeneration.
 Do not report all23 as inspected or accepted. Reusable fixes change the source
 fingerprint, so keep earlier artifacts revision-bound and refresh affected pairs.
 
+## Big Dipper star repair recheck at 1c4d193
+
+Clean capture complete. Manual full-image comparison confirms star extents now
+match the original; locations and background also match. Three browser modes
+are pixel identical. Original-vs-inline diagnostic mean fell to0.469005 with
+1.14930% differing pixels; remaining noticeable differences are font metrics
+and antialiasing, not oversized stars. Verdict: geometry/symbol-size PASS,
+font fidelity still part of the shared font task.
+
+The first expanded calibration regression run failed two vector assertions
+because the test omitted the vector API's explicit `kaleido_scale=1.0`, unlike
+the scalar API and actual SceneCompiler. After matching those conditions,
+249 renderer/compiler/adapter tests passed, Ruff and diff-check passed.
+The star implementation did not need a second production change.
+
+Continuation priority: finish ordinary legend glyph/layout and efficient font
+delivery, then regenerate each affected example one at a time. Current verified
+artifacts are revision-bound; do not silently reuse them as final-source proof.
+Inspect untouched18 pairs plus repeat Virgo after the fixes and verify both mode
+demos. No high-resolution renderer is left running at this checkpoint.
+
 ## Complete queue
 
 23 paired examples (all require final-revision inspection):

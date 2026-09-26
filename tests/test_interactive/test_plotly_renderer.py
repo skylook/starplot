@@ -623,7 +623,7 @@ def test_star_marker_calibration_accounts_for_plotly_outer_radius(symbol):
     assert calibrate_marker_size(100, symbol=symbol, **kwargs) == pytest.approx(10 / 1.4)
     values = calibrate_marker_sizes_array(
         np.array([100, 400], dtype=np.float32), dpi=72, target_width=1000,
-        source_axes_width=1000, min_size=0, symbol=symbol,
+        source_axes_width=1000, min_size=0, kaleido_scale=1.0, symbol=symbol,
     )
     np.testing.assert_allclose(values, np.array([10, 20]) / 1.4, rtol=1e-6)
     star = convert_marker_style({"size": 10, "symbol": symbol})
