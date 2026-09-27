@@ -120,3 +120,14 @@ Actual dense inline navigation-to-rendered-flag measurements, with no concurrent
 generation/test workload: 4133.40, 4129.64 and 4106.87 ms at 1400x703, zero page
 errors. These are three new pages in one browser context (first-page and reused
 context runs), not independent cold machines or network/server performance.
+
+Clean c87b29f synthetic benchmark (100000 points, three repeats, no concurrent
+test/generation load): external Arrow cold median 970.0 ms, warm median 968.5 ms,
+warm p95 986.77 ms; Arrow payload 1336240 bytes; Scene compilation median 1.315 s;
+isolated Python peak RSS 227.22 MiB. Small real-family browser diagnostics had
+medians Map 538.0 ms, Horizon 523.7 ms, Zenith 355.9 ms and Optic 444.7 ms.
+These family samples are coverage diagnostics, not representative full workloads.
+No matching baseline or ordinary-chart comparison was supplied, so relative
+improvement/regression gates were not enforced. The clean artifact is
+comparison_outputs/final-performance-clean.json; the earlier dirty/overlapping
+run final-performance.json must not replace it as final timing evidence.
