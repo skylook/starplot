@@ -1,5 +1,10 @@
 # Interactive visual reacceptance
 
+> Historical iteration notes below are superseded by
+> [the 2026-09-27 acceptance report](interactive-visual-acceptance-2026-09-27.md).
+> All 23 pairs have now been manually inspected; see that report for the exact
+> revisions, repaired defects, tests and remaining differences.
+
 Status: in progress, not global acceptance. The user requires both supported
 backends and minimal changes to examples, not removal of Matplotlib. Reusing
 Matplotlib projection/layout is not itself an unmet requirement.
