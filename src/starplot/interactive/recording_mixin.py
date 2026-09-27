@@ -154,8 +154,8 @@ def _native_marker_path(collection, symbol):
         result.update(marker_edge_dash=[float(value) for value in pattern],
                       marker_edge_dash_offset=float(offset))
     if str(symbol) in {
-        "point", "circle", "square", "star", "diamond", "triangle", "plus",
-        ".", "o", "s", "*", "D", "^", "+",
+        "point", "circle", "square", "star", "diamond", "triangle",
+        ".", "o", "s", "*", "D", "^",
     }:
         return result
     paths = collection.get_paths()
@@ -1058,7 +1058,13 @@ class RecordingMixin:
         )
         face_alpha = float(facecolors[0][3]) if len(facecolors) else 0.0
         collection_alpha = coll.get_alpha()
-        alpha = float(collection_alpha if collection_alpha is not None else face_alpha)
+        visible_alpha = face_alpha
+        if face_alpha == 0:
+            # Fill transparency is expressed separately. A transparent palette
+            # colour would also hide the visible edge during compilation.
+            face_color = _rgb_string(facecolors[0] if len(facecolors) else "black")
+            visible_alpha = float(edgecolors[0][3]) if len(edgecolors) else 0.0
+        alpha = float(collection_alpha if collection_alpha is not None else visible_alpha)
         style_dict = {
             "symbol": str(getattr(style.marker.symbol, "value", style.marker.symbol)),
             "edge_color": edge_color,

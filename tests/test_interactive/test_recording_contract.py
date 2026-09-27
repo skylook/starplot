@@ -666,3 +666,26 @@ def test_zenith_info_preserves_explicit_zero_alpha():
 
     command = next(c for c in plot._recorder.commands if c.gid == "zenith-info")
     assert command.style["alpha"] == 0
+
+
+@pytest.mark.parametrize("alpha", [1, 0.5])
+def test_outline_only_marker_preserves_visible_edge_opacity(alpha):
+    plot = make_map_plot()
+    plot.marker(ra=80, dec=5, style={"marker": {
+        "symbol": "circle", "fill": "none", "color": None,
+        "edge_color": "gold", "edge_width": 2, "alpha": alpha,
+    }})
+    command = next(c for c in plot._recorder.commands if c.gid == "marker")
+    assert command.data["alphas"][0] == alpha
+    assert command.style["fill"] == "none"
+    assert command.data["colors"][0] == "#000000"
+    from starplot.interactive.scene_compiler import encode_palette
+    encoded = encode_palette(command.data["colors"], command.data["alphas"])
+    assert encoded.opacity[0] == pytest.approx(alpha)
+
+
+def test_plus_marker_carries_native_geometry_for_exact_extent():
+    plot = make_map_plot()
+    plot.marker(ra=80, dec=5, style={"marker": {"symbol": "plus"}})
+    command = next(c for c in plot._recorder.commands if c.gid == "marker")
+    assert command.style["marker_path"]
